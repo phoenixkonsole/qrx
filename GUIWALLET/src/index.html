@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GUI Wallet</title>
+  <style>
+    :root{--bg:#050914;--panel:rgba(255,255,255,.075);--panel2:rgba(255,255,255,.11);--line:rgba(255,255,255,.12);--text:#f5f8ff;--muted:#9aabc7;--accent:#79c7ff;--violet:#9b8cff;--ok:#75efb7;--warn:#ffd27a;--bad:#ff8f9b;--shadow:0 30px 90px rgba(0,0,0,.42)}
+    *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,sans-serif;color:var(--text);background:radial-gradient(circle at 12% 0,#1b3b68 0,#07111f 38%,#02050b 100%)}body{overflow:auto;min-height:100dvh}button,input,textarea,select{font:inherit}h1,h2,h3,h4,p{margin:0}canvas#bg{position:fixed;inset:0;width:100%;height:100%;opacity:.9}.glass{background:linear-gradient(180deg,rgba(255,255,255,.085),rgba(255,255,255,.04));border:1px solid var(--line);box-shadow:var(--shadow);backdrop-filter:blur(26px);-webkit-backdrop-filter:blur(26px);border-radius:28px}.shell{position:relative;z-index:1;min-height:100dvh;padding:16px;display:grid;grid-template-columns:300px minmax(0,1fr);gap:18px;align-items:start}.sidebar{display:flex;flex-direction:column;gap:14px;padding:18px;max-height:calc(100dvh - 32px);overflow:auto;position:sticky;top:16px}.brand{display:flex;gap:14px;align-items:center}.orb{width:48px;height:48px;border-radius:50%;background:radial-gradient(circle at 30% 28%,#fff,#82d4ff 28%,#8e79ff 66%,rgba(142,121,255,.12));box-shadow:0 0 46px rgba(121,199,255,.46)}.small{font-size:12px;color:var(--muted)}.muted{color:var(--muted)}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.menu{display:grid;gap:8px}.menu button,.btn{appearance:none;cursor:pointer;border-radius:16px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:var(--text);padding:12px 14px;text-align:left;transition:.16s ease}.menu button.active,.menu button:hover,.btn:hover{transform:translateY(-1px);background:rgba(121,199,255,.13);border-color:rgba(121,199,255,.36)}.btn.primary{background:linear-gradient(135deg,rgba(121,199,255,.30),rgba(155,140,255,.23))}.btn.danger{border-color:rgba(255,143,155,.25)}.btn.center{text-align:center}.status{display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border-radius:999px;background:rgba(255,255,255,.06);color:var(--muted);font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:var(--bad);box-shadow:0 0 16px rgba(255,143,155,.45)}.dot.online{background:var(--ok);box-shadow:0 0 16px rgba(117,239,183,.5)}.sidebar-footer{margin-top:auto;display:grid;gap:10px}.main{display:grid;grid-template-rows:auto 1fr;gap:18px;min-width:0}.hero{padding:20px;display:flex;justify-content:space-between;gap:20px;align-items:center}.hero h2{font-size:clamp(26px,3vw,34px);margin-bottom:8px}.hero-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}.content{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(320px,.9fr);gap:18px;min-height:0;align-items:start}.left,.right{min-height:0;display:grid;gap:18px}.section{padding:18px;overflow:visible}.section h3{margin-bottom:14px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.metric{padding:16px;border-radius:20px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.075)}.metric .label{color:var(--muted);font-size:12px;margin-bottom:8px}.metric .value{font-size:25px;font-weight:750;letter-spacing:-.02em}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}.stack{display:grid;gap:12px}.rows{display:grid;gap:10px}.row,.tx,.wallet-chip,.feature-card{display:grid;gap:8px;padding:14px;border-radius:18px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08)}.row{grid-template-columns:1fr auto}.wallet-chip{grid-template-columns:1fr auto;align-items:center}.wallet-chip.active{border-color:rgba(121,199,255,.38);background:rgba(121,199,255,.11)}.feature-card{padding:18px;border-radius:22px;gap:12px}.form{display:grid;gap:12px}.field{display:grid;gap:8px}.actions{display:flex;flex-wrap:wrap;gap:10px}input,textarea,select{width:100%;color:var(--text);background:rgba(9,16,30,.64);border-radius:14px;border:1px solid rgba(255,255,255,.12);padding:13px 14px;outline:none}textarea{min-height:88px;resize:vertical}.banner{display:none;margin-bottom:12px;padding:12px 14px;border-radius:14px;font-size:13px}.banner.show{display:block}.banner.ok{color:#dffef0;background:rgba(117,239,183,.12);border:1px solid rgba(117,239,183,.25)}.banner.err{color:#ffeaea;background:rgba(255,143,155,.12);border:1px solid rgba(255,143,155,.25)}pre,.receive-box{margin:0;white-space:pre-wrap;word-break:break-word;border-radius:18px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.05);padding:14px;font-size:12px;line-height:1.55;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.fingerprint{border-radius:22px;display:grid;place-items:center;min-height:190px;background:radial-gradient(circle at 30% 30%,rgba(121,199,255,.18),rgba(155,140,255,.14),rgba(255,255,255,.03));border:1px solid rgba(255,255,255,.08)}.fingerprint canvas{width:168px;height:168px;image-rendering:pixelated;border-radius:18px}.tabs{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}.tabs button{border-radius:999px}.hidden{display:none!important}.pillrow{display:flex;flex-wrap:wrap;gap:8px}.pill{display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);color:var(--muted);font-size:12px}.pill.good{color:#dffef0;border-color:rgba(117,239,183,.24);background:rgba(117,239,183,.1)}.pill.warn{color:#fff1d1;border-color:rgba(255,210,122,.25);background:rgba(255,210,122,.1)}.notice{padding:14px;border-radius:18px;background:rgba(121,199,255,.08);border:1px solid rgba(121,199,255,.18);color:#dcefff;line-height:1.55}.legal{color:var(--muted);font-size:12px;line-height:1.65}.stage{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px;border-radius:16px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.07)}.stage span:last-child{color:var(--muted);font-size:12px}.timeline{display:grid;gap:10px}.timeline-item{display:grid;grid-template-columns:120px 1fr;gap:12px;padding:14px;border-radius:18px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.075)}.welcome{position:fixed;inset:0;z-index:5;padding:20px;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,rgba(3,7,14,.25),rgba(3,7,14,.86));backdrop-filter:blur(10px)}.welcome-card{width:min(980px,100%);padding:30px}.welcome-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:20px}.welcome-option{padding:20px;border-radius:20px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08)}.welcome-option p{color:var(--muted);margin:10px 0 16px;min-height:76px}.qguard-overlay{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.58);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}.qguard-overlay.show{display:flex}.qguard-modal{width:min(760px,100%);padding:24px;border-radius:28px;background:linear-gradient(180deg,rgba(12,20,38,.94),rgba(5,9,20,.94));border:1px solid rgba(255,255,255,.16);box-shadow:0 30px 120px rgba(0,0,0,.55)}.qguard-modal h3{font-size:26px;margin-bottom:10px}.qguard-risk{display:inline-flex;margin:8px 0 14px;padding:8px 12px;border-radius:999px;border:1px solid rgba(255,210,122,.35);background:rgba(255,210,122,.12);color:#fff1d1}.qguard-details{display:grid;gap:8px;margin:12px 0}.qguard-details div{padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.08);word-break:break-word}.qguard-confirm{margin-top:14px}.qguard-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-top:16px}.aura-topbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.hero-actions .aura-chip{height:48px}.aura-chip{height:48px;padding:0 14px;border-radius:18px;border:1px solid rgba(121,199,255,.38);background:linear-gradient(180deg,rgba(121,199,255,.22),rgba(155,140,255,.18));box-shadow:0 14px 50px rgba(0,0,0,.28);display:inline-flex;align-items:center;gap:10px;cursor:pointer;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);color:var(--text);font-weight:800}.aura-chip svg{width:23px;height:23px}.hero{position:relative}.aura-panel{position:fixed;right:22px;top:84px;z-index:13;width:min(500px,calc(100vw - 28px));height:min(720px,calc(100dvh - 110px));display:none;grid-template-rows:auto 1fr auto;border-radius:28px;overflow:hidden;background:linear-gradient(180deg,rgba(10,17,32,.96),rgba(4,7,16,.96));border:1px solid rgba(255,255,255,.16);box-shadow:0 30px 120px rgba(0,0,0,.55);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px)}.aura-panel.show{display:grid}.aura-panel.full{left:22px;right:22px;top:84px;width:auto;height:calc(100dvh - 108px)}.aura-head{padding:16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,.1)}.aura-title{display:flex;gap:12px;align-items:center}.aura-badge{width:38px;height:38px;border-radius:14px;display:grid;place-items:center;background:rgba(121,199,255,.12);border:1px solid rgba(121,199,255,.25)}.aura-messages{padding:16px;overflow:auto;display:grid;gap:12px;align-content:start}.aura-msg{max-width:88%;padding:12px 14px;border-radius:18px;line-height:1.45;white-space:pre-wrap;word-break:break-word}.aura-panel.full .aura-msg{max-width:min(880px,88%)}.aura-msg.user{justify-self:end;background:rgba(121,199,255,.18);border:1px solid rgba(121,199,255,.22)}.aura-msg.ai{justify-self:start;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1)}.aura-msg .src{font-size:11px;color:var(--muted);margin-top:8px}.aura-compose{padding:14px;border-top:1px solid rgba(255,255,255,.1);display:grid;gap:10px}.aura-compose textarea{min-height:74px}.aura-plan{font-size:12px;color:var(--muted);padding:10px 12px;border-radius:16px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08)}.aura-actions{display:flex;gap:8px;flex-wrap:wrap}.aura-close{border-radius:999px;padding:8px 10px}.aura-cloud{color:#fff1d1;border-color:rgba(255,210,122,.25);background:rgba(255,210,122,.1)}@media(max-width:1320px){.hero{padding-right:20px}.aura-topbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}}@media(max-width:700px){.aura-panel{right:14px;top:74px;height:calc(100dvh - 88px)}.aura-panel.full{left:14px;right:14px;top:74px;height:calc(100dvh - 88px)}.aura-chip{width:100%;justify-content:center}}@media(max-width:1220px){body{overflow:auto}.shell{grid-template-columns:1fr;min-height:auto}.sidebar{position:relative;top:auto;max-height:none}.content,.split,.metrics,.welcome-grid{grid-template-columns:1fr}.hero{flex-direction:column;align-items:flex-start}.hero-actions{justify-content:flex-start}}@media(max-height:850px){.shell{padding:12px}.sidebar{top:12px;max-height:calc(100dvh - 24px);padding:14px}.menu button,.btn{padding:10px 12px}.section{padding:16px}.metrics{grid-template-columns:repeat(2,1fr)}.brand .orb{width:42px;height:42px}}
+  
+/* --- QRX first-run onboarding + validator mode UX --- */
+.intro-overlay{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:18px;background:radial-gradient(circle at 20% 10%,rgba(121,199,255,.18),rgba(2,5,11,.92) 42%,rgba(2,5,11,.98));backdrop-filter:blur(24px)}
+.intro-overlay.hidden{display:none}
+.intro-card{width:min(920px,100%);padding:24px;border-radius:32px}
+.intro-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+.intro-progress{display:flex;gap:7px}
+.intro-dot{width:9px;height:9px;border-radius:99px;background:rgba(255,255,255,.22)}
+.intro-dot.active{background:var(--accent);box-shadow:0 0 18px rgba(121,199,255,.55)}
+.intro-slide{display:none;min-height:360px}
+.intro-slide.active{display:grid;gap:16px}
+.intro-slide h2{font-size:clamp(28px,4vw,44px);line-height:1.02}
+.intro-kicker{color:var(--accent);font-weight:800;letter-spacing:.08em;text-transform:uppercase;font-size:12px}
+.intro-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.intro-box,.mode-card{padding:16px;border-radius:22px;background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.12)}
+.intro-box strong,.mode-card strong{display:block;margin-bottom:8px}
+.checkline{display:flex;gap:10px;align-items:flex-start;padding:12px;border-radius:16px;background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.12)}
+.checkline input{margin-top:3px;transform:scale(1.15)}
+.toggle-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:16px;border-radius:20px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.13)}
+.switch{position:relative;width:58px;height:32px;display:inline-block;flex:0 0 auto}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;cursor:pointer;inset:0;background:rgba(255,255,255,.17);border-radius:999px;border:1px solid rgba(255,255,255,.18);transition:.18s}
+.slider:before{content:"";position:absolute;height:24px;width:24px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.18s;box-shadow:0 10px 24px rgba(0,0,0,.35)}
+.switch input:checked+.slider{background:linear-gradient(135deg,rgba(121,199,255,.65),rgba(155,140,255,.65))}
+.switch input:checked+.slider:before{transform:translateX(26px)}
+.risk-panel{border:1px solid rgba(255,210,122,.28);background:rgba(255,210,122,.08);border-radius:20px;padding:14px}
+@media(max-width:760px){.intro-grid{grid-template-columns:1fr}.intro-card{padding:18px}.intro-slide{min-height:auto}.toggle-row{align-items:flex-start;flex-direction:column}}
+
+  
+/* --- Responsive QUBITCOIN Splash Screen --- */
+.qrx-splash{
+  position:fixed;
+  inset:0;
+  z-index:80;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:clamp(18px,4vw,56px);
+  overflow:hidden;
+  background:
+    radial-gradient(circle at 50% 35%, rgba(0,224,255,.22), transparent 28%),
+    radial-gradient(circle at 50% 120%, rgba(0,123,255,.26), transparent 38%),
+    linear-gradient(180deg,#050914 0%,#071426 44%,#02050b 100%);
+  color:#f5f8ff;
+  transition:opacity .45s ease, visibility .45s ease;
+}
+.qrx-splash.hidden{
+  opacity:0;
+  visibility:hidden;
+  pointer-events:none;
+}
+.qrx-splash::before{
+  content:"";
+  position:absolute;
+  inset:auto -10% -20% -10%;
+  height:42%;
+  background:
+    radial-gradient(ellipse at center, rgba(0,224,255,.26), transparent 58%),
+    repeating-linear-gradient(160deg, rgba(0,224,255,.18) 0 1px, transparent 1px 28px),
+    repeating-linear-gradient(20deg, rgba(0,123,255,.16) 0 1px, transparent 1px 34px);
+  transform:perspective(900px) rotateX(62deg);
+  transform-origin:50% 100%;
+  filter:blur(.2px);
+  opacity:.75;
+}
+.qrx-splash::after{
+  content:"";
+  position:absolute;
+  width:min(82vmin,820px);
+  aspect-ratio:1;
+  border-radius:50%;
+  border:1px solid rgba(0,224,255,.13);
+  box-shadow:0 0 120px rgba(0,123,255,.18), inset 0 0 80px rgba(0,224,255,.06);
+}
+.qrx-splash-inner{
+  position:relative;
+  z-index:1;
+  width:min(92vw,820px);
+  display:grid;
+  justify-items:center;
+  text-align:center;
+  transform:translateY(-2vh);
+}
+.qrx-splash-logo{
+  width:clamp(92px,16vw,210px);
+  aspect-ratio:1;
+  border-radius:28%;
+  display:grid;
+  place-items:center;
+  margin-bottom:clamp(14px,2.6vw,30px);
+  background:linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.025));
+  border:1px solid rgba(255,255,255,.12);
+  box-shadow:0 30px 100px rgba(0,123,255,.35), 0 0 70px rgba(0,224,255,.18);
+  animation:qrxSplashFloat 4.8s ease-in-out infinite;
+}
+.qrx-splash-mark{
+  width:74%;
+  height:74%;
+  filter:drop-shadow(0 0 26px rgba(0,224,255,.35));
+}
+.qrx-splash-title{
+  font-size:clamp(34px,6.2vw,82px);
+  line-height:.95;
+  font-weight:900;
+  letter-spacing:.10em;
+  margin:0;
+  text-transform:uppercase;
+  text-shadow:0 0 34px rgba(0,224,255,.18);
+}
+.qrx-splash-title .accent{
+  background:linear-gradient(90deg,#f5f8ff,#00e0ff,#007bff,#f5f8ff);
+  -webkit-background-clip:text;
+  background-clip:text;
+  color:transparent;
+}
+.qrx-splash-wallet{
+  margin-top:clamp(8px,1.2vw,14px);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:clamp(12px,2vw,28px);
+  color:#00dfff;
+  letter-spacing:.55em;
+  font-weight:700;
+  font-size:clamp(13px,2vw,25px);
+  text-transform:uppercase;
+}
+.qrx-splash-wallet::before,
+.qrx-splash-wallet::after{
+  content:"";
+  width:clamp(52px,10vw,150px);
+  height:2px;
+  background:linear-gradient(90deg,transparent,#00e0ff);
+}
+.qrx-splash-wallet::after{
+  background:linear-gradient(90deg,#00e0ff,transparent);
+}
+.qrx-splash-slogan{
+  margin-top:clamp(20px,3.2vw,36px);
+  font-size:clamp(15px,2vw,25px);
+  letter-spacing:.22em;
+  text-transform:uppercase;
+  color:rgba(245,248,255,.92);
+}
+.qrx-splash-slogan .blue{color:#00dfff}
+.qrx-splash-sub{
+  margin-top:clamp(8px,1.6vw,16px);
+  max-width:680px;
+  color:rgba(190,208,232,.86);
+  font-size:clamp(13px,1.5vw,18px);
+  line-height:1.5;
+}
+.qrx-loader{
+  margin-top:clamp(26px,4vw,48px);
+  display:grid;
+  justify-items:center;
+  gap:10px;
+}
+.qrx-loader-ring{
+  width:34px;
+  height:34px;
+  border-radius:50%;
+  border:3px solid rgba(255,255,255,.15);
+  border-top-color:#00e0ff;
+  border-right-color:#007bff;
+  animation:qrxSpin .9s linear infinite;
+}
+.qrx-loader-text{
+  font-size:11px;
+  letter-spacing:.18em;
+  color:#78cfff;
+  text-transform:uppercase;
+}
+.qrx-platforms{
+  margin-top:clamp(26px,4.5vw,58px);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:clamp(16px,4vw,58px);
+  color:rgba(190,208,232,.82);
+  font-size:clamp(11px,1.2vw,14px);
+}
+.qrx-platforms span{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  align-items:center;
+}
+.qrx-platforms svg{
+  width:clamp(23px,3vw,34px);
+  height:clamp(23px,3vw,34px);
+  color:#65caff;
+}
+@keyframes qrxSpin{to{transform:rotate(360deg)}}
+@keyframes qrxSplashFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+@media (max-width:720px){
+  .qrx-splash-inner{transform:none}
+  .qrx-splash-wallet{letter-spacing:.35em}
+  .qrx-splash-slogan{letter-spacing:.12em}
+  .qrx-platforms{display:none}
+}
+@media (max-height:620px){
+  .qrx-splash-logo{width:clamp(76px,13vw,140px);margin-bottom:12px}
+  .qrx-splash-slogan{margin-top:14px}
+  .qrx-loader{margin-top:18px}
+  .qrx-platforms{display:none}
+}
+
+  
+/* --- Intro slider overflow fix --- */
+.intro-card{
+  max-height:calc(100dvh - 36px);
+  overflow:auto;
+}
+.intro-slide{
+  min-height:auto;
+}
+.intro-slide h2{
+  max-width:100%;
+  overflow-wrap:anywhere;
+}
+.checkline{
+  width:100%;
+  align-items:flex-start;
+}
+.checkline span{
+  display:block;
+  min-width:0;
+  overflow-wrap:break-word;
+  line-height:1.35;
+}
+.intro-card .actions{
+  flex-wrap:wrap;
+}
+@media(max-width:980px){
+  .intro-card{width:min(96vw,920px)}
+  .intro-slide h2{font-size:clamp(26px,6vw,42px)}
+}
+
+
+/* --- Intro acknowledgement layout hard fix --- */
+.intro-overlay{
+  align-items:flex-start !important;
+  padding:clamp(10px,2vw,24px) !important;
+  overflow:auto !important;
+}
+.intro-card{
+  width:min(960px,calc(100vw - 28px)) !important;
+  max-height:none !important;
+  min-height:auto !important;
+  margin:clamp(10px,3vh,28px) auto !important;
+  overflow:visible !important;
+  display:flex !important;
+  flex-direction:column !important;
+}
+.intro-slide{
+  display:none !important;
+  min-height:auto !important;
+}
+.intro-slide.active{
+  display:flex !important;
+  flex-direction:column !important;
+  gap:14px !important;
+}
+.intro-slide h2{
+  font-size:clamp(28px,4.2vw,48px) !important;
+  line-height:1.08 !important;
+  max-width:100% !important;
+  overflow-wrap:normal !important;
+  word-break:normal !important;
+  hyphens:none !important;
+}
+.intro-slide p{
+  max-width:100% !important;
+  overflow-wrap:normal !important;
+  word-break:normal !important;
+  hyphens:none !important;
+}
+.intro-grid{
+  width:100% !important;
+  grid-template-columns:repeat(3,minmax(0,1fr)) !important;
+}
+.intro-box,.mode-card{
+  min-width:0 !important;
+}
+.intro-ack{
+  width:100% !important;
+  margin-top:8px !important;
+  display:grid !important;
+  grid-template-columns:28px minmax(0,1fr) !important;
+  gap:12px !important;
+  align-items:start !important;
+  padding:14px 16px !important;
+  border-radius:18px !important;
+  background:rgba(0,224,255,.08) !important;
+  border:1px solid rgba(0,224,255,.38) !important;
+  box-shadow:0 0 30px rgba(0,224,255,.10) !important;
+}
+.intro-ack input{
+  width:22px !important;
+  height:22px !important;
+  margin:1px 0 0 0 !important;
+  accent-color:#00e0ff !important;
+  transform:none !important;
+}
+.intro-ack span{
+  display:block !important;
+  min-width:0 !important;
+  white-space:normal !important;
+  overflow-wrap:normal !important;
+  word-break:normal !important;
+  line-height:1.38 !important;
+}
+.ack-title{
+  display:block !important;
+  color:#00e0ff !important;
+  font-weight:800 !important;
+  margin-bottom:3px !important;
+  letter-spacing:.02em !important;
+}
+#introNextBtn.disabled,
+#introNextBtn:disabled{
+  opacity:.45 !important;
+  cursor:not-allowed !important;
+  transform:none !important;
+}
+.intro-card > .actions{
+  margin-top:18px !important;
+  flex-wrap:wrap !important;
+}
+@media(max-width:820px){
+  .intro-grid{grid-template-columns:1fr !important}
+  .intro-slide h2{font-size:clamp(25px,7vw,38px) !important}
+}
+@media(max-height:720px){
+  .intro-top{margin-bottom:10px !important}
+  .intro-slide.active{gap:10px !important}
+  .intro-slide h2{font-size:clamp(24px,5vh,38px) !important}
+}
+
+
+/* --- Real QUBITCOIN logo mini replacement --- */
+.qrx-logo-mini{
+  width:48px;
+  height:48px;
+  flex:0 0 48px;
+  border-radius:16px;
+  display:grid;
+  place-items:center;
+  background:linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.025));
+  border:1px solid rgba(255,255,255,.12);
+  box-shadow:0 16px 46px rgba(0,123,255,.35),0 0 28px rgba(0,224,255,.18);
+  overflow:hidden;
+}
+.qrx-logo-mini svg{width:88%;height:88%;filter:drop-shadow(0 0 12px rgba(0,224,255,.32))}
+.intro-top .qrx-logo-mini{width:52px;height:52px;flex-basis:52px}
+.brand .qrx-logo-mini + div{min-width:0}
+
+/* --- Aura restore / dashboard access --- */
+.aura-panel.show{display:grid!important}
+.aura-chip{user-select:none}
+.aura-dashboard-card{
+  margin-top:14px;
+  padding:16px;
+  border-radius:22px;
+  background:linear-gradient(135deg,rgba(121,199,255,.12),rgba(155,140,255,.10));
+  border:1px solid rgba(121,199,255,.24);
+}
+.aura-dashboard-card .actions{margin-top:12px}
+
+
+/* --- Staking + Validator acknowledgement fix --- */
+.ack-box{
+  width:100%;
+  display:grid;
+  grid-template-columns:28px minmax(0,1fr);
+  gap:12px;
+  align-items:start;
+  padding:14px 16px;
+  border-radius:18px;
+  background:rgba(0,224,255,.08);
+  border:1px solid rgba(0,224,255,.38);
+  box-shadow:0 0 20px rgba(0,224,255,.08);
+  margin-top:14px;
+}
+.ack-box input{
+  width:22px;
+  height:22px;
+  margin-top:2px;
+  accent-color:#00e0ff;
+}
+.ack-box span{
+  display:block;
+  white-space:normal;
+  word-break:normal;
+  line-height:1.4;
+}
+.ack-title{
+  color:#00e0ff;
+  font-weight:800;
+  display:block;
+  margin-bottom:4px;
+}
+
+
+/* --- Splash failsafe: never stay stuck forever --- */
+.qrx-splash{
+  animation:qrxSplashAutoHide 5.8s ease forwards;
+}
+.qrx-splash.hidden{
+  animation:none;
+}
+@keyframes qrxSplashAutoHide{
+  0%,86%{opacity:1;visibility:visible}
+  100%{opacity:0;visibility:hidden;pointer-events:none}
+}
+
+</style>
+</head>
+<body>
+
+<div id="qrxSplash" class="qrx-splash" aria-label="QUBITCOIN Wallet loading screen">
+  <div class="qrx-splash-inner">
+    <div class="qrx-splash-logo" aria-hidden="true">
+      <svg class="qrx-splash-mark" viewBox="0 0 512 512" role="img">
+        <defs>
+          <linearGradient id="qrxg" x1="110" y1="70" x2="390" y2="440" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#00e0ff"/>
+            <stop offset=".55" stop-color="#008bff"/>
+            <stop offset="1" stop-color="#0052e0"/>
+          </linearGradient>
+          <linearGradient id="cubeG" x1="180" y1="130" x2="330" y2="340" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#44f3ff"/>
+            <stop offset="1" stop-color="#0058e8"/>
+          </linearGradient>
+        </defs>
+        <path d="M256 58c-109.35 0-198 88.65-198 198s88.65 198 198 198c37.1 0 71.82-10.2 101.5-27.95l-45.3-45.3C295.3 388.9 276.25 393.5 256 393.5c-75.94 0-137.5-61.56-137.5-137.5S180.06 118.5 256 118.5 393.5 180.06 393.5 256c0 20.25-4.6 39.3-12.75 56.2l44.4 44.4C443.45 327.05 454 292.55 454 256c0-109.35-88.65-198-198-198Z" fill="url(#qrxg)"/>
+        <path d="M326 322l52-52 104 104-52 52-104-104Z" fill="url(#qrxg)"/>
+        <path d="M256 154l88 48-88 50-88-50 88-48Z" fill="#4bf3ff"/>
+        <path d="M168 218l78 44v96l-78-45v-95Z" fill="url(#cubeG)"/>
+        <path d="M344 218l-78 44v96l78-45v-95Z" fill="#0052d8"/>
+        <path d="M168 202l88 50 88-50M256 252v106" fill="none" stroke="#06101f" stroke-width="12" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <h1 class="qrx-splash-title">QUB<span class="accent">IT</span>COIN</h1>
+    <div class="qrx-splash-wallet">Wallet</div>
+    <div class="qrx-splash-slogan">Secure. <span class="blue">Fast.</span> Built for the <span class="blue">Future.</span></div>
+    <p class="qrx-splash-sub">Your keys. Your crypto. Your future.</p>
+    <div class="qrx-loader">
+      <div class="qrx-loader-ring"></div>
+      <div class="qrx-loader-text">Loading wallet…</div>
+    </div>
+    <div class="qrx-platforms" aria-hidden="true">
+      <span>
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 4h8v8H3V4Zm10 0h8v8h-8V4ZM3 14h8v6H3v-6Zm10 0h8v6h-8v-6Z"/></svg>
+        Windows
+      </span>
+      <span>
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c2.3 0 4 1.7 4 4 0 1-.3 1.8-.8 2.5 1.9 1.3 3.2 3.9 3.2 7.1 0 4.3-2.4 6.4-6.4 6.4s-6.4-2.1-6.4-6.4c0-3.2 1.3-5.8 3.2-7.1A4.1 4.1 0 0 1 8 6c0-2.3 1.7-4 4-4Zm-2.5 9.2c-.8.9-1.3 2.4-1.3 4.4 0 2.8 1.1 3.9 3.8 3.9s3.8-1.1 3.8-3.9c0-2-.5-3.5-1.3-4.4-.7.5-1.5.8-2.5.8s-1.8-.3-2.5-.8Z"/></svg>
+        Linux
+      </span>
+      <span>
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.6 13.4c0-2.2 1.8-3.3 1.9-3.4-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.6.8-3.3.8-.7 0-1.8-.8-2.9-.8-1.5 0-2.9.9-3.7 2.2-1.6 2.8-.4 7 1.1 9.3.8 1.1 1.7 2.4 2.9 2.3 1.1 0 1.6-.7 3-.7s1.8.7 3 .7c1.2 0 2-1.1 2.8-2.2.9-1.3 1.2-2.5 1.2-2.6 0 0-2.8-1.1-2.8-3.9ZM14.5 6.8c.6-.8 1.1-1.9 1-3-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2-.5 2.6-1.3Z"/></svg>
+        macOS
+      </span>
+    </div>
+  </div>
+</div>
+
+
+<div id="introOnboarding" class="intro-overlay hidden">
+  <div class="intro-card glass">
+    <div class="intro-top">
+      <div class="brand"><div class="qrx-logo-mini" aria-hidden="true">
+  <svg viewBox="0 0 512 512">
+    <defs>
+      <linearGradient id="miniQrxG" x1="110" y1="70" x2="390" y2="440" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#00e0ff"/><stop offset=".55" stop-color="#008bff"/><stop offset="1" stop-color="#0052e0"/>
+      </linearGradient>
+      <linearGradient id="miniCubeG" x1="180" y1="130" x2="330" y2="340" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#44f3ff"/><stop offset="1" stop-color="#0058e8"/>
+      </linearGradient>
+    </defs>
+    <path d="M256 58c-109.35 0-198 88.65-198 198s88.65 198 198 198c37.1 0 71.82-10.2 101.5-27.95l-45.3-45.3C295.3 388.9 276.25 393.5 256 393.5c-75.94 0-137.5-61.56-137.5-137.5S180.06 118.5 256 118.5 393.5 180.06 393.5 256c0 20.25-4.6 39.3-12.75 56.2l44.4 44.4C443.45 327.05 454 292.55 454 256c0-109.35-88.65-198-198-198Z" fill="url(#miniQrxG)"/>
+    <path d="M326 322l52-52 104 104-52 52-104-104Z" fill="url(#miniQrxG)"/>
+    <path d="M256 154l88 48-88 50-88-50 88-48Z" fill="#4bf3ff"/>
+    <path d="M168 218l78 44v96l-78-45v-95Z" fill="url(#miniCubeG)"/>
+    <path d="M344 218l-78 44v96l78-45v-95Z" fill="#0052d8"/>
+    <path d="M168 202l88 50 88-50M256 252v106" fill="none" stroke="#06101f" stroke-width="12" stroke-linejoin="round"/>
+  </svg>
+</div><div><h1>QRX / QUB Wallet</h1><p class="small">First-start safety briefing</p></div></div>
+      <div id="introProgress" class="intro-progress"></div>
+    </div>
+
+    <div class="intro-slide active" data-intro-slide="0">
+      <div class="intro-kicker">Unique selling point</div>
+      <h2>QRX is built as a quantum-ready, lightweight chain with local-first wallet control.</h2>
+      <p class="muted">Your keys stay local. The wallet can run as a safe home wallet, a passive delegator, or an advanced validator node. Core consensus stays clean, transparent and independent.</p>
+      <div class="intro-grid">
+        <div class="intro-box"><strong>Local-first</strong><span class="muted">Wallet keys and recovery stay on your machine.</span></div>
+        <div class="intro-box"><strong>Delegation-ready</strong><span class="muted">Earn through validators without running infrastructure.</span></div>
+        <div class="intro-box"><strong>Validator-grade</strong><span class="muted">Advanced users can run a daemon and secure the network.</span></div>
+      </div>
+      <label class="intro-ack"><input id="introCheck0" type="checkbox" onchange="renderIntro()"><span><strong class="ack-title">Required acknowledgement</strong>I understand that QRX Wallet is non-custodial software and that I must protect my recovery phrase myself.</span></label>
+    </div>
+
+    <div class="intro-slide" data-intro-slide="1">
+      <div class="intro-kicker">Operating modes</div>
+      <h2>Choose the right mode: Wallet, Delegator, or Validator.</h2>
+      <div class="intro-grid">
+        <div class="mode-card"><strong>Wallet Mode</strong><p class="muted">Send, receive and keep a local wallet. You may run the daemon without producing blocks. No slashing risk.</p></div>
+        <div class="mode-card"><strong>Delegator Mode</strong><p class="muted">Delegate QUB to a validator. Your computer can be offline. Validator performance affects rewards, but you do not run infrastructure.</p></div>
+        <div class="mode-card"><strong>Validator Mode</strong><p class="muted">Run a block-producing node with self-stake. This requires stable 24/7 uptime and carries slashing risk.</p></div>
+      </div>
+      <label class="intro-ack"><input id="introCheck1" type="checkbox" onchange="renderIntro()"><span><strong class="ack-title">Required acknowledgement</strong>I understand that Wallet Mode and Delegator Mode can go offline, but Validator Mode requires stable uptime.</span></label>
+    </div>
+
+    <div class="intro-slide" data-intro-slide="2">
+      <div class="intro-kicker">Chain parameters</div>
+      <h2>Main parameters used by the current QRX core.</h2>
+      <div class="intro-grid">
+        <div class="intro-box"><strong>Block time</strong><span class="muted">10 seconds</span></div>
+        <div class="intro-box"><strong>Block reward</strong><span class="muted">0.25 QUB initial reward</span></div>
+        <div class="intro-box"><strong>Reward split</strong><span class="muted">30% validator / 70% delegator plus validator commission</span></div>
+        <div class="intro-box"><strong>Validator minimum</strong><span class="muted">100 QUB self-stake</span></div>
+        <div class="intro-box"><strong>Double sign</strong><span class="muted">50% slash + tombstone</span></div>
+        <div class="intro-box"><strong>Offline</strong><span class="muted">1% penalty after 100 missed blocks + 1h jail</span></div>
+      </div>
+      <label class="intro-ack"><input id="introCheck2" type="checkbox" onchange="renderIntro()"><span><strong class="ack-title">Required acknowledgement</strong>I understand that validator penalties can slash validator power and may permanently affect validator status.</span></label>
+    </div>
+
+    <div class="intro-slide" data-intro-slide="3">
+      <div class="intro-kicker">Best practice</div>
+      <h2>Home computers are best for Wallet/Delegator Mode. Validator Mode belongs on stable servers.</h2>
+      <div class="risk-panel">
+        <strong>Recommended setup:</strong>
+        <p class="muted" style="margin-top:6px">Use Wallet Mode by default. Use Delegator Mode for passive participation. Enable Validator Mode only on a reliable VPS/server, with monitoring, backups, and stable network availability.</p>
+      </div>
+      <label class="intro-ack"><input id="introCheck3" type="checkbox" onchange="renderIntro()"><span><strong class="ack-title">Required acknowledgement</strong>I got it: I will only enable Validator Mode if I accept uptime responsibility and slashing risk.</span></label>
+    </div>
+
+    <div class="actions" style="margin-top:18px;justify-content:space-between">
+      <button class="btn" onclick="introPrev()">Back</button>
+      <div class="actions">
+        <button class="btn" onclick="introSkip()">Skip</button>
+        <button id="introNextBtn" class="btn primary" onclick="introNext()">Continue</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+  <canvas id="bg"></canvas>
+<section id="auraPanel" class="aura-panel">
+  <div class="aura-head">
+    <div class="aura-title"><div class="aura-badge">✦</div><div><strong>AURA</strong><div class="small muted">Wallet AI Assistant</div></div></div>
+    <div class="aura-actions"><button class="btn" onclick="toggleAuraFull()">Large view</button><button class="btn aura-close" onclick="toggleAura(false)">×</button></div>
+  </div>
+  <div class="aura-messages" id="auraMessages"></div>
+  <div class="aura-compose">
+    <div id="auraPlan" class="aura-plan">Local help available. Cloud package not active.</div>
+    <textarea id="auraInput" placeholder="Ask AURA, e.g. 'How do I send QUB?', 'CLI for balance?', 'Explain Quantum Swaps'"></textarea>
+    <div class="aura-actions">
+      <button class="btn primary" onclick="auraAskLocal()">Local Help</button>
+      <button class="btn aura-cloud" onclick="auraAskCloud()">Ask Cloud AI</button>
+      <button class="btn" onclick="auraQuote()">30-day Package</button>
+      <button class="btn" onclick="auraClearLocal()">Clear local chat</button>
+    </div>
+    <div class="small muted">AURA local answers basic wallet/CLI questions offline. Cloud AI will run through your Cloudflare backend with a 30-day package paid in BTC or QUB. History stays local and is sent only when continuing a cloud chat.</div>
+  </div>
+</section>
+
+  <div id="welcome" class="welcome"><div class="welcome-card glass"><div class="brand"><div class="qrx-logo-mini" aria-hidden="true">
+  <svg viewBox="0 0 512 512">
+    <defs>
+      <linearGradient id="miniQrxG" x1="110" y1="70" x2="390" y2="440" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#00e0ff"/><stop offset=".55" stop-color="#008bff"/><stop offset="1" stop-color="#0052e0"/>
+      </linearGradient>
+      <linearGradient id="miniCubeG" x1="180" y1="130" x2="330" y2="340" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#44f3ff"/><stop offset="1" stop-color="#0058e8"/>
+      </linearGradient>
+    </defs>
+    <path d="M256 58c-109.35 0-198 88.65-198 198s88.65 198 198 198c37.1 0 71.82-10.2 101.5-27.95l-45.3-45.3C295.3 388.9 276.25 393.5 256 393.5c-75.94 0-137.5-61.56-137.5-137.5S180.06 118.5 256 118.5 393.5 180.06 393.5 256c0 20.25-4.6 39.3-12.75 56.2l44.4 44.4C443.45 327.05 454 292.55 454 256c0-109.35-88.65-198-198-198Z" fill="url(#miniQrxG)"/>
+    <path d="M326 322l52-52 104 104-52 52-104-104Z" fill="url(#miniQrxG)"/>
+    <path d="M256 154l88 48-88 50-88-50 88-48Z" fill="#4bf3ff"/>
+    <path d="M168 218l78 44v96l-78-45v-95Z" fill="url(#miniCubeG)"/>
+    <path d="M344 218l-78 44v96l78-45v-95Z" fill="#0052d8"/>
+    <path d="M168 202l88 50 88-50M256 252v106" fill="none" stroke="#06101f" stroke-width="12" stroke-linejoin="round"/>
+  </svg>
+</div><div><h1>GUI Wallet</h1><p class="muted">QUBITCOIN Core sidecar wallet with BTC Light, Quantum Swaps and Privacy preparation.</p></div></div><h2 style="margin:18px 0 8px;font-size:34px">Minimal, glassy, cross-chain ready.</h2><p class="muted">Create a local wallet, restore from <span class="mono">.qrxseed</span>, or import an existing wallet folder. QUB actions run locally through the bundled Core binaries.</p><div class="welcome-grid"><div class="welcome-option"><h3>Create wallet</h3><p>Create a local wallet profile and reveal the recovery phrase once.</p><div class="stack"><input id="welcomeCreateName" value="node1" placeholder="wallet name"><input id="welcomePassphrase" type="password" placeholder="wallet passphrase"><button class="btn primary" onclick="welcomeCreateWallet()">Create & open</button></div></div><div class="welcome-option"><h3>Restore</h3><p>Select a <span class="mono">.qrxseed</span> recovery file and restore.</p><div class="stack"><input id="welcomeRestoreName" value="restored1" placeholder="wallet name"><button class="btn" onclick="welcomeRestoreWallet()">Choose recovery file</button></div></div><div class="welcome-option"><h3>Import</h3><p>Import an existing QUBITCOIN wallet directory.</p><div class="stack"><input id="welcomeImportName" value="imported1" placeholder="wallet name"><button class="btn" onclick="welcomeImportWallet()">Choose wallet folder</button></div></div></div><div class="actions" style="margin-top:18px"><button class="btn" onclick="bootApp()">Skip to dashboard</button></div></div></div>
+  <div class="shell"><aside class="sidebar glass"><div class="brand"><div class="qrx-logo-mini" aria-hidden="true">
+  <svg viewBox="0 0 512 512">
+    <defs>
+      <linearGradient id="miniQrxG" x1="110" y1="70" x2="390" y2="440" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#00e0ff"/><stop offset=".55" stop-color="#008bff"/><stop offset="1" stop-color="#0052e0"/>
+      </linearGradient>
+      <linearGradient id="miniCubeG" x1="180" y1="130" x2="330" y2="340" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#44f3ff"/><stop offset="1" stop-color="#0058e8"/>
+      </linearGradient>
+    </defs>
+    <path d="M256 58c-109.35 0-198 88.65-198 198s88.65 198 198 198c37.1 0 71.82-10.2 101.5-27.95l-45.3-45.3C295.3 388.9 276.25 393.5 256 393.5c-75.94 0-137.5-61.56-137.5-137.5S180.06 118.5 256 118.5 393.5 180.06 393.5 256c0 20.25-4.6 39.3-12.75 56.2l44.4 44.4C443.45 327.05 454 292.55 454 256c0-109.35-88.65-198-198-198Z" fill="url(#miniQrxG)"/>
+    <path d="M326 322l52-52 104 104-52 52-104-104Z" fill="url(#miniQrxG)"/>
+    <path d="M256 154l88 48-88 50-88-50 88-48Z" fill="#4bf3ff"/>
+    <path d="M168 218l78 44v96l-78-45v-95Z" fill="url(#miniCubeG)"/>
+    <path d="M344 218l-78 44v96l78-45v-95Z" fill="#0052d8"/>
+    <path d="M168 202l88 50 88-50M256 252v106" fill="none" stroke="#06101f" stroke-width="12" stroke-linejoin="round"/>
+  </svg>
+</div><div><h1>GUI Wallet</h1><p class="small">QUB + BTC Light</p></div></div><div><div class="small" style="margin-bottom:10px">Current wallet</div><div id="currentWalletName" style="font-size:18px;font-weight:700">node1</div><div id="currentAddressShort" class="small mono" style="margin-top:6px">—</div></div><div class="stack"><div class="small">Session passphrase</div><input id="sessionPassphrase" type="password" placeholder="required for create/start/send/stake" oninput="syncPassphrase()"></div><div class="menu"><button class="active" data-view="dashboard">Dashboard</button><button data-view="send">Send</button><button data-view="receive">Receive</button><button data-view="staking">Staking</button><button data-view="validator">Validator Mode</button><button data-view="btc">BTC Light</button><button data-view="swaps">Quantum Swaps</button><button data-view="privacy">Privacy</button><button data-view="roadmap">Roadmap</button><button data-view="wallets">Wallets</button></div><div class="sidebar-footer"><div class="status"><span id="daemonDot" class="dot"></span><span id="daemonText">Daemon offline</span></div><div class="small">Network: <span id="networkLabel">alpha</span></div><div class="small">Control socket: <span id="controlSocketLabel" class="mono">—</span></div><div class="small">Data dir: <span id="dataDirLabel" class="mono">—</span></div></div></aside>
+  <main class="main"><section class="hero glass"><div><h2>QUBITCOIN GUI Wallet</h2><p class="muted">QUBITCOIN core wallet, staking, BTC Light, Quantum Swaps UX and honest non-custodial disclaimers.</p></div><div class="hero-actions"><button class="aura-chip" onclick="toggleAura(true)" title="Chat with AURA AI"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5.8C4 4.25 5.25 3 6.8 3h10.4C18.75 3 20 4.25 20 5.8v7.4c0 1.55-1.25 2.8-2.8 2.8H9.2L5 20v-4.2A2.8 2.8 0 0 1 4 13.6V5.8Z" stroke="currentColor" stroke-width="1.7"/><path d="M8 8h8M8 11.5h5.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Chat with AURA AI</span></button><button class="btn primary" onclick="startDaemonWithMode()">Start node</button><button class="btn" onclick="refreshAll(true)">Refresh</button><button class="btn danger" onclick="stopDaemon()">Stop node</button></div></section><section class="content"><div class="left"><section class="section glass"><div id="banner" class="banner"></div>
+    <div id="view-dashboard" class="view"><h3>Overview</h3><div class="metrics"><div class="metric"><div class="label">Balance</div><div id="metricBalance" class="value">0</div></div><div class="metric"><div class="label">Staked</div><div id="metricStaked" class="value">0</div></div><div class="metric"><div class="label">Validators</div><div id="metricValidators" class="value">0</div></div><div class="metric"><div class="label">Peers</div><div id="metricPeers" class="value">0</div></div></div><div style="height:18px"></div><div class="aura-dashboard-card">
+  <h3>AURA Wallet AI Assistant</h3>
+  <p class="muted">Ask local wallet questions, staking explanations, safety hints and command guidance.</p>
+  <div class="actions">
+    <button class="aura-chip" onclick="toggleAura(true)" title="Open AURA AI"><span>✦</span><span>Open AURA</span></button>
+    <button class="btn" onclick="auraAskLocal()">Local Help</button>
+  </div>
+</div><div style="height:18px"></div><div class="split"><div><h3>Wallet info</h3><pre id="walletInfoBox">Loading…</pre></div><div><h3>Node info</h3><pre id="nodeInfoBox">Loading…</pre></div></div><div style="height:12px"></div><div class="split"><div><h3>Tokenomics</h3><pre id="tokenomicsBox">Loading…</pre></div><div><h3>Daemon health</h3><pre id="daemonHealthBox">Loading…</pre></div></div></div>
+    <div id="view-send" class="view hidden"><h3>Send QUB</h3><div class="form"><div class="field"><label>Recipient address</label><input id="sendTo" placeholder="qrx1..."></div><div class="split"><div class="field"><label>Amount</label><input id="sendAmount" placeholder="1.0"></div><div class="field"><label>Memo</label><input id="sendMemo" placeholder="optional"></div></div><div class="actions"><button class="btn primary" onclick="sendTx()">Send transaction</button></div></div></div>
+    <div id="view-receive" class="view hidden"><h3>Receive QUB</h3><div class="split"><div class="stack"><div class="actions"><button class="btn primary" onclick="loadNewAddress()">Get receive address</button><button class="btn" onclick="copyReceiveAddress()">Copy address</button></div><div id="receiveAddress" class="receive-box">No address loaded yet.</div><div class="small">The fingerprint is generated locally and does not call an external QR service.</div></div><div class="fingerprint"><canvas id="addressFingerprint" width="168" height="168"></canvas></div></div></div>
+    <div id="view-staking" class="view hidden">
+      <h3>Staking</h3>
+      <div class="notice"><strong>Delegator Mode is safe for home users.</strong> You can delegate QUB and close the wallet. Slashing/offline penalties apply to validators, not to normal wallet users. Self-staking makes this wallet a validator candidate and requires Validator Mode.</div>
+      <div class="tabs"><button class="btn active" data-staking-tab="stake" onclick="setStakingTab('stake')">Self-stake / Validator</button><button class="btn" data-staking-tab="delegate" onclick="setStakingTab('delegate')">Delegate</button></div>
+      <div id="stakingTabStake">
+        <div class="risk-panel"><strong>Validator risk:</strong><p class="muted" style="margin-top:6px">Only self-stake if Validator Mode is enabled and this machine/server is intended to run reliably. Minimum self-stake is 100 QUB.</p></div>
+        <div class="form"><div class="field"><label>Self-stake amount</label><input id="stakeAmount" placeholder="100.0"></div>
+        <label class="ack-box"><input id="stakeRiskConfirm" type="checkbox"> <span>I understand self-staking can activate validator responsibilities and slashing risk.</span></label>
+        <div class="actions"><button class="btn primary" onclick="stakeNow()">Stake now</button><button class="btn" onclick="showView('validator')">Open Validator Mode</button></div></div>
+      </div>
+      <div id="stakingTabDelegate" class="hidden"><div class="form"><div class="field"><label>Validator address</label><input id="delegateValidator" placeholder="validator address"></div><div class="field"><label>Delegate amount</label><input id="delegateAmount" placeholder="25.0"></div><div class="actions"><button class="btn primary" onclick="delegateNow()">Delegate now</button></div></div></div>
+      <div style="height:18px"></div><h3>Staking info</h3><pre id="stakingInfoBox">Loading…</pre>
+    </div>
+    <div id="view-validator" class="view hidden">
+      <h3>Validator Mode</h3>
+      <div class="toggle-row">
+        <div>
+          <strong id="validatorModeTitle">Wallet Mode active</strong>
+          <p class="muted" id="validatorModeSubtitle" style="margin-top:6px">The daemon starts with block production disabled. This is safe for home wallet usage.</p>
+        </div>
+        <label class="switch"><input id="validatorModeToggle" type="checkbox" onchange="onValidatorToggleChanged()"><span class="slider"></span></label>
+      </div>
+      <div style="height:14px"></div>
+      <div class="risk-panel">
+        <strong>Validator Mode warning</strong>
+        <p class="muted" style="margin-top:6px">Validator Mode is for stable 24/7 nodes. Offline validators can be penalized. Double-signing can slash 50% of validator power and tombstone the validator.</p>
+      </div>
+      <div style="height:14px"></div>
+      <div class="intro-grid">
+        <div class="intro-box"><strong>Wallet Mode</strong><span class="muted">Home PC / safe. Send, receive, sync. No block production.</span></div>
+        <div class="intro-box"><strong>Delegator Mode</strong><span class="muted">Delegate to a validator. You may go offline.</span></div>
+        <div class="intro-box"><strong>Validator Mode</strong><span class="muted">Requires 100 QUB self-stake and uptime discipline.</span></div>
+      </div>
+      <div style="height:14px"></div>
+      <label class="ack-box"><input id="validatorRiskConfirm" type="checkbox"> <span>I understand Validator Mode requires stable uptime and carries slashing risk.</span></label>
+      <div class="actions" style="margin-top:14px">
+        <button class="btn primary" onclick="saveValidatorMode()">Save Validator Mode</button>
+        <button class="btn" onclick="startDaemonWithMode()">Restart/start daemon with this mode</button>
+        <button class="btn danger" onclick="disableValidatorMode()">Disable Validator Mode</button>
+      </div>
+      <pre id="validatorModeBox">Not loaded.</pre>
+    </div>
+    <div id="view-btc" class="view hidden"><h3>BTC Light</h3><div class="notice"><strong>BTC Light is now wired:</strong> create/restore an encrypted local BTC wallet, generate receive addresses, sync balance via Electrum fallback endpoints, and broadcast BTC transactions. Use tiny test amounts first.</div><div style="height:14px"></div><div class="notice">BTC Light keeps the wallet easy: no Bitcoin full-node download and no huge local Bitcoin chain. Phase 1 is Electrum/Esplora-ready; Phase 2 can add Neutrino/BIP157 compact-filter verification.</div><div style="height:14px"></div><div class="metrics"><div class="metric"><div class="label">BTC mode</div><div id="btcModeMetric" class="value">—</div></div><div class="metric"><div class="label">BTC balance</div><div id="btcBalanceMetric" class="value">0</div></div><div class="metric"><div class="label">Privacy</div><div id="btcPrivacyMetric" class="value">—</div></div><div class="metric"><div class="label">Endpoint</div><div id="btcServerMetric" class="value">—</div></div></div><div style="height:18px"></div><div class="split"><div class="feature-card"><h4>Easy Mode</h4><p class="muted">Prepare BTC balance, receive and transaction monitoring through a light backend.</p><div class="field"><label>BTC wallet password</label><input id="btcPassphrase" type="password" placeholder="required for BTC seed encryption"><div class="small muted">Used to encrypt/decrypt the BTC mnemonic locally. Keep it safe; losing it can make BTC funds unrecoverable.</div></div><div class="field"><label>Electrum / Esplora fallback endpoints</label><textarea id="btcEndpoint" rows="5" placeholder="ssl://electrum.blockstream.info:50002&#10;ssl://electrum.emzy.de:50002&#10;ssl://electrum.bitaroo.net:50002"></textarea><div class="small muted">One endpoint per line. The wallet tests entries in order and uses the first reachable endpoint.</div></div><div class="actions"><button class="btn primary" onclick="setBtcMode('electrum')">Use BTC Light</button><button class="btn" onclick="testBtcEndpoints()">Test fallbacks</button><button class="btn" onclick="loadBtcStatus(true)">Refresh BTC status</button></div><div style="height:14px"></div><div class="feature-card"><h4>BTC Backup & Restore</h4><p class="muted">Backup your BTC recovery phrase immediately. Restore lets you import an existing BIP39 phrase and encrypt it with your local BTC password.</p><div class="actions"><button class="btn primary" onclick="btcShowBackup()">Show backup phrase</button><button class="btn" onclick="btcVerifyBackup()">Verify backup</button><button class="btn" onclick="btcToggleRestore()">Restore wallet</button></div><div id="btcBackupPanel" class="hidden stack" style="margin-top:12px"><div class="notice">Keep these words offline. Anyone with this phrase can spend the BTC wallet.</div><pre id="btcBackupPhrase">Locked.</pre><div class="small muted">Verification: write down the phrase, then click “Verify backup”.</div></div><div id="btcRestorePanel" class="hidden stack" style="margin-top:12px"><div class="field"><label>Recovery phrase</label><textarea id="btcRestoreMnemonic" rows="4" placeholder="twelve or twenty-four words"></textarea></div><label class="small"><input id="btcRestoreOverwrite" type="checkbox"> overwrite existing local BTC wallet</label><div class="actions"><button class="btn primary" onclick="btcRestoreWallet()">Restore & encrypt</button><button class="btn" onclick="btcResetWallet()">Reset local BTC wallet</button></div><pre id="btcRestoreResult">No restore action yet.</pre></div></div></div><div class="feature-card"><h4>Neutrino / BIP157</h4><p class="muted">Downloads compact filters and checks locally which Bitcoin blocks may be relevant.</p><div class="pillrow"><span class="pill good">No BTC full chain</span><span class="pill good">Local filter checks</span><span class="pill warn">Future module</span></div><button class="btn primary" onclick="startNeutrino()">Prepare Neutrino Mode</button></div></div><div style="height:18px"></div><div class="split"><div><h3>BTC receive</h3><div class="actions"><button class="btn primary" onclick="btcNewAddress()">Generate BTC address</button><button class="btn" onclick="btcInitWallet()">Init BTC wallet</button><button class="btn" onclick="btcSync()">Sync / refresh BTC</button><button class="btn" onclick="copyBtcAddress()">Copy</button></div><div id="btcReceiveAddress" class="receive-box" style="margin-top:12px">No BTC address loaded yet.</div></div><div><h3>BTC status</h3><div class="notice">Active endpoint: <span id="btcActiveEndpoint" class="mono">—</span></div><pre id="btcStatusBox">Not loaded.</pre></div></div><div style="height:18px"></div><div class="feature-card"><h3>BTC send</h3><p class="muted">Development build: real BDK transaction builder. Use tiny test amounts first. Mnemonic encryption still needs production hardening.</p><div class="split"><div class="field"><label>Recipient BTC address</label><input id="btcSendTo" placeholder="bc1..."></div><div class="field"><label>Amount in sats</label><input id="btcSendSats" placeholder="1000"></div></div><div class="split"><div class="field"><label>Fee rate sat/vB</label><input id="btcFeeRate" placeholder="5"></div><div class="field"><label>Result</label><div id="btcSendResult" class="receive-box">No BTC transaction sent.</div></div></div><div class="actions"><button class="btn primary" onclick="btcSync()">Sync BTC</button><button class="btn" onclick="btcSend()">Send BTC</button></div></div></div>
+    <div id="view-swaps" class="view hidden"><h3>Quantum Swaps</h3><div class="notice">Quantum Swaps is the QUB cross-chain swap UX. MVP: coordinator-ready swap drafts. Target: non-custodial HTLC swaps with hashlocks, timelocks, redeem and refund paths.</div><div style="height:14px"></div><div class="feature-card"><h4>Quantum Swaps Safety Mode</h4><div class="notice"><strong>Experimental HTLC warning:</strong> QUB HTLC support is a release-candidate feature. Mainnet is locked by default in the core. Use only small amounts until audited.</div><div class="split" style="margin-top:12px"><div><div class="small">Status</div><pre id="htlcSafetyBox">Not loaded.</pre><div style="height:10px"></div><div class="actions"><button class="btn" onclick="loadQuantumGuardAudit()">Load Quantum Guard audit</button></div><pre id="qguardAuditBox">No audit loaded.</pre></div><div class="stack"><div class="field"><label>Mainnet activation confirmation</label><input id="htlcConfirmation" placeholder="I UNDERSTAND EXPERIMENTAL HTLC RISK"></div><div class="actions"><button class="btn" onclick="loadHtlcSafety()">Refresh safety</button><button class="btn primary" onclick="setHtlcSafety(true)">Enable experimental HTLC</button><button class="btn" onclick="setHtlcSafety(false)">Disable HTLC</button></div><div class="small muted">If enabled for mainnet, the daemon is started with QRX_ENABLE_MAINNET_HTLC=I_UNDERSTAND_EXPERIMENTAL. Restart the daemon after changing this setting.</div></div></div></div><div style="height:14px"></div><div class="split"><div class="feature-card"><h4>BTC on the Rocks</h4><p class="muted">Put BTC into a controlled swap flow without giving custody to the app. Your keys remain local.</p><div class="field"><label>You send</label><input id="swapBtcAmount" placeholder="0.01 BTC"></div><div class="field"><label>You receive to QUBITCOIN address</label><input id="swapQrxAddress" placeholder="QUBITCOIN address"></div><div class="field"><label>Swap mode</label><select id="swapMode"><option value="coordinated">Fast coordinated MVP</option><option value="htlc">QUB Core HTLC</option></select></div><div class="field"><label>Hash algorithm</label><select id="swapHashAlgo"><option value="sha256" selected>SHA256 — BTC compatible / required for cross-chain swaps</option><option value="sha3" disabled>SHA3 — QUB native experimental / not BTC compatible yet</option></select><div class="small muted">QUBITCOIN can use SHA3 internally, but BTC atomic swaps require SHA256 hashlocks. Quantum Swaps v1 therefore uses SHA256 for BTC ↔ QUB compatibility.</div></div><div class="field"><label>Hashlock hex</label><input id="swapHashlock" placeholder="SHA256(secret) hex, 64 chars"></div><div class="field"><label>Timelock seconds</label><input id="swapTimelock" value="86400"></div><div class="field"><label>Swap ID / Secret</label><input id="swapIdInput" placeholder="swap_id for get/redeem/refund"><input id="swapSecretInput" placeholder="secret for redeem"></div><div class="actions"><button class="btn primary" onclick="createQuantumSwap()">Create UX draft</button><button class="btn primary" onclick="createCoreSwap()">Create QUB HTLC</button><button class="btn" onclick="getCoreSwap()">Get swap</button><button class="btn" onclick="listCoreSwaps()">List swaps</button><button class="btn" onclick="redeemCoreSwap()">Redeem</button><button class="btn" onclick="refundCoreSwap()">Refund</button></div></div><div class="feature-card"><h4>Swap safety model</h4><div class="stage"><strong>1. Quote</strong><span>Rate, fees and timeout shown</span></div><div class="stage"><strong>2. Lock</strong><span>Funds are time-locked</span></div><div class="stage"><strong>3. Redeem</strong><span>Secret unlocks counterparty tx</span></div><div class="stage"><strong>4. Refund</strong><span>Timeout enables recovery</span></div></div></div><div style="height:18px"></div><div class="split"><div><h3>Current swap</h3><pre id="swapStatusBox">No swap draft yet.</pre></div><div><h3>Disclaimer</h3><div class="legal">This wallet is non-custodial software. It does not hold user funds, does not operate as an exchange and does not guarantee swap execution. Experimental cross-chain swaps may use timelocked transactions and refund paths. Always verify amounts, addresses, fees and timeouts before signing.</div></div></div></div>
+    <div id="view-privacy" class="view hidden"><h3>Privacy Center</h3>
+      <div class="notice"><strong>Exchange-ready design:</strong> QUB is transparent by default. Privacy is optional and user-controlled. For centralized exchanges, use transparent deposits/withdrawals first; shield locally afterwards.</div>
+      <div style="height:14px"></div>
+      <div class="split">
+        <div class="feature-card"><h4>Exchange-ready mode</h4><pre id="exchangeReadyBox">Not loaded.</pre><div class="actions"><button class="btn primary" onclick="loadExchangeReady()">Refresh exchange mode</button></div></div>
+        <div class="feature-card"><h4>Shielded Pool Status</h4><pre id="shieldedPoolBox">Not loaded.</pre><div class="actions"><button class="btn primary" onclick="loadShieldedPool()">Refresh pool status</button></div></div>
+      </div>
+      <div style="height:14px"></div>
+      <div class="feature-card"><h4>Privacy balances</h4><div class="metrics"><div class="metric"><div class="label">Transparent QUB</div><div id="transparentPrivacyBalance" class="value">0</div></div><div class="metric"><div class="label">Shielded QUB</div><div id="shieldedPrivacyBalance" class="value">Not active</div></div></div><p class="muted">Shielded balance remains inactive until the Core implements notes, commitments, nullifiers and proof verification.</p></div>
+      <div style="height:14px"></div>
+      <div class="feature-card"><h4>Shielded Pool Actions</h4><div class="split"><div class="field"><label>Action</label><select id="privacyAction"><option value="shield">Shield transparent QUB</option><option value="shielded-send">Send shielded QUB</option><option value="unshield">Unshield to transparent QUB</option></select></div><div class="field"><label>Amount</label><input id="privacyAmount" placeholder="1000"></div></div><div class="field"><label>Destination</label><input id="privacyDestination" placeholder="shielded or transparent address depending on action"></div><div class="actions"><button class="btn primary" onclick="previewPrivacyAction()">Preview action</button><button class="btn" onclick="generateShieldedAddressPreview()">Generate shielded address preview</button></div><pre id="privacyActionBox">No privacy action preview yet.</pre></div>
+      <div style="height:14px"></div>
+      <div class="feature-card"><h4>Safe wording</h4><div class="notice">Use: “optional privacy layer”, “enhanced privacy”, “shielded pool”. Avoid: “anonymous”, “untraceable”, “hide from authorities”, or “mixer”.</div></div>
+    </div>
+    
+
+<script>
+const invoke = window.__TAURI__?.tauri?.invoke || (async (cmd,args)=>{ console.warn("Tauri invoke unavailable",cmd,args); return {}; });
+const appState = { network:"alpha", wallet:"node1", introIndex:0, validatorEnabled:false };
+
+function $(id){ return document.getElementById(id); }
+function val(id){ return ($(id)?.value || "").trim(); }
+function setText(id, text){ const e=$(id); if(e) e.textContent = text; }
+function asJson(v){ try { return JSON.stringify(v,null,2); } catch { return String(v); } }
+function passphrase(){ return val("sessionPassphrase") || val("welcomePassphrase") || ""; }
+
+function syncPassphrase(){}
+function showBanner(msg, bad=false){ const b=$("banner"); if(!b) return; b.className = bad ? "banner notice" : "banner notice"; b.textContent = msg; }
+function showView(view){
+  document.querySelectorAll(".view").forEach(v=>v.classList.add("hidden"));
+  const target=$("view-"+view); if(target) target.classList.remove("hidden");
+  document.querySelectorAll(".menu button").forEach(b=>b.classList.toggle("active", b.dataset.view===view));
+  if(view==="validator") loadValidatorMode();
+}
+document.querySelectorAll(".menu button[data-view]").forEach(btn=>btn.addEventListener("click",()=>showView(btn.dataset.view)));
+
+function bootApp(){
+  $("welcome")?.classList.add("hidden");
+  document.querySelector(".shell")?.classList.remove("hidden");
+  loadValidatorMode();
+  refreshAll(false);
+}
+function maybeShowIntro(){
+  if(localStorage.getItem("qrx_intro_accepted_v1")==="1") return;
+  $("introOnboarding")?.classList.remove("hidden");
+  renderIntro();
+}
+function renderIntro(){
+  document.querySelectorAll(".intro-slide").forEach(s=>s.classList.toggle("active", Number(s.dataset.introSlide)===appState.introIndex));
+  const p=$("introProgress"); if(p){ p.innerHTML=""; for(let i=0;i<4;i++){ const d=document.createElement("span"); d.className="intro-dot"+(i===appState.introIndex?" active":""); p.appendChild(d); } }
+  const next=$("introNextBtn");
+  if(next){
+    const checked = !!$("introCheck"+appState.introIndex)?.checked;
+    next.textContent = appState.introIndex===3 ? "Acknowledge & start" : "Acknowledge & continue";
+    next.disabled = !checked;
+    next.classList.toggle("disabled", !checked);
+    next.title = checked ? "" : "Please tick the acknowledgement checkbox on this slide first.";
+  }
+}
+function currentIntroChecked(){ return $("introCheck"+appState.introIndex)?.checked; }
+function introNext(){
+  if(!currentIntroChecked()){ alert("Please tick the acknowledgement checkbox before continuing."); renderIntro(); return; }
+  if(appState.introIndex<3){ appState.introIndex++; renderIntro(); return; }
+  localStorage.setItem("qrx_intro_accepted_v1","1");
+  $("introOnboarding")?.classList.add("hidden");
+}
+function introPrev(){ if(appState.introIndex>0){ appState.introIndex--; renderIntro(); } }
+function introSkip(){ localStorage.setItem("qrx_intro_accepted_v1","1"); $("introOnboarding")?.classList.add("hidden"); }
+
+async function loadValidatorMode(){
+  try{
+    const s = await invoke("get_validator_mode",{network:appState.network,wallet:appState.wallet});
+    appState.validatorEnabled = !!s.validator_enabled;
+    const t=$("validatorModeToggle"); if(t) t.checked = appState.validatorEnabled;
+    setText("validatorModeTitle", appState.validatorEnabled ? "Validator Mode enabled" : "Wallet Mode active");
+    setText("validatorModeSubtitle", appState.validatorEnabled ? "The daemon may produce blocks. Use only with stable uptime." : "The daemon starts with block production disabled. This is safe for home wallet usage.");
+    setText("validatorModeBox", asJson(s));
+  }catch(e){ setText("validatorModeBox", String(e)); }
+}
+function onValidatorToggleChanged(){
+  const enabled = !!$("validatorModeToggle")?.checked;
+  appState.validatorEnabled = enabled;
+  setText("validatorModeTitle", enabled ? "Validator Mode enabled" : "Wallet Mode active");
+  setText("validatorModeSubtitle", enabled ? "The daemon may produce blocks. Confirm risks before saving." : "The daemon starts with block production disabled. This is safe for home wallet usage.");
+}
+async function saveValidatorMode(){
+  const enabled = !!$("validatorModeToggle")?.checked;
+  if(enabled && !$("validatorRiskConfirm")?.checked){ alert("Please confirm validator risks first."); $("validatorModeToggle").checked=false; return; }
+  try{
+    const s = await invoke("set_validator_mode",{network:appState.network,wallet:appState.wallet,enabled});
+    appState.validatorEnabled = !!s.validator_enabled;
+    setText("validatorModeBox", asJson(s));
+    showBanner(enabled ? "Validator Mode saved. Restart/start daemon to apply block production." : "Wallet Mode saved. Daemon will start with block production disabled.");
+  }catch(e){ showBanner(String(e), true); }
+}
+async function disableValidatorMode(){ if($("validatorModeToggle")) $("validatorModeToggle").checked=false; if($("validatorRiskConfirm")) $("validatorRiskConfirm").checked=false; await saveValidatorMode(); }
+
+async function startDaemonWithMode(){
+  try{
+    const enabled = !!$("validatorModeToggle")?.checked || appState.validatorEnabled;
+    if(enabled && !$("validatorRiskConfirm")?.checked && !$("stakeRiskConfirm")?.checked){
+      if(!confirm("Validator Mode can be slashed for downtime or double-signing. Continue?")) return;
+    }
+    const ctx = await invoke("start_daemon",{network:appState.network,wallet:appState.wallet,passphrase:passphrase(),validatorEnabled:enabled});
+    setText("daemonText","Daemon online");
+    $("daemonDot")?.classList.add("online");
+    setText("dataDirLabel", ctx.data_dir || "—");
+    showBanner(enabled ? "Daemon started in Validator Mode." : "Daemon started in Wallet Mode (--no-block-producer).");
+    refreshAll(false);
+  }catch(e){ showBanner(String(e), true); setText("daemonText","Daemon offline"); $("daemonDot")?.classList.remove("online"); }
+}
+async function startDaemon(){ return startDaemonWithMode(); }
+async function stopDaemon(){ try{ await invoke("stop_daemon",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()}); setText("daemonText","Daemon offline"); $("daemonDot")?.classList.remove("online"); }catch(e){ showBanner(String(e), true); } }
+
+function setStakingTab(tab){
+  $("stakingTabStake")?.classList.toggle("hidden", tab!=="stake");
+  $("stakingTabDelegate")?.classList.toggle("hidden", tab!=="delegate");
+  document.querySelectorAll("[data-staking-tab]").forEach(b=>b.classList.toggle("active", b.dataset.stakingTab===tab));
+}
+async function stakeNow(){
+  if(!appState.validatorEnabled){ alert("Enable Validator Mode first."); showView("validator"); return; }
+  if(!$("stakeRiskConfirm")?.checked){ alert("Please confirm validator slashing/uptime risk before self-staking."); return; }
+  try{ const r=await invoke("stake",{network:appState.network,wallet:appState.wallet,amount:val("stakeAmount"),passphrase:passphrase()}); setText("stakingInfoBox",asJson(r)); }
+  catch(e){ setText("stakingInfoBox",String(e)); }
+}
+async function delegateNow(){
+  try{ const r=await invoke("delegate",{network:appState.network,wallet:appState.wallet,validator:val("delegateValidator"),amount:val("delegateAmount"),passphrase:passphrase()}); setText("stakingInfoBox",asJson(r)); }
+  catch(e){ setText("stakingInfoBox",String(e)); }
+}
+async function refreshAll(noisy=false){
+  try{
+    const [dh, tok, st, vals] = await Promise.allSettled([
+      invoke("daemon_health",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()}),
+      invoke("get_tokenomics",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()}),
+      invoke("get_staking_info",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()}),
+      invoke("get_validators",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()})
+    ]);
+    if(dh.status==="fulfilled"){ setText("daemonHealthBox",asJson(dh.value)); if(dh.value.running){ setText("daemonText","Daemon online"); $("daemonDot")?.classList.add("online"); } }
+    if(tok.status==="fulfilled") setText("tokenomicsBox",asJson(tok.value));
+    if(st.status==="fulfilled") setText("stakingInfoBox",asJson(st.value));
+    if(vals.status==="fulfilled") setText("metricValidators", Array.isArray(vals.value)?vals.value.length:"—");
+    await loadValidatorMode();
+    if(noisy) showBanner("Refreshed.");
+  }catch(e){ if(noisy) showBanner(String(e), true); }
+}
+
+/* Existing action fallbacks */
+function welcomeCreateWallet(){ bootApp(); }
+function welcomeRestoreWallet(){ bootApp(); }
+function welcomeImportWallet(){ bootApp(); }
+function loadNewAddress(){ invoke("get_new_address",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()}).then(r=>setText("receiveAddress", r.address || asJson(r))).catch(e=>setText("receiveAddress",String(e))); }
+function copyReceiveAddress(){ navigator.clipboard?.writeText($("receiveAddress")?.textContent||""); }
+function sendTx(){ invoke("send_to_address",{network:appState.network,wallet:appState.wallet,to:val("sendTo"),amount:val("sendAmount"),memo:val("sendMemo"),passphrase:passphrase()}).then(r=>showBanner("Transaction sent: "+asJson(r))).catch(e=>showBanner(String(e),true)); }
+
+function ensureAuraWelcome(){
+  const box=$("auraMessages");
+  if(!box || box.dataset.ready==="1") return;
+  box.dataset.ready="1";
+  box.innerHTML = `<div class="aura-msg ai"><strong>AURA</strong><br>Hi, I can help with wallet mode, delegation, validator risks, recovery, staking and basic command guidance.</div>`;
+}
+function toggleAura(show){
+  const panel=$("auraPanel");
+  if(!panel) return showBanner("AURA panel not found.", true);
+  const shouldShow = typeof show==="boolean" ? show : !panel.classList.contains("show");
+  panel.classList.toggle("show", shouldShow);
+  if(shouldShow) ensureAuraWelcome();
+}
+function toggleAuraFull(){
+  const panel=$("auraPanel");
+  if(!panel) return;
+  panel.classList.toggle("full");
+  panel.classList.add("show");
+  ensureAuraWelcome();
+}
+function auraAddMessage(kind, text){
+  const box=$("auraMessages");
+  if(!box) return;
+  ensureAuraWelcome();
+  const msg=document.createElement("div");
+  msg.className="aura-msg "+(kind==="user"?"user":"ai");
+  msg.textContent=text;
+  box.appendChild(msg);
+  box.scrollTop=box.scrollHeight;
+}
+function auraAskLocal(){
+  const input=$("auraInput");
+  const q=(input?.value||"").trim();
+  if(q) auraAddMessage("user", q);
+  const t=q.toLowerCase();
+  let answer="Wallet Mode is safe for home usage. Delegator Mode lets you delegate QUB without running infrastructure. Validator Mode requires a stable 24/7 node and carries slashing risk.";
+  if(t.includes("validator")) answer="Validator Mode is advanced: minimum 100 QUB self-stake, reliable uptime required, offline penalties possible, and double-signing can slash 50% and tombstone the validator.";
+  else if(t.includes("delegate")) answer="Delegation means you assign QUB to a validator. Your wallet can be offline. You earn according to validator performance without running a block-producing node.";
+  else if(t.includes("recovery")||t.includes("seed")) answer="Keep your recovery phrase offline. Anyone with the phrase can control the wallet. Never paste it into websites or chats.";
+  else if(t.includes("stake")) answer="Self-stake is the validator’s own QUB. In this wallet, self-staking requires Validator Mode to be enabled because it can create validator responsibility.";
+  auraAddMessage("ai", answer);
+  if(input) input.value="";
+  toggleAura(true);
+}
+function auraAskCloud(){
+  toggleAura(true);
+  auraAddMessage("ai","Cloud AURA is not connected in this local build yet. Use Local Help or configure the Cloudflare backend/package flow.");
+}
+function auraQuote(){
+  toggleAura(true);
+  auraAddMessage("ai","AURA package flow placeholder: this can later quote a 30-day package payable in BTC or QUB.");
+}
+function auraClearLocal(){
+  const box=$("auraMessages");
+  if(box){ box.dataset.ready=""; box.innerHTML=""; ensureAuraWelcome(); }
+}
+
+
+/* --- BTC Light: real UI wiring --- */
+function btcPassphrase(){
+  return val("btcPassphrase") || passphrase();
+}
+function parseBtcEndpointText(){
+  return val("btcEndpoint");
+}
+async function setBtcMode(mode){
+  try{
+    const r = await invoke("btc_set_mode",{mode});
+    setText("btcStatusBox", asJson(r));
+    await loadBtcStatus(false);
+    showBanner(mode==="electrum" ? "BTC Light/Electrum mode enabled." : "BTC mode updated.");
+  }catch(e){ setText("btcStatusBox", String(e)); showBanner(String(e), true); }
+}
+async function testBtcEndpoints(){
+  try{
+    const r = await invoke("btc_test_endpoints",{endpoint:parseBtcEndpointText()});
+    setText("btcStatusBox", asJson(r));
+    showBanner("BTC fallback endpoints tested.");
+  }catch(e){ setText("btcStatusBox", String(e)); showBanner(String(e), true); }
+}
+async function loadBtcStatus(noisy=false){
+  try{
+    const endpoint = parseBtcEndpointText();
+    const r = await invoke("btc_get_status",{endpoint:endpoint || null, passphrase:btcPassphrase() || null});
+    setText("btcStatusBox", asJson(r));
+    setText("btcModeMetric", r.mode || "electrum");
+    setText("btcBalanceMetric", r.balance || "0 BTC");
+    setText("btcPrivacyMetric", r.privacy_level || r.privacy || "server-assisted");
+    setText("btcServerMetric", r.active_endpoint || r.endpoint || "—");
+    setText("btcActiveEndpoint", r.active_endpoint || r.endpoint || "—");
+    if(noisy) showBanner("BTC status refreshed.");
+  }catch(e){
+    setText("btcStatusBox", String(e));
+    if(noisy) showBanner(String(e), true);
+  }
+}
+async function btcInitWallet(){
+  if(!btcPassphrase()){
+    alert("Please enter a BTC wallet password first. It encrypts your BTC recovery phrase locally.");
+    return;
+  }
+  try{
+    const r = await invoke("btc_init_wallet",{passphrase:btcPassphrase()});
+    setText("btcStatusBox", asJson(r));
+    setText("btcReceiveAddress", r.address || "BTC wallet created.");
+    showBanner("BTC wallet initialized. Back up your BTC recovery phrase now.");
+    await loadBtcStatus(false);
+  }catch(e){ setText("btcStatusBox", String(e)); showBanner(String(e), true); }
+}
+async function btcNewAddress(){
+  if(!btcPassphrase()){
+    alert("Please enter your BTC wallet password first.");
+    return;
+  }
+  try{
+    const r = await invoke("btc_new_address",{passphrase:btcPassphrase()});
+    setText("btcReceiveAddress", r.address || asJson(r));
+    showBanner("New BTC receive address generated.");
+  }catch(e){ setText("btcReceiveAddress", String(e)); showBanner(String(e), true); }
+}
+async function btcSync(){
+  if(!btcPassphrase()){
+    alert("Please enter your BTC wallet password first.");
+    return;
+  }
+  try{
+    const r = await invoke("btc_sync",{passphrase:btcPassphrase()});
+    setText("btcStatusBox", asJson(r));
+    setText("btcBalanceMetric", r.balance || "0 BTC");
+    setText("btcActiveEndpoint", r.active_endpoint || r.endpoint || "—");
+    showBanner("BTC wallet synced.");
+  }catch(e){ setText("btcStatusBox", String(e)); showBanner(String(e), true); }
+}
+async function btcSend(){
+  if(!btcPassphrase()){
+    alert("Please enter your BTC wallet password first.");
+    return;
+  }
+  const toAddress = val("btcSendTo");
+  const sats = Number(val("btcSendSats"));
+  const fee = Number(val("btcFeeRate") || "5");
+  if(!toAddress){ alert("Recipient BTC address is required."); return; }
+  if(!Number.isFinite(sats) || sats <= 0){ alert("Amount in sats must be greater than zero."); return; }
+  if(!confirm(`Send ${sats} sats to ${toAddress}? This is a real BTC transaction if the wallet has funds.`)) return;
+  try{
+    const r = await invoke("btc_send",{toAddress,amountSats:Math.trunc(sats),feeRateSatVb:fee,passphrase:btcPassphrase()});
+    setText("btcSendResult", asJson(r));
+    showBanner("BTC transaction broadcast: "+(r.txid || ""));
+    await loadBtcStatus(false);
+  }catch(e){ setText("btcSendResult", String(e)); showBanner(String(e), true); }
+}
+async function btcShowBackup(){
+  if(!btcPassphrase()){
+    alert("Please enter your BTC wallet password first.");
+    return;
+  }
+  try{
+    const r = await invoke("btc_backup_phrase",{passphrase:btcPassphrase()});
+    $("btcBackupPanel")?.classList.remove("hidden");
+    setText("btcBackupPhrase", r.mnemonic || asJson(r));
+  }catch(e){ $("btcBackupPanel")?.classList.remove("hidden"); setText("btcBackupPhrase", String(e)); showBanner(String(e), true); }
+}
+function btcVerifyBackup(){
+  const phrase = ($("btcBackupPhrase")?.textContent || "").trim();
+  if(!phrase || phrase==="Locked.") return alert("Show the backup phrase first.");
+  const words = phrase.split(/\s+/);
+  const sample = words.slice(0,3).join(" ");
+  const entered = prompt(`Type the first 3 words to confirm backup:\n${words.map((_,i)=>i+1).slice(0,3).join(" ")} …`);
+  if((entered||"").trim() === sample) showBanner("BTC backup verification passed.");
+  else alert("Backup verification failed. Please write the phrase down carefully.");
+}
+function btcToggleRestore(){
+  $("btcRestorePanel")?.classList.toggle("hidden");
+}
+async function btcRestoreWallet(){
+  if(!btcPassphrase()){
+    alert("Please enter a BTC wallet password first.");
+    return;
+  }
+  const mnemonic = val("btcRestoreMnemonic");
+  const overwrite = !!$("btcRestoreOverwrite")?.checked;
+  if(!mnemonic){ alert("Recovery phrase is required."); return; }
+  try{
+    const r = await invoke("btc_restore_wallet",{mnemonic,passphrase:btcPassphrase(),overwrite});
+    setText("btcRestoreResult", asJson(r));
+    setText("btcReceiveAddress", r.first_address || r.address || "Restored.");
+    showBanner("BTC wallet restored.");
+    await loadBtcStatus(false);
+  }catch(e){ setText("btcRestoreResult", String(e)); showBanner(String(e), true); }
+}
+async function btcResetWallet(){
+  if(!confirm("Reset local BTC wallet data? Only do this after backing up your BTC recovery phrase.")) return;
+  try{
+    const r = await invoke("btc_reset_wallet",{});
+    setText("btcRestoreResult", asJson(r));
+    showBanner("Local BTC wallet reset.");
+    await loadBtcStatus(false);
+  }catch(e){ setText("btcRestoreResult", String(e)); showBanner(String(e), true); }
+}
+function copyBtcAddress(){
+  const a = ($("btcReceiveAddress")?.textContent || "").trim();
+  if(a && !a.startsWith("No BTC")) navigator.clipboard?.writeText(a);
+  showBanner("BTC address copied.");
+}
+async function startNeutrino(){
+  try{
+    const r = await invoke("btc_start_neutrino",{});
+    setText("btcStatusBox", asJson(r));
+    showBanner("Neutrino mode prepared. Full Neutrino backend is marked as future/local-filter mode.");
+  }catch(e){ setText("btcStatusBox", String(e)); showBanner(String(e), true); }
+}
+
+["loadQuantumGuardAudit","loadHtlcSafety","setHtlcSafety","createQuantumSwap","createCoreSwap","getCoreSwap","listCoreSwaps","redeemCoreSwap","refundCoreSwap","loadExchangeReady","loadShieldedPool","previewPrivacyAction","generateShieldedAddressPreview"].forEach(n=>{ if(!window[n]) window[n]=()=>showBanner(n+" is not active in this build."); });
+
+
+function hideQrxSplash(delay=5000){
+  window.setTimeout(()=>{$("qrxSplash")?.classList.add("hidden");}, delay);
+}
+
+document.addEventListener("DOMContentLoaded",()=>{
+  try{
+    hideQrxSplash(5000);
+    window.setTimeout(()=>{ try{ maybeShowIntro(); }catch(e){ console.error("intro failed", e); } }, 5100);
+    try{ loadValidatorMode(); }catch(e){ console.error("validator mode failed", e); }
+  }catch(e){
+    console.error("startup failed", e);
+    $("qrxSplash")?.classList.add("hidden");
+  }
+});
+window.setTimeout(()=>{$("qrxSplash")?.classList.add("hidden");}, 6500);
+</script>
+
+
+</body>
+</html>

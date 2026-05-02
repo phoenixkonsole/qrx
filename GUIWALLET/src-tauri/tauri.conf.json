@@ -1,0 +1,82 @@
+{
+  "$schema": "https://schema.tauri.app/config/1",
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "devPath": "../src",
+    "distDir": "../src",
+    "withGlobalTauri": true
+  },
+  "package": {
+    "productName": "GUI Wallet",
+    "version": "1.0.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "shell": {
+        "all": false,
+        "open": true
+      },
+      "dialog": {
+        "all": true
+      },
+      "path": {
+        "all": true
+      },
+      "fs": {
+        "all": true,
+        "scope": [
+          "$APPLOCALDATA/*",
+          "$APPLOCALDATA/**",
+          "$RESOURCE/*",
+          "$RESOURCE/**",
+          "$HOME/*",
+          "$HOME/**"
+        ]
+      }
+    },
+    "bundle": {
+      "active": true,
+      "identifier": "com.qrx.guiwallet",
+      "targets": [
+        "app",
+        "dmg",
+        "msi",
+        "nsis",
+        "appimage",
+        "deb"
+      ],
+      "externalBin": [
+        "bin/qrx",
+        "bin/qrx-cli",
+        "bin/qrxd"
+      ],
+      "category": "Finance",
+      "shortDescription": "QRX desktop GUI wallet",
+      "longDescription": "A lightweight QUB desktop GUI wallet with bundled QUBITCOIN Core sidecars.",
+      "macOS": {
+        "minimumSystemVersion": "11.0"
+      },
+      "windows": {
+        "wix": {
+          "language": "en-US"
+        }
+      }
+    },
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "title": "GUI Wallet",
+        "width": 1440,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  }
+}

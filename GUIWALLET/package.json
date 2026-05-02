@@ -1,0 +1,18 @@
+{
+  "name": "gui-wallet",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:linux": "tauri build --config src-tauri/tauri.linux.conf.json",
+    "build:macos": "tauri build --config src-tauri/tauri.macos.conf.json",
+    "build:windows": "tauri build --config src-tauri/tauri.windows.conf.json",
+    "build:debug": "tauri build --debug",
+    "check:sidecars": "bash scripts/check-sidecars.sh"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^1.6.0"
+  }
+}

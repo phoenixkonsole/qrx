@@ -1,0 +1,2 @@
+#!/bin/sh
+echo 'qrx macOS placeholder sidecar for aarch64-apple-darwin. Replace with real QUBITCOIN Core binary for production.'

@@ -1,0 +1,15 @@
+{
+  "tauri": {
+    "bundle": {
+      "targets": [
+        "msi",
+        "nsis"
+      ],
+      "windows": {
+        "wix": {
+          "language": "en-US"
+        }
+      }
+    }
+  }
+}
