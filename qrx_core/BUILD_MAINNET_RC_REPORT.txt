@@ -1,0 +1,72 @@
+cmake_return=0
+build_return=0
+build_ok=True
+
+CMAKE_STDOUT:
+-- The C compiler identification is GNU 14.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Found OpenSSL: /usr/lib/x86_64-linux-gnu/libcrypto.so (found version "3.5.5")
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Configuring done (2.1s)
+-- Generating done (0.0s)
+-- Build files have been written to: /mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/build_mainnet_rc
+
+CMAKE_STDERR:
+
+
+BUILD_STDOUT:
+[ 10%] [32mBuilding C object CMakeFiles/qrxcore.dir/src/core_frontend.c.o[0m
+[ 20%] [32mBuilding C object CMakeFiles/qrxcore.dir/src/qrx.c.o[0m
+[ 30%] [32mBuilding C object CMakeFiles/qrxcore.dir/src/chain_params.c.o[0m
+[ 40%] [32m[1mLinking C static library libqrxcore.a[0m
+[ 40%] Built target qrxcore
+[ 50%] [32mBuilding C object CMakeFiles/qrxd.dir/src/qrxd.c.o[0m
+[ 60%] [32mBuilding C object CMakeFiles/qrx.dir/src/qrx_main.c.o[0m
+[ 70%] [32m[1mLinking C executable qrx[0m
+[ 80%] [32m[1mLinking C executable qrxd[0m
+[ 80%] Built target qrx
+[ 80%] Built target qrxd
+[ 90%] [32mBuilding C object CMakeFiles/qrx-cli.dir/src/qrx_cli.c.o[0m
+[100%] [32m[1mLinking C executable qrx-cli[0m
+[100%] Built target qrx-cli
+
+BUILD_STDERR:
+pplied.bin", dest); write_file(out, buf, len); free(buf); }
+      |                                                                     ^~~~~~~~~~~~
+/mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/src/qrx.c:922:39: note: ‘snprintf’ output between 13 and 1036 bytes into a destination of size 1024
+  922 |     if ((buf=read_file(appl,&len))) { snprintf(out, sizeof(out), "%s/applied.bin", dest); write_file(out, buf, len); free(buf); }
+      |                                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/src/qrx.c:923:72: warning: ‘/journal.log’ directive output may be truncated writing 12 bytes into a region of size between 1 and 1024 [-Wformat-truncation=]
+  923 |     if ((buf=read_file(journal,&len))) { snprintf(out, sizeof(out), "%s/journal.log", dest); write_file(out, buf, len); free(buf); }
+      |                                                                        ^~~~~~~~~~~~
+/mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/src/qrx.c:923:42: note: ‘snprintf’ output between 13 and 1036 bytes into a destination of size 1024
+  923 |     if ((buf=read_file(journal,&len))) { snprintf(out, sizeof(out), "%s/journal.log", dest); write_file(out, buf, len); free(buf); }
+      |                                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/src/qrx.c: In function ‘validator_snapshot_write’:
+/mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/src/qrx.c:698:55: warning: ‘%lld’ directive output may be truncated writing between 1 and 20 bytes into a region of size between 0 and 1023 [-Wformat-truncation=]
+  698 |     char path[1024]; snprintf(path, sizeof(path), "%s/%lld-%lld.validators", dir, height, round);
+      |                                                       ^~~~
+/mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/src/qrx.c:698:22: note: ‘snprintf’ output between 16 and 1077 bytes into a destination of size 1024
+  698 |     char path[1024]; snprintf(path, sizeof(path), "%s/%lld-%lld.validators", dir, height, round);
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/src/qrx.c: In function ‘vote_block_cmd’:
+/mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/src/qrx.c:1697:63: warning: ‘-’ directive output may be truncated writing 1 byte into a region of size between 0 and 1023 [-Wformat-truncation=]
+ 1697 |     char localp[1024]; snprintf(localp, sizeof(localp), "%s/%s-%s-%s.vote", votesdir, height_s, round_s, address); write_text(localp, vote);
+      |                                                               ^
+/mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/src/qrx.c:1697:24: note: ‘snprintf’ output 9 or more bytes (assuming 1032) into a destination of size 1024
+ 1697 |     char localp[1024]; snprintf(localp, sizeof(localp), "%s/%s-%s-%s.vote", votesdir, height_s, round_s, address); write_text(localp, vote);
+      |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/src/qrx.c: In function ‘evidence_double_sign_cmd’:
+/mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/src/qrx.c:2711:52: warning: ‘%s’ directive output may be truncated writing up to 199 bytes into a region of size between 0 and 1023 [-Wformat-truncation=]
+ 2711 |     char out[1024]; snprintf(out, sizeof(out), "%s/%s-h%s-r%s.ev", eviddir, v1, ha, ra);
+      |                                                    ^~                       ~~
+/mnt/data/qrx_core_mainnet_rc_work/vendor/qrx-core/src/qrx.c:2711:21: note: ‘snprintf’ output 9 or more bytes (assuming 1231) into a destination of size 1024
+ 2711 |     char out[1024]; snprintf(out, sizeof(out), "%s/%s-h%s-r%s.ev", eviddir, v1, ha, ra);
+      |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+

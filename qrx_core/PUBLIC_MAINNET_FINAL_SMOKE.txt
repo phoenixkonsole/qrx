@@ -1,0 +1,10 @@
+transparent_default=true
+exchange_deposits=transparent-only
+stealth_addresses=enabled-from-block-1
+shielded_pool=enabled-from-block-1-proof-audit-pending
+stealth_activation_height=1
+shielded_pool_activation_height=1
+audit_status=audit-pending
+hybrid_signatures=ed25519-plus-mldsa65
+post_quantum_posture=quantum-resistant-in-mind-hybrid-signature-direction
+policy=transparent-default-optional-privacy-not-for-cex-deposits

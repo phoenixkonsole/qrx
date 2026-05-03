@@ -1,0 +1,17 @@
+Build: OK
+
+Smoke test performed:
+- wallet1 + wallet2 generated
+- chain initialized
+- wallet1 funded
+- wallet2 X25519 stealth address generated
+- wallet1 stealth-send to wallet2
+- one-time address derived
+- wallet2 stealth-scan found and claimed transfer
+- wallet2 stealth-history shows claimed transfer
+
+Status:
+Production-leaning stealth implementation with X25519 shared-secret flow.
+
+Not claimed:
+Final audited public-mainnet readiness. Audit and consensus-level hardening still required.
