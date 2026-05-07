@@ -43,9 +43,9 @@ static int mkdir_p(const char *path){
     if(!path||!*path) return -1;
     snprintf(tmp,sizeof(tmp),"%s",path);
     len=strlen(tmp);
-    if(len && (tmp[len-1]=='/' || tmp[len-1]=='\')) tmp[len-1]=0;
+    if(len && (tmp[len-1]=='/' || tmp[len-1]=='\\')) tmp[len-1]=0;
     for(char *p=tmp+1; *p; ++p){
-        if(*p=='/' || *p=='\'){
+        if(*p=='/' || *p=='\\'){
             char old=*p;
             *p=0;
             if(mkdir_qrx(tmp,0700)!=0 && errno!=EEXIST) return -1;

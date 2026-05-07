@@ -19,6 +19,9 @@
   #ifndef F_OK
     #define F_OK 0
   #endif
+  #ifndef R_OK
+    #define R_OK 4
+  #endif
   #ifndef MSG_WAITALL
     #define MSG_WAITALL 0
   #endif
@@ -30,6 +33,9 @@
   #define dup _dup
   #define dup2 _dup2
   #define open _open
+  #define strtok_r strtok_s
+  #define strcasecmp _stricmp
+  #define strdup _strdup
   typedef SSIZE_T ssize_t;
   typedef int socklen_t;
   static void qrx_net_init_once(void) {
@@ -44,8 +50,9 @@
   static int qrx_close_file(int fd) { return _close(fd); }
   static int qrx_set_socket_timeout(int fd, int seconds) {
       DWORD timeout_ms = (DWORD)(seconds * 1000);
-      return setsockopt((SOCKET)fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms)) == 0 &&
-             setsockopt((SOCKET)fd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms)) == 0 ? 0 : -1;
+      int a = setsockopt((SOCKET)fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms));
+      int b = setsockopt((SOCKET)fd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms));
+      return (a == 0 && b == 0) ? 0 : -1;
   }
 #else
   #include <arpa/inet.h>
@@ -61,6 +68,14 @@
   static void qrx_net_init_once(void) { }
   static int qrx_close_socket(int fd) { return close(fd); }
   static int qrx_close_file(int fd) { return close(fd); }
+  static int qrx_set_socket_timeout(int fd, int seconds) {
+      struct timeval tv;
+      tv.tv_sec = seconds;
+      tv.tv_usec = 0;
+      int a = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+      int b = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+      return (a == 0 && b == 0) ? 0 : -1;
+  }
 #endif
 
 #include <errno.h>
@@ -255,9 +270,9 @@ static int mkdir_p(const char *path) {
     snprintf(tmp, sizeof(tmp), "%s", path);
     size_t len = strlen(tmp);
     if (len == 0) return 0;
-    if (tmp[len-1] == '/' || tmp[len-1] == '\') tmp[len-1] = 0;
+    if (tmp[len-1] == '/' || tmp[len-1] == '\\') tmp[len-1] = 0;
     for (char *p = tmp + 1; *p; ++p) {
-        if (*p == '/' || *p == '\') {
+        if (*p == '/' || *p == '\\') {
             char old = *p;
             *p = 0;
             mkdir_qrx(tmp, 0700);
@@ -1706,13 +1721,13 @@ static int peer_top_cmd(const char *node_dir, int limit) {
 
 static int send_framed(int fd, const char *msg) {
     uint32_t n = htonl((uint32_t)strlen(msg));
-    if (send(fd, &n, 4, 0) != 4) return -1;
+    if (send(fd, (const char *)&n, 4, 0) != 4) return -1;
     size_t left = strlen(msg); const char *p = msg;
     while (left) { ssize_t w = send(fd, p, left, 0); if (w <= 0) return -1; p += w; left -= (size_t)w; }
     return 0;
 }
 static char *recv_framed(int fd) {
-    uint32_t n; ssize_t r = recv(fd, &n, 4, MSG_WAITALL); if (r != 4) return NULL; n = ntohl(n); if (n > MAX_MSG) return NULL;
+    uint32_t n; ssize_t r = recv(fd, (char *)&n, 4, MSG_WAITALL); if (r != 4) return NULL; n = ntohl(n); if (n > MAX_MSG) return NULL;
     char *buf = malloc(n+1); if (!buf) return NULL; r = recv(fd, buf, n, MSG_WAITALL); if (r != (ssize_t)n) { free(buf); return NULL; } buf[n]=0; return buf;
 }
 
