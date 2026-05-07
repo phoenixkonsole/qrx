@@ -1,8 +1,70 @@
 #define _GNU_SOURCE
-#include <arpa/inet.h>
+
+#ifdef _WIN32
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #ifndef NOMINMAX
+    #define NOMINMAX
+  #endif
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+  #include <windows.h>
+  #include <io.h>
+  #include <direct.h>
+  #include <process.h>
+  #ifndef PATH_MAX
+    #define PATH_MAX MAX_PATH
+  #endif
+  #ifndef F_OK
+    #define F_OK 0
+  #endif
+  #ifndef MSG_WAITALL
+    #define MSG_WAITALL 0
+  #endif
+  #define mkdir_qrx(path, mode) _mkdir(path)
+  #define access_qrx(path, mode) _access((path), (mode))
+  #define unlink_qrx(path) _unlink(path)
+  #define popen_qrx(cmd, mode) _popen((cmd), (mode))
+  #define pclose_qrx(fp) _pclose(fp)
+  #define dup _dup
+  #define dup2 _dup2
+  #define open _open
+  typedef SSIZE_T ssize_t;
+  typedef int socklen_t;
+  static void qrx_net_init_once(void) {
+      static int done = 0;
+      if (!done) {
+          WSADATA wsa;
+          WSAStartup(MAKEWORD(2, 2), &wsa);
+          done = 1;
+      }
+  }
+  static int qrx_close_socket(int fd) { return closesocket((SOCKET)fd); }
+  static int qrx_close_file(int fd) { return _close(fd); }
+  static int qrx_set_socket_timeout(int fd, int seconds) {
+      DWORD timeout_ms = (DWORD)(seconds * 1000);
+      return setsockopt((SOCKET)fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms)) == 0 &&
+             setsockopt((SOCKET)fd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms)) == 0 ? 0 : -1;
+  }
+#else
+  #include <arpa/inet.h>
+  #include <netinet/in.h>
+  #include <sys/socket.h>
+  #include <dirent.h>
+  #include <unistd.h>
+  #define mkdir_qrx(path, mode) mkdir((path), (mode))
+  #define access_qrx(path, mode) access((path), (mode))
+  #define unlink_qrx(path) unlink(path)
+  #define popen_qrx(cmd, mode) popen((cmd), (mode))
+  #define pclose_qrx(fp) pclose(fp)
+  static void qrx_net_init_once(void) { }
+  static int qrx_close_socket(int fd) { return close(fd); }
+  static int qrx_close_file(int fd) { return close(fd); }
+#endif
+
 #include <errno.h>
 #include <fcntl.h>
-#include <netinet/in.h>
 #include <openssl/aes.h>
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
@@ -21,12 +83,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <dirent.h>
 #include <time.h>
-#include <unistd.h>
 #include "chain_params.h"
 #include <ctype.h>
 
@@ -102,6 +161,20 @@ static volatile sig_atomic_t g_stop = 0;
 static void on_sigint(int sig) { (void)sig; g_stop = 1; }
 
 static long long count_regular_files_local(const char *dirpath) {
+#ifdef _WIN32
+    char pattern[1024];
+    snprintf(pattern, sizeof(pattern), "%s\*", dirpath);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    long long n = 0;
+    do {
+        if (fd.cFileName[0] == '.') continue;
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) n++;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return n;
+#else
     DIR *d = opendir(dirpath);
     if (!d) return 0;
     long long n = 0;
@@ -112,6 +185,7 @@ static long long count_regular_files_local(const char *dirpath) {
     }
     closedir(d);
     return n;
+#endif
 }
 
 static long long current_height_from_chain(const char *chain_dir) {
@@ -177,13 +251,20 @@ static void usage(void) {
 }
 
 static int mkdir_p(const char *path) {
-    char tmp[1024]; snprintf(tmp, sizeof(tmp), "%s", path);
-    size_t len = strlen(tmp); if (len == 0) return 0;
-    if (tmp[len-1] == '/') tmp[len-1] = 0;
+    char tmp[1024];
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    size_t len = strlen(tmp);
+    if (len == 0) return 0;
+    if (tmp[len-1] == '/' || tmp[len-1] == '\') tmp[len-1] = 0;
     for (char *p = tmp + 1; *p; ++p) {
-        if (*p == '/') { *p = 0; mkdir(tmp, 0700); *p = '/'; }
+        if (*p == '/' || *p == '\') {
+            char old = *p;
+            *p = 0;
+            mkdir_qrx(tmp, 0700);
+            *p = old;
+        }
     }
-    return mkdir(tmp, 0700) == 0 || errno == EEXIST ? 0 : -1;
+    return mkdir_qrx(tmp, 0700) == 0 || errno == EEXIST ? 0 : -1;
 }
 
 static char *read_file(const char *path, size_t *out_len) {
@@ -548,7 +629,7 @@ static int wallet_info_cmd(const char *dir) {
     snprintf(path, sizeof(path), "%s/recovery.qrxseed", dir);
     printf("address=%s\n", addr);
     printf("manifest=%s\n", manifest ? "present" : "missing");
-    printf("recovery_file=%s\n", access(path, F_OK) == 0 ? "present" : "missing");
+    printf("recovery_file=%s\n", access_qrx(path, F_OK) == 0 ? "present" : "missing");
     free(manifest); free(addr); return 0;
 }
 static int wallet_recover_cmd(const char *dir, const char *recovery_file) {
@@ -1095,7 +1176,7 @@ static int reindex_state_cmd(const char *chain_dir) {
     state_paths(chain_dir, bal, sizeof(bal), nonce, sizeof(nonce), appl, sizeof(appl), journal, sizeof(journal));
     atomic_write_file(bal, "", 0); atomic_write_file(nonce, "", 0); atomic_write_file(appl, "", 0); write_text(journal, "");
     char cmd[2048]; snprintf(cmd, sizeof(cmd), "ls -1 '%s/blocks'/*.block 2>/dev/null | sort", chain_dir);
-    FILE *fp = popen(cmd, "r"); if (!fp) die("reindex list failed");
+    FILE *fp = popen_qrx(cmd, "r"); if (!fp) die("reindex list failed");
     char blkpath[1024];
     while (fgets(blkpath, sizeof(blkpath), fp)) {
         blkpath[strcspn(blkpath, "\r\n")] = 0; if (!*blkpath) continue;
@@ -1107,7 +1188,7 @@ static int reindex_state_cmd(const char *chain_dir) {
         }
         free(blk);
     }
-    pclose(fp);
+    pclose_qrx(fp);
     journal_append(chain_dir, "reindex_state ts=%lld", (long long)time(NULL));
     puts("OK"); return 0;
 }
@@ -1180,10 +1261,10 @@ static int peer_status_cmd(const char *node_dir) {
 }
 static int mempool_status_cmd(const char *node_dir) {
     char cmd[2048]; snprintf(cmd, sizeof(cmd), "find '%s/mempool' -maxdepth 1 -type f 2>/dev/null | wc -l", node_dir);
-    FILE *fp = popen(cmd, "r"); if (!fp) die("mempool status failed");
-    long long count = 0; fscanf(fp, "%lld", &count); pclose(fp);
+    FILE *fp = popen_qrx(cmd, "r"); if (!fp) die("mempool status failed");
+    long long count = 0; fscanf(fp, "%lld", &count); pclose_qrx(fp);
     snprintf(cmd, sizeof(cmd), "du -sb '%s/mempool' 2>/dev/null | awk '{print $1}'", node_dir);
-    fp = popen(cmd, "r"); long long bytes = 0; if (fp) { fscanf(fp, "%lld", &bytes); pclose(fp); }
+    fp = popen_qrx(cmd, "r"); long long bytes = 0; if (fp) { fscanf(fp, "%lld", &bytes); pclose_qrx(fp); }
     printf("txs=%lld\nbytes=%lld\n", count, bytes);
     return 0;
 }
@@ -1191,13 +1272,13 @@ static int mempool_prune_cmd(const char *node_dir, int max_txs) {
     if (max_txs < 1) max_txs = MEMPOOL_MAX_TXS;
     char cmd[4096];
     snprintf(cmd, sizeof(cmd), "bash -lc \"cd '%s/mempool' 2>/dev/null || exit 0; ls -1tr *.qrxtx 2>/dev/null | head -n -%d\"", node_dir, max_txs);
-    FILE *fp = popen(cmd, "r"); if (!fp) die("mempool prune failed");
+    FILE *fp = popen_qrx(cmd, "r"); if (!fp) die("mempool prune failed");
     char fname[512]; int removed = 0;
     while (fgets(fname, sizeof(fname), fp)) {
         fname[strcspn(fname, "\r\n")] = 0; if (!*fname) continue;
-        char path[1024]; snprintf(path, sizeof(path), "%s/mempool/%s", node_dir, fname); if (unlink(path) == 0) removed++;
+        char path[1024]; snprintf(path, sizeof(path), "%s/mempool/%s", node_dir, fname); if (unlink_qrx(path) == 0) removed++;
     }
-    pclose(fp); printf("removed=%d\n", removed); return 0;
+    pclose_qrx(fp); printf("removed=%d\n", removed); return 0;
 }
 static int decay_bans_cmd(const char *node_dir, long long points) {
     char pth[1024]; snprintf(pth, sizeof(pth), "%s/peer_state.db", node_dir); char *db = read_file(pth, NULL); if (!db) return 0;
@@ -1541,12 +1622,12 @@ static long long peer_last_seen(const char *node_dir, const char *peer) {
 
 static int request_peers_from_peer(const char *node_dir, const char *host, int port, int *added) {
     int fd = connect_to(host, port); if (fd < 0) return -1;
-    char *hello = NULL; build_hello_message(node_dir, &hello); if (send_framed(fd, hello) != 0) { free(hello); close(fd); return -1; } free(hello);
-    char *resp = recv_framed(fd); if (!resp || !strstr(resp, "status=OK")) { free(resp); close(fd); return -1; } free(resp);
-    if (send_framed(fd, "type=GETPEERS\n") != 0) { close(fd); return -1; }
-    resp = recv_framed(fd); if (!resp) { close(fd); return -1; }
+    char *hello = NULL; build_hello_message(node_dir, &hello); if (send_framed(fd, hello) != 0) { free(hello); qrx_close_socket(fd); return -1; } free(hello);
+    char *resp = recv_framed(fd); if (!resp || !strstr(resp, "status=OK")) { free(resp); qrx_close_socket(fd); return -1; } free(resp);
+    if (send_framed(fd, "type=GETPEERS\n") != 0) { qrx_close_socket(fd); return -1; }
+    resp = recv_framed(fd); if (!resp) { qrx_close_socket(fd); return -1; }
     char *status = cfg_get(resp, "status");
-    if (!status || strcmp(status, "OK")) { if (status) free(status); free(resp); close(fd); return -1; }
+    if (!status || strcmp(status, "OK")) { if (status) free(status); free(resp); qrx_close_socket(fd); return -1; }
     char *peers_b64 = cfg_get(resp, "peers_b64");
     if (added) *added = 0;
     if (peers_b64) {
@@ -1566,7 +1647,7 @@ static int request_peers_from_peer(const char *node_dir, const char *host, int p
         }
         free(peers_b64);
     }
-    free(status); free(resp); close(fd); return 0;
+    free(status); free(resp); qrx_close_socket(fd); return 0;
 }
 
 static int bootstrap_cmd(const char *node_dir) {
@@ -1679,7 +1760,7 @@ static int verify_hello_msg(const char *node_conf_text, const char *msg) {
 
 static int node_store_mempool_tx(const char *node_dir, const char *tx_text) {
     char cmd[2048]; snprintf(cmd, sizeof(cmd), "find '%s/mempool' -maxdepth 1 -type f 2>/dev/null | wc -l", node_dir);
-    FILE *fp = popen(cmd, "r"); long long count = 0; if (fp) { fscanf(fp, "%lld", &count); pclose(fp); }
+    FILE *fp = popen_qrx(cmd, "r"); long long count = 0; if (fp) { fscanf(fp, "%lld", &count); pclose_qrx(fp); }
     if (count >= MEMPOOL_MAX_TXS) mempool_prune_cmd(node_dir, MEMPOOL_MAX_TXS - 16);
     char hash[129]; hash_primary_hex((unsigned char*)tx_text, strlen(tx_text), hash);
     char p[1024]; snprintf(p, sizeof(p), "%s/mempool/%s.qrxtx", node_dir, hash); return write_text(p, tx_text);
@@ -1729,34 +1810,32 @@ static void node_handle_client(int fd, const char *node_dir) {
 }
 
 static int connect_to(const char *host, int port) {
+    qrx_net_init_once();
     int fd = socket(AF_INET, SOCK_STREAM, 0); if (fd < 0) return -1;
-    struct timeval tv; tv.tv_sec = SOCKET_IO_TIMEOUT_SECS; tv.tv_usec = 0;
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    qrx_set_socket_timeout(fd, SOCKET_IO_TIMEOUT_SECS);
     struct sockaddr_in addr; memset(&addr, 0, sizeof(addr)); addr.sin_family = AF_INET; addr.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) { close(fd); return -1; }
-    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) { close(fd); return -1; }
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) { qrx_close_socket(fd); return -1; }
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) { qrx_close_socket(fd); return -1; }
     return fd;
 }
 
 static int sendtx_to_peer(const char *node_dir, const char *tx_text, const char *host, int port) {
     int fd = connect_to(host, port); if (fd < 0) return -1;
-    char *hello = NULL; build_hello_message(node_dir, &hello); if (send_framed(fd, hello) != 0) { free(hello); close(fd); return -1; } free(hello);
-    char *resp = recv_framed(fd); if (!resp || !strstr(resp, "status=OK")) { free(resp); close(fd); return -1; } free(resp);
+    char *hello = NULL; build_hello_message(node_dir, &hello); if (send_framed(fd, hello) != 0) { free(hello); qrx_close_socket(fd); return -1; } free(hello);
+    char *resp = recv_framed(fd); if (!resp || !strstr(resp, "status=OK")) { free(resp); qrx_close_socket(fd); return -1; } free(resp);
     char *tx_b64 = base64_encode((unsigned char*)tx_text, strlen(tx_text)); size_t cap = strlen(tx_b64)+32; char *msg = malloc(cap); snprintf(msg, cap, "type=TX\ntx_b64=%s\n", tx_b64);
-    int rc = send_framed(fd, msg); free(msg); free(tx_b64); if (rc != 0) { close(fd); return -1; }
-    resp = recv_framed(fd); int ok = resp && strstr(resp, "status=OK") ? 0 : -1; free(resp); close(fd); return ok;
+    int rc = send_framed(fd, msg); free(msg); free(tx_b64); if (rc != 0) { qrx_close_socket(fd); return -1; }
+    resp = recv_framed(fd); int ok = resp && strstr(resp, "status=OK") ? 0 : -1; free(resp); qrx_close_socket(fd); return ok;
 }
 
 static int node_run_cmd(const char *node_dir) {
+    qrx_net_init_once();
     signal(SIGINT, on_sigint);
     char p[1024]; snprintf(p, sizeof(p), "%s/node.conf", node_dir); char *cfg = read_file(p, NULL); if (!cfg) die("missing node.conf");
     char *host = cfg_get(cfg, "host"), *port_s = cfg_get(cfg, "port"); int port = atoi(port_s);
     int s = socket(AF_INET, SOCK_STREAM, 0); if (s < 0) die("socket failed");
-    int one=1; setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    struct timeval tv; tv.tv_sec = SOCKET_IO_TIMEOUT_SECS; tv.tv_usec = 0;
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    int one=1; setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
+    qrx_set_socket_timeout(s, SOCKET_IO_TIMEOUT_SECS);
     struct sockaddr_in addr; memset(&addr, 0, sizeof(addr)); addr.sin_family = AF_INET; addr.sin_port = htons((uint16_t)port); inet_pton(AF_INET, host, &addr.sin_addr);
     if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) != 0) die("bind failed: %s", strerror(errno));
     if (listen(s, 16) != 0) die("listen failed");
@@ -1764,9 +1843,9 @@ static int node_run_cmd(const char *node_dir) {
     while (!g_stop) {
         struct sockaddr_in cli; socklen_t clilen = sizeof(cli); int fd = accept(s, (struct sockaddr*)&cli, &clilen);
         if (fd < 0) { if (errno == EINTR) break; continue; }
-        node_handle_client(fd, node_dir); close(fd);
+        node_handle_client(fd, node_dir); qrx_close_socket(fd);
     }
-    close(s); free(cfg); free(host); free(port_s); return 0;
+    qrx_close_socket(s); free(cfg); free(host); free(port_s); return 0;
 }
 
 static int sendtx_cmd(const char *node_dir, const char *tx_file) {
@@ -1898,7 +1977,7 @@ static int vote_block_cmd(const char *node_dir, const char *block_file) {
 static int tally_votes_cmd(const char *chain_dir, const char *block_file) {
     char *block_hash=NULL, *validator=NULL, *height_s=NULL, *round_s=NULL; if (block_consensus_values(block_file, &block_hash, &validator, &height_s, &round_s) != 0) die("block values failed");
     char dir[1024]; snprintf(dir, sizeof(dir), "%s/consensus/votes", chain_dir);
-    char cmd[2048]; snprintf(cmd, sizeof(cmd), "find '%s' -maxdepth 1 -type f -name '*.vote' 2>/dev/null", dir); FILE *fp = popen(cmd, "r"); if (!fp) die("vote list failed");
+    char cmd[2048]; snprintf(cmd, sizeof(cmd), "find '%s' -maxdepth 1 -type f -name '*.vote' 2>/dev/null", dir); FILE *fp = popen_qrx(cmd, "r"); if (!fp) die("vote list failed");
     long long yes_power=0, total_power=snapshot_total_power(chain_dir, atoll(height_s), atoll(round_s)); char seen[512][385]; int seen_n=0; char fname[1024];
     while (fgets(fname, sizeof(fname), fp)) {
         fname[strcspn(fname, "\r\n")]=0; if (!*fname) continue; char vaddr[385]=""; long long pwr=0;
@@ -1907,7 +1986,7 @@ static int tally_votes_cmd(const char *chain_dir, const char *block_file) {
             if (!dup && seen_n < 512) { snprintf(seen[seen_n++], sizeof(seen[0]), "%s", vaddr); yes_power += pwr; }
         }
     }
-    pclose(fp);
+    pclose_qrx(fp);
     printf("block_hash=%s\nheight=%s\nround=%s\nyes_power=%lld\ntotal_power=%lld\nquorum=%s\n", block_hash, height_s, round_s, yes_power, total_power, (yes_power*3 > total_power*2) ? "1" : "0");
     free(block_hash); free(validator); free(height_s); free(round_s); return 0;
 }
@@ -1915,7 +1994,7 @@ static int tally_votes_cmd(const char *chain_dir, const char *block_file) {
 static int finalize_block_cmd(const char *chain_dir, const char *block_file) {
     char *block_hash=NULL, *validator=NULL, *height_s=NULL, *round_s=NULL; if (block_consensus_values(block_file, &block_hash, &validator, &height_s, &round_s) != 0) die("block values failed");
     char dir[1024]; snprintf(dir, sizeof(dir), "%s/consensus/votes", chain_dir);
-    char cmd[2048]; snprintf(cmd, sizeof(cmd), "find '%s' -maxdepth 1 -type f -name '*.vote' 2>/dev/null", dir); FILE *fp = popen(cmd, "r"); if (!fp) die("vote list failed");
+    char cmd[2048]; snprintf(cmd, sizeof(cmd), "find '%s' -maxdepth 1 -type f -name '*.vote' 2>/dev/null", dir); FILE *fp = popen_qrx(cmd, "r"); if (!fp) die("vote list failed");
     long long yes_power=0, total_power=snapshot_total_power(chain_dir, atoll(height_s), atoll(round_s)); char seen[512][385]; int seen_n=0; char fname[1024];
     while (fgets(fname, sizeof(fname), fp)) {
         fname[strcspn(fname, "\r\n")]=0; if (!*fname) continue; char vaddr[385]=""; long long pwr=0;
@@ -1924,7 +2003,7 @@ static int finalize_block_cmd(const char *chain_dir, const char *block_file) {
             if (!dup && seen_n < 512) { snprintf(seen[seen_n++], sizeof(seen[0]), "%s", vaddr); yes_power += pwr; }
         }
     }
-    pclose(fp);
+    pclose_qrx(fp);
     if (!(yes_power*3 > total_power*2)) die("quorum not reached");
     char out[1024]; snprintf(out, sizeof(out), "%s/consensus/finalized/%s.final", chain_dir, height_s);
     char final[4096]; snprintf(final, sizeof(final), "height=%s\nround=%s\nblock_hash=%s\nblock_file=%s\nyes_power=%lld\ntotal_power=%lld\nfinalized_at=%lld\n", height_s, round_s, block_hash, block_file, yes_power, total_power, (long long)time(NULL));
@@ -1938,11 +2017,11 @@ static int finalize_block_cmd(const char *chain_dir, const char *block_file) {
 
 static int send_file_to_peer(const char *node_dir, const char *file_text, const char *kind, const char *host, int port) {
     int fd = connect_to(host, port); if (fd < 0) return -1;
-    char *hello = NULL; build_hello_message(node_dir, &hello); if (send_framed(fd, hello) != 0) { free(hello); close(fd); return -1; } free(hello);
-    char *resp = recv_framed(fd); if (!resp || !strstr(resp, "status=OK")) { free(resp); close(fd); return -1; } free(resp);
+    char *hello = NULL; build_hello_message(node_dir, &hello); if (send_framed(fd, hello) != 0) { free(hello); qrx_close_socket(fd); return -1; } free(hello);
+    char *resp = recv_framed(fd); if (!resp || !strstr(resp, "status=OK")) { free(resp); qrx_close_socket(fd); return -1; } free(resp);
     char *b64 = base64_encode((unsigned char*)file_text, strlen(file_text)); size_t cap = strlen(b64)+64; char *msg = malloc(cap); snprintf(msg, cap, "type=%s\ndata_b64=%s\n", kind, b64);
-    int rc = send_framed(fd, msg); free(msg); free(b64); if (rc != 0) { close(fd); return -1; }
-    resp = recv_framed(fd); int ok = resp && strstr(resp, "status=OK") ? 0 : -1; free(resp); close(fd); return ok;
+    int rc = send_framed(fd, msg); free(msg); free(b64); if (rc != 0) { qrx_close_socket(fd); return -1; }
+    resp = recv_framed(fd); int ok = resp && strstr(resp, "status=OK") ? 0 : -1; free(resp); qrx_close_socket(fd); return ok;
 }
 
 static int publish_generic_cmd(const char *node_dir, const char *file, const char *kind) {
@@ -1966,7 +2045,7 @@ static int node_process_inbox_cmd(const char *node_dir) {
     char *chain_dir = cfg_get(cfg, "chain_dir");
     int processed_blocks=0, processed_votes=0, finalized=0;
     char cmd[2048], fname[1024];
-    snprintf(cmd, sizeof(cmd), "find '%s/inbox/blocks' -maxdepth 1 -type f -name '*.block' 2>/dev/null", node_dir); FILE *fp = popen(cmd, "r");
+    snprintf(cmd, sizeof(cmd), "find '%s/inbox/blocks' -maxdepth 1 -type f -name '*.block' 2>/dev/null", node_dir); FILE *fp = popen_qrx(cmd, "r");
     if (fp) {
         while (fgets(fname, sizeof(fname), fp)) {
             fname[strcspn(fname, "\r\n")]=0; if (!*fname) continue;
@@ -1974,11 +2053,11 @@ static int node_process_inbox_cmd(const char *node_dir) {
                 vote_block_cmd(node_dir, fname);
                 processed_blocks++;
             }
-            unlink(fname);
+            unlink_qrx(fname);
         }
-        pclose(fp);
+        pclose_qrx(fp);
     }
-    snprintf(cmd, sizeof(cmd), "find '%s/inbox/votes' -maxdepth 1 -type f -name '*.vote' 2>/dev/null", node_dir); fp = popen(cmd, "r");
+    snprintf(cmd, sizeof(cmd), "find '%s/inbox/votes' -maxdepth 1 -type f -name '*.vote' 2>/dev/null", node_dir); fp = popen_qrx(cmd, "r");
     if (fp) {
         while (fgets(fname, sizeof(fname), fp)) {
             fname[strcspn(fname, "\r\n")]=0; if (!*fname) continue;
@@ -1987,26 +2066,26 @@ static int node_process_inbox_cmd(const char *node_dir) {
                 if (height_s && validator) { snprintf(dest, sizeof(dest), "%s/consensus/votes/%s-%s.vote", chain_dir, height_s, validator); write_text(dest, txt); processed_votes++; }
                 if (height_s) free(height_s); if (validator) free(validator); free(txt);
             }
-            unlink(fname);
+            unlink_qrx(fname);
         }
-        pclose(fp);
+        pclose_qrx(fp);
     }
-    snprintf(cmd, sizeof(cmd), "find '%s/blocks' -maxdepth 1 -type f -name '*.block' 2>/dev/null | sort", chain_dir); fp = popen(cmd, "r");
+    snprintf(cmd, sizeof(cmd), "find '%s/blocks' -maxdepth 1 -type f -name '*.block' 2>/dev/null | sort", chain_dir); fp = popen_qrx(cmd, "r");
     if (fp) {
         while (fgets(fname, sizeof(fname), fp)) {
             fname[strcspn(fname, "\r\n")]=0; if (!*fname) continue;
             char *block_hash=NULL, *validator=NULL, *height_s=NULL, *round_s=NULL; if (block_consensus_values(fname, &block_hash, &validator, &height_s, &round_s)==0) {
                 char final_path[1024]; snprintf(final_path, sizeof(final_path), "%s/consensus/finalized/%s.final", chain_dir, height_s);
-                if (access(final_path, F_OK) != 0) {
+                if (access_qrx(final_path, F_OK) != 0) {
                     char outbuf[8192]; FILE *cap = NULL;
                     int oldfd = dup(1); int tmpfd = open("/tmp/qrx_null", O_WRONLY|O_CREAT|O_TRUNC, 0600); if (tmpfd >= 0) dup2(tmpfd,1);
-                    int rc = finalize_block_cmd(chain_dir, fname); if (oldfd >= 0) { dup2(oldfd,1); close(oldfd); } if (tmpfd >= 0) close(tmpfd); unlink("/tmp/qrx_null");
+                    int rc = finalize_block_cmd(chain_dir, fname); if (oldfd >= 0) { dup2(oldfd,1); qrx_close_file(oldfd); } if (tmpfd >= 0) qrx_close_file(tmpfd); unlink_qrx("/tmp/qrx_null");
                     if (rc == 0) finalized++;
                 }
                 free(block_hash); free(validator); free(height_s); free(round_s);
             }
         }
-        pclose(fp);
+        pclose_qrx(fp);
     }
     printf("processed_blocks=%d\nprocessed_votes=%d\nfinalized=%d\n", processed_blocks, processed_votes, finalized);
     free(cfg); free(chain_dir); return 0;
@@ -2020,13 +2099,13 @@ static int propose_block_cmd(const char *node_dir, int max_txs) {
     if (!validator_has_min_self_stake_at(chain_dir, address, current_height_from_chain(chain_dir) + 1)) die("validator self stake below minimum");
     if (validator_power <= 0) die("validator not active in current validator set");
     char height_cmd[2048]; snprintf(height_cmd, sizeof(height_cmd), "find '%s/blocks' -maxdepth 1 -type f -name '*.block' 2>/dev/null | wc -l", chain_dir);
-    FILE *hfp = popen(height_cmd, "r"); long long cur_blocks = 0; if (hfp) { fscanf(hfp, "%lld", &cur_blocks); pclose(hfp); }
+    FILE *hfp = popen_qrx(height_cmd, "r"); long long cur_blocks = 0; if (hfp) { fscanf(hfp, "%lld", &cur_blocks); pclose_qrx(hfp); }
     long long height = cur_blocks + 1;
     long long round = 0;
     long long chain_max_txs = qrx_chain_get_ll_at_height_or_default(chain_dir, height, "max_txs_per_block", 100);
     if (max_txs <= 0 || max_txs > chain_max_txs) max_txs = (int)chain_max_txs;
     if (validator_snapshot_write(chain_dir, height, round) != 0) die("validator snapshot write failed");
-    char cmd[2048]; snprintf(cmd, sizeof(cmd), "ls -1 '%s/mempool' 2>/dev/null", node_dir); FILE *fp = popen(cmd, "r"); if (!fp) die("mempool list failed");
+    char cmd[2048]; snprintf(cmd, sizeof(cmd), "ls -1 '%s/mempool' 2>/dev/null", node_dir); FILE *fp = popen_qrx(cmd, "r"); if (!fp) die("mempool list failed");
     char blockbuf[MAX_MSG]; size_t off = 0;
     off += snprintf(blockbuf+off, sizeof(blockbuf)-off,
         "network_id=%s\ngenesis_hash=%s\nprotocol_version=%s\nconsensus_version=%s\nchain_id=%s\nheight=%lld\nround=%lld\nvalidator=%s\nvalidator_power=%lld\ntimestamp=%lld\n",
@@ -2037,7 +2116,7 @@ static int propose_block_cmd(const char *node_dir, int max_txs) {
         char txp[1024]; snprintf(txp, sizeof(txp), "%s/mempool/%s", node_dir, fname); char *tx = read_file(txp, NULL); if (!tx) continue;
         char h[129]; hash_primary_hex((unsigned char*)tx, strlen(tx), h); off += snprintf(blockbuf+off, sizeof(blockbuf)-off, "tx%d=%s\n", count+1, h); count++; free(tx);
     }
-    pclose(fp);
+    pclose_qrx(fp);
     off += snprintf(blockbuf+off, sizeof(blockbuf)-off, "tx_count=%d\n", count);
     char block_hash[129]; hash_primary_hex((unsigned char*)blockbuf, off, block_hash);
     char block_hash_legacy[65]; hash_legacy_hex((unsigned char*)blockbuf, off, block_hash_legacy);
@@ -3179,7 +3258,7 @@ static int send_cmd(const char *wallet_dir, const char *chain_dir, const char *t
     int rc = 0;
     if (node_dir && *node_dir) rc = sendtx_cmd(node_dir, tmp);
     else rc = applytx_cmd(chain_dir, tmp);
-    unlink(tmp);
+    unlink_qrx(tmp);
     return rc;
 }
 
@@ -3636,10 +3715,10 @@ static int evidence_double_sign_cmd(const char *chain_dir, const char *vote_a, c
 
 static int hybrid_status_cmd(const char *wallet_dir) {
     char p[1024];
-    snprintf(p, sizeof(p), "%s/ed25519_priv.pem", wallet_dir); int has_ed_priv = access(p, R_OK) == 0;
-    snprintf(p, sizeof(p), "%s/ed25519_pub.pem", wallet_dir); int has_ed_pub = access(p, R_OK) == 0;
-    snprintf(p, sizeof(p), "%s/mldsa65_priv.pem", wallet_dir); int has_ml_priv = access(p, R_OK) == 0;
-    snprintf(p, sizeof(p), "%s/mldsa65_pub.pem", wallet_dir); int has_ml_pub = access(p, R_OK) == 0;
+    snprintf(p, sizeof(p), "%s/ed25519_priv.pem", wallet_dir); int has_ed_priv = access_qrx(p, R_OK) == 0;
+    snprintf(p, sizeof(p), "%s/ed25519_pub.pem", wallet_dir); int has_ed_pub = access_qrx(p, R_OK) == 0;
+    snprintf(p, sizeof(p), "%s/mldsa65_priv.pem", wallet_dir); int has_ml_priv = access_qrx(p, R_OK) == 0;
+    snprintf(p, sizeof(p), "%s/mldsa65_pub.pem", wallet_dir); int has_ml_pub = access_qrx(p, R_OK) == 0;
     char *addr = wallet_address(wallet_dir);
     printf("wallet_dir=%s\n", wallet_dir);
     printf("address=%s\n", addr ? addr : "");
