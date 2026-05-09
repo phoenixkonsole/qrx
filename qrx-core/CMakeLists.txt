@@ -29,6 +29,15 @@ target_link_libraries(qrxcore PUBLIC
     OpenSSL::Crypto
 )
 
+if(WIN32)
+    target_link_libraries(qrxcore PUBLIC ws2_32)
+    target_compile_definitions(qrxcore PUBLIC
+        _CRT_SECURE_NO_WARNINGS
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+endif()
+
 # -----------------------------
 # Compiler warnings
 # -----------------------------
@@ -85,6 +94,12 @@ target_link_libraries(qrxd PRIVATE qrxcore Threads::Threads)
 
 add_executable(qrx-cli src/qrx_cli.c)
 target_link_libraries(qrx-cli PRIVATE qrxcore)
+
+if(WIN32)
+    target_link_libraries(qrx PRIVATE ws2_32)
+    target_link_libraries(qrxd PRIVATE ws2_32)
+    target_link_libraries(qrx-cli PRIVATE ws2_32)
+endif()
 
 # -----------------------------
 # Linker options
