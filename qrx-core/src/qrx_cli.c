@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "core_frontend.h"
+
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -7,28 +8,91 @@
 #include <string.h>
 
 #ifdef _WIN32
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #ifndef NOMINMAX
+    #define NOMINMAX
+  #endif
   #include <winsock2.h>
   #include <ws2tcpip.h>
   #include <windows.h>
+  #ifndef PATH_MAX
+    #define PATH_MAX MAX_PATH
+  #endif
+  typedef SSIZE_T ssize_t;
+  static void qrx_wsa_init_once(void) {
+      static int done = 0;
+      if (!done) {
+          WSADATA wsa;
+          WSAStartup(MAKEWORD(2, 2), &wsa);
+          done = 1;
+      }
+  }
 #else
   #include <sys/socket.h>
+  #include <sys/un.h>
+  #include <unistd.h>
+  static void qrx_wsa_init_once(void) { }
 #endif
 
-#include <sys/un.h>
-#include <unistd.h>
+#ifndef PATH_MAX
+  #define PATH_MAX 4096
+#endif
+
+static int qrx_control_port_for_network(const char *network) {
+    if (!network || !*network) return 37661;
+    if (!strcmp(network, "mainnet")) return 37660;
+    if (!strcmp(network, "alpha")) return 37661;
+    if (!strcmp(network, "testnet")) return 37662;
+    if (!strcmp(network, "regtest")) return 37663;
+    return 37661;
+}
 
 static void usage(void){
     puts("qrx-cli --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] <command>\nCommands: getinfo|getnewaddress|getbalance [addr]|getblockcount|getpeerinfo|getstakinginfo|getwalletinfo|getreward [height]|getparams [height]|gethalving [height]|getforks|getactivefork [height]|sendtoaddress <addr> <amount> [memo]|sendrawtransaction <txfile>|history [addr] [limit]|addnode <host:port>|listpeers|peerstatus|banscores|stake <amount>|delegate <validator> <amount>|validator-set|tokenomics|createswap <recipient> <amount> <hashlock_hex> <timelock_seconds> [memo]|redeemswap <swap_id> <secret>|refundswap <swap_id>|getswap <swap_id>|listswaps|shielded-address|shield <amount> [shielded_address]|shielded-balance|shielded-send <shielded_address> <amount>|unshield <transparent_address> <amount>|shielded-history|stealth-address|stealth-send <stealth_address> <amount> [memo]|stealth-scan|stealth-history|privacy-feature-status|stop");
 }
 
 static int socket_call(const char *sock_path, const char *cmd, char *out, size_t out_sz){
+#ifdef _WIN32
+    (void)sock_path;
+    qrx_wsa_init_once();
+
+    int port = 37661;
+    const char *p = strstr(sock_path ? sock_path : "", "tcp://127.0.0.1:");
+    if (p) port = atoi(p + strlen("tcp://127.0.0.1:"));
+
+    SOCKET fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if(fd == INVALID_SOCKET) return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((unsigned short)port);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+    if(connect(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0){ closesocket(fd); return -1; }
+    if(send(fd, cmd, (int)strlen(cmd), 0) < 0){ closesocket(fd); return -1; }
+
+    int n;
+    size_t off = 0;
+    while((n = recv(fd, out + off, (int)(out_sz > off ? out_sz - off - 1 : 0), 0)) > 0){
+        off += (size_t)n;
+        if(off + 1 >= out_sz) break;
+    }
+    out[off]=0;
+    closesocket(fd);
+    return 0;
+#else
     int fd = socket(AF_UNIX, SOCK_STREAM, 0); if(fd < 0) return -1;
     struct sockaddr_un sun; memset(&sun,0,sizeof(sun)); sun.sun_family = AF_UNIX; snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", sock_path);
     if(connect(fd, (struct sockaddr*)&sun, sizeof(sun)) != 0){ close(fd); return -1; }
     if(write(fd, cmd, strlen(cmd)) < 0){ close(fd); return -1; }
     ssize_t n; size_t off=0; while((n = read(fd, out+off, out_sz>off?out_sz-off-1:0)) > 0){ off += (size_t)n; if(off + 1 >= out_sz) break; }
     out[off]=0; close(fd); return 0;
+#endif
 }
+
 
 int main(int argc,char **argv){
     const char *network="alpha", *datadir=NULL, *wallet="default"; int cmdi=-1;
@@ -36,7 +100,11 @@ int main(int argc,char **argv){
     for(int i=1;i<argc;++i){ if(!strcmp(argv[i],"--network")&&i+1<argc){network=argv[++i]; continue;} if(!strcmp(argv[i],"--datadir")&&i+1<argc){datadir=argv[++i]; continue;} if(!strcmp(argv[i],"--wallet")&&i+1<argc){wallet=argv[++i]; continue;} cmdi=i; break; }
     if(cmdi<0){ usage(); return 1; }
     if(qrx_ensure_node(network,datadir,wallet,NULL,NULL,0,base,sizeof(base),cdir,sizeof(cdir),wdir,sizeof(wdir),ndir,sizeof(ndir))!=0){ fprintf(stderr,"qrx-cli: failed to initialize\n"); return 1; }
+    #ifdef _WIN32
+    snprintf(sock, sizeof(sock), "tcp://127.0.0.1:%d", qrx_control_port_for_network(network));
+#else
     snprintf(sock, sizeof(sock), "%s/control.sock", base);
+#endif
     char cmd[4096] = {0};
     if(!strcmp(argv[cmdi],"getinfo")) snprintf(cmd,sizeof(cmd),"getinfo\n");
     else if(!strcmp(argv[cmdi],"getnewaddress")||!strcmp(argv[cmdi],"address")||!strcmp(argv[cmdi],"receive")) snprintf(cmd,sizeof(cmd),"getnewaddress\n");

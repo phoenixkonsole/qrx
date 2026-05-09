@@ -1,24 +1,71 @@
 #define _GNU_SOURCE
 #include "core_frontend.h"
 
-#ifdef _WIN32
-  #include <windows.h>
-#else
-  #include <dirent.h>
-#endif
-
 #include <errno.h>
 #include <limits.h>
-#include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/wait.h>
-#include <unistd.h>
+#include <sys/stat.h>
+
+#ifdef _WIN32
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #ifndef NOMINMAX
+    #define NOMINMAX
+  #endif
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+  #include <windows.h>
+  #include <process.h>
+  #include <io.h>
+  #include <direct.h>
+  #ifndef PATH_MAX
+    #define PATH_MAX MAX_PATH
+  #endif
+  #define strtok_r strtok_s
+  #define strdup _strdup
+  #define sleep(sec) Sleep((DWORD)((sec) * 1000))
+  typedef SSIZE_T ssize_t;
+  typedef DWORD pid_t;
+  typedef HANDLE qrx_thread_t;
+  typedef SOCKET qrx_socket_t;
+  static HANDLE g_node_handle = NULL;
+  static void qrx_wsa_init_once(void) {
+      static int done = 0;
+      if (!done) {
+          WSADATA wsa;
+          WSAStartup(MAKEWORD(2, 2), &wsa);
+          done = 1;
+      }
+  }
+#else
+  #include <dirent.h>
+  #include <pthread.h>
+  #include <sys/socket.h>
+  #include <sys/un.h>
+  #include <sys/wait.h>
+  #include <unistd.h>
+  typedef pthread_t qrx_thread_t;
+  typedef int qrx_socket_t;
+  static void qrx_wsa_init_once(void) { }
+#endif
+
+#ifndef PATH_MAX
+  #define PATH_MAX 4096
+#endif
+
+static int qrx_control_port_for_network(const char *network) {
+    if (!network || !*network) return 37661;
+    if (!strcmp(network, "mainnet")) return 37660;
+    if (!strcmp(network, "alpha")) return 37661;
+    if (!strcmp(network, "testnet")) return 37662;
+    if (!strcmp(network, "regtest")) return 37663;
+    return 37661;
+}
 
 static volatile sig_atomic_t g_running = 1;
 static pid_t g_node_pid = -1;
@@ -36,15 +83,32 @@ typedef struct {
     const char *chain_dir;
 } MaintCtx;
 
+static void stop_node_process(void) {
+#ifdef _WIN32
+    if (g_node_handle) {
+        TerminateProcess(g_node_handle, 0);
+        WaitForSingleObject(g_node_handle, 5000);
+        CloseHandle(g_node_handle);
+        g_node_handle = NULL;
+    }
+#else
+    if(g_node_pid > 0) kill(g_node_pid, SIGTERM);
+#endif
+}
+
 static void usage(void){
     puts("qrxd --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--listen host:port] [--addnode host:port]... [--blocktime SECONDS] [--commission-bps BPS] [--no-block-producer]\nChain parameters are profile-coded. --blocktime/--commission-bps are accepted only on profiles that allow runtime overrides, currently regtest.");
 }
 
-static void on_sig(int sig){ (void)sig; g_running = 0; if(g_node_pid > 0) kill(g_node_pid, SIGTERM); }
+static void on_sig(int sig){ (void)sig; g_running = 0; stop_node_process(); }
 
 static void dirname_of(const char *path, char *out, size_t out_sz){
     snprintf(out, out_sz, "%s", path && *path ? path : ".");
     char *slash = strrchr(out, '/');
+#ifdef _WIN32
+    char *bslash = strrchr(out, '\\');
+    if(!slash || (bslash && bslash > slash)) slash = bslash;
+#endif
     if(slash) { *slash = 0; if(!*out) snprintf(out, out_sz, "/"); }
     else snprintf(out, out_sz, ".");
 }
@@ -52,13 +116,67 @@ static void dirname_of(const char *path, char *out, size_t out_sz){
 static void build_backend_path(const char *argv0){
     char dir[PATH_MAX];
     dirname_of(argv0, dir, sizeof(dir));
+    #ifdef _WIN32
+    snprintf(g_backend_path, sizeof(g_backend_path), "%s\\qrx.exe", dir);
+#else
     snprintf(g_backend_path, sizeof(g_backend_path), "%s/qrx", dir);
+#endif
 }
 
 static void trim_nl(char *s){ if(!s) return; s[strcspn(s, "\r\n")] = 0; }
 static void trim_ws_right(char *s){ if(!s) return; size_t n=strlen(s); while(n && (s[n-1]=='\n'||s[n-1]=='\r'||s[n-1]==' '||s[n-1]=='\t')) s[--n]=0; }
 
 static int run_capture(char *const argv[], char *out, size_t out_sz){
+#ifdef _WIN32
+    if(out_sz) out[0] = 0;
+
+    SECURITY_ATTRIBUTES sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+
+    HANDLE rd = NULL, wr = NULL;
+    if(!CreatePipe(&rd, &wr, &sa, 0)) return -1;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+
+    char cmdline[8192];
+    snprintf(cmdline, sizeof(cmdline), "\"%s\"", g_backend_path);
+    for(int i=1; argv[i]; ++i){
+        strncat(cmdline, " \"", sizeof(cmdline)-strlen(cmdline)-1);
+        strncat(cmdline, argv[i], sizeof(cmdline)-strlen(cmdline)-1);
+        strncat(cmdline, "\"", sizeof(cmdline)-strlen(cmdline)-1);
+    }
+
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    memset(&pi, 0, sizeof(pi));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = wr;
+    si.hStdError = wr;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+    BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    CloseHandle(wr);
+    if(!ok){ CloseHandle(rd); return -1; }
+
+    size_t off = 0;
+    DWORD got = 0;
+    while(ReadFile(rd, out + off, (DWORD)(out_sz > off ? out_sz - off - 1 : 0), &got, NULL) && got > 0){
+        off += got;
+        if(off + 1 >= out_sz) break;
+    }
+    if(out_sz) out[off] = 0;
+    CloseHandle(rd);
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return code == 0 ? 0 : -1;
+#else
     int pfd[2];
     if(pipe(pfd) != 0) return -1;
     pid_t pid = fork();
@@ -81,7 +199,9 @@ static int run_capture(char *const argv[], char *out, size_t out_sz){
     close(pfd[0]);
     int st = 0; waitpid(pid, &st, 0);
     return (WIFEXITED(st) && WEXITSTATUS(st) == 0) ? 0 : -1;
+#endif
 }
+
 
 static int copy_file_local(const char *src, const char *dst){
     FILE *in=fopen(src,"rb"); if(!in) return -1;
@@ -106,6 +226,24 @@ static int cfg_get_line_local(const char *path, const char *key, char *out, size
 }
 
 static int spawn_node_process(void){
+#ifdef _WIN32
+    char cmdline[4096];
+    snprintf(cmdline, sizeof(cmdline), "\"%s\" \"node-run\" \"%s\"", g_backend_path, g_ndir);
+
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    memset(&pi, 0, sizeof(pi));
+    si.cb = sizeof(si);
+
+    if(!CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
+        return -1;
+
+    CloseHandle(pi.hThread);
+    g_node_handle = pi.hProcess;
+    g_node_pid = pi.dwProcessId;
+    return 0;
+#else
     pid_t pid = fork();
     if(pid < 0) return -1;
     if(pid == 0){
@@ -116,9 +254,15 @@ static int spawn_node_process(void){
     }
     g_node_pid = pid;
     return 0;
+#endif
 }
 
+
+#ifdef _WIN32
+static DWORD WINAPI maint_loop(LPVOID arg){
+#else
 static void *maint_loop(void *arg){
+#endif
     MaintCtx *ctx = (MaintCtx*)arg;
     (void)ctx;
     while(g_running){
@@ -136,7 +280,11 @@ static void *maint_loop(void *arg){
     return NULL;
 }
 
+#ifdef _WIN32
+static DWORD WINAPI producer_loop(LPVOID arg){
+#else
 static void *producer_loop(void *arg){
+#endif
     MaintCtx *ctx = (MaintCtx*)arg;
     (void)ctx;
     while(g_running){
@@ -171,10 +319,22 @@ static void *producer_loop(void *arg){
     return NULL;
 }
 
-static int write_all(int fd, const char *buf, size_t len){
+static int write_all(qrx_socket_t fd, const char *buf, size_t len){
+#ifdef _WIN32
+    SOCKET s = fd;
+    while(len){
+        int n = send(s, buf, (int)len, 0);
+        if(n <= 0) return -1;
+        buf += n;
+        len -= (size_t)n;
+    }
+    return 0;
+#else
     while(len){ ssize_t n = write(fd, buf, len); if(n < 0){ if(errno == EINTR) continue; return -1; } buf += n; len -= (size_t)n; }
     return 0;
+#endif
 }
+
 
 static void json_escape_append(char *dst, size_t dst_sz, const char *src){
     size_t off = strlen(dst);
@@ -268,11 +428,27 @@ static void json_lines_array(char *dst, size_t dst_sz, const char *text){
 }
 
 static long long count_regular_files(const char *dirpath){
+#ifdef _WIN32
+    char search[MAX_PATH];
+    snprintf(search, sizeof(search), "%s\*", dirpath);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(search, &fd);
+    if(h == INVALID_HANDLE_VALUE) return 0;
+    long long n = 0;
+    do {
+        if(fd.cFileName[0] == '.') continue;
+        if(!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) n++;
+    } while(FindNextFileA(h, &fd));
+    FindClose(h);
+    return n;
+#else
     DIR *d = opendir(dirpath); if(!d) return 0;
     long long n = 0; struct dirent *de;
     while((de = readdir(d))){ if(de->d_name[0]=='.') continue; if(de->d_type == DT_REG || de->d_type == DT_UNKNOWN) n++; }
     closedir(d); return n;
+#endif
 }
+
 
 static int parse_hostport_local(const char *hp, char *host, size_t host_sz, char *port, size_t port_sz){
     return qrx_parse_hostport(hp, host, host_sz, port, port_sz);
@@ -284,7 +460,7 @@ static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
     while(tok && argc < 31){ args[argc++] = tok; tok = strtok_r(NULL, " ", &save); }
     if(argc == 0){ json_error(resp, resp_sz, "unknown", "empty command"); return 0; }
     if(!strcmp(args[0], "ping")){ snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"ping\",\"result\":{\"status\":\"PONG\"}}\n"); return 0; }
-    if(!strcmp(args[0], "stop")){ snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"stop\",\"result\":{\"stopping\":true}}\n"); g_running = 0; if(g_node_pid > 0) kill(g_node_pid, SIGTERM); return 1; }
+    if(!strcmp(args[0], "stop")){ snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"stop\",\"result\":{\"stopping\":true}}\n"); g_running = 0; stop_node_process(); return 1; }
     if(!strcmp(args[0], "getinfo")){
         char net[256]={0}, datadir[PATH_MAX*2]={0}, chain[PATH_MAX*2]={0}, wallet[PATH_MAX*2]={0}, node[PATH_MAX*2]={0}, sock[PATH_MAX*2]={0};
         json_string(net,sizeof(net),g_network); json_string(datadir,sizeof(datadir),g_base); json_string(chain,sizeof(chain),g_cdir); json_string(wallet,sizeof(wallet),g_wdir); json_string(node,sizeof(node),g_ndir); json_string(sock,sizeof(sock),g_sock);
@@ -554,30 +730,83 @@ int main(int argc, char **argv){
     if(!g_commission_override_set) g_commission_bps = profile->default_validator_commission_bps;
     build_backend_path(argv[0]);
     if(qrx_ensure_node(network,datadir,wallet,listen_arg,addnodes,addnode_count,g_base,sizeof(g_base),g_cdir,sizeof(g_cdir),g_wdir,sizeof(g_wdir),g_ndir,sizeof(g_ndir))!=0){ fprintf(stderr,"qrxd: failed to initialize\n"); return 1; }
+    #ifdef _WIN32
+    snprintf(g_sock, sizeof(g_sock), "tcp://127.0.0.1:%d", qrx_control_port_for_network(network));
+#else
     snprintf(g_sock, sizeof(g_sock), "%s/control.sock", g_base);
+#endif
+    #ifndef _WIN32
     unlink(g_sock);
+#endif
     signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
     if(spawn_node_process()!=0){ fprintf(stderr, "qrxd: failed to start node-run\n"); return 1; }
-    MaintCtx ctx = { g_ndir, g_cdir }; pthread_t th; pthread_create(&th, NULL, maint_loop, &ctx);
-    pthread_t prod_th; int prod_started = 0; if(g_block_producer_enabled){ pthread_create(&prod_th, NULL, producer_loop, &ctx); prod_started = 1; }
+    MaintCtx ctx = { g_ndir, g_cdir };
+#ifdef _WIN32
+    qrx_thread_t th = CreateThread(NULL, 0, maint_loop, &ctx, 0, NULL);
+    qrx_thread_t prod_th = NULL;
+    int prod_started = 0;
+    if(g_block_producer_enabled){ prod_th = CreateThread(NULL, 0, producer_loop, &ctx, 0, NULL); prod_started = 1; }
+#else
+    qrx_thread_t th; pthread_create(&th, NULL, maint_loop, &ctx);
+    qrx_thread_t prod_th; int prod_started = 0; if(g_block_producer_enabled){ pthread_create(&prod_th, NULL, producer_loop, &ctx); prod_started = 1; }
+#endif
 
+
+#ifdef _WIN32
+    qrx_wsa_init_once();
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if(s == INVALID_SOCKET){ fprintf(stderr, "socket failed\n"); return 1; }
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((unsigned short)qrx_control_port_for_network(network));
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if(bind(s, (struct sockaddr*)&addr, sizeof(addr)) != 0){ fprintf(stderr, "bind control tcp failed\n"); return 1; }
+    if(listen(s, 8) != 0){ fprintf(stderr, "listen control tcp failed\n"); return 1; }
+#else
     int s = socket(AF_UNIX, SOCK_STREAM, 0); if(s < 0){ perror("socket"); return 1; }
     struct sockaddr_un sun; memset(&sun,0,sizeof(sun)); sun.sun_family = AF_UNIX; snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", g_sock);
     if(bind(s, (struct sockaddr*)&sun, sizeof(sun)) != 0){ perror("bind control"); return 1; }
     if(listen(s, 8) != 0){ perror("listen control"); return 1; }
+#endif
     printf("qrxd running network=%s datadir=%s node=%s control=%s node_pid=%ld blocktime=%d commission_bps=%lld overrides=%s\n", g_network, g_base, g_ndir, g_sock, (long)g_node_pid, g_blocktime_seconds, g_commission_bps, profile->allow_runtime_overrides ? "allowed" : "disabled");
     while(g_running){
+#ifdef _WIN32
+        SOCKET fd = accept(s, NULL, NULL);
+        if(fd == INVALID_SOCKET) break;
+        char cmd[4096];
+        int n = recv(fd, cmd, sizeof(cmd)-1, 0);
+        if(n < 0) n = 0;
+        cmd[n] = 0;
+        char resp[65536];
+        int stop_after = handle_command(cmd, resp, sizeof(resp));
+        write_all(fd, resp, strlen(resp));
+        closesocket(fd);
+#else
         int fd = accept(s, NULL, NULL);
         if(fd < 0){ if(errno == EINTR) continue; break; }
         char cmd[4096]; ssize_t n = read(fd, cmd, sizeof(cmd)-1); if(n < 0) n = 0; cmd[n] = 0;
         char resp[65536]; int stop_after = handle_command(cmd, resp, sizeof(resp));
         write_all(fd, resp, strlen(resp));
         close(fd);
+#endif
         if(stop_after) break;
     }
+#ifdef _WIN32
+    closesocket(s);
+#else
     close(s); unlink(g_sock);
-    if(g_node_pid > 0){ kill(g_node_pid, SIGTERM); waitpid(g_node_pid, NULL, 0); }
+#endif
+    stop_node_process();
+#ifdef _WIN32
+    g_running = 0;
+    if(th){ WaitForSingleObject(th, 2000); CloseHandle(th); }
+    if(prod_started && prod_th){ WaitForSingleObject(prod_th, 2000); CloseHandle(prod_th); }
+#else
     pthread_cancel(th); pthread_join(th, NULL);
     if(prod_started){ pthread_cancel(prod_th); pthread_join(prod_th, NULL); }
+#endif
     return 0;
 }
