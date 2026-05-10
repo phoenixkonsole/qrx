@@ -3844,3 +3844,19 @@ int qrx_backend_main(int argc, char **argv) {
     if (!strcmp(argv[1], "slash") && (argc == 6 || argc == 7)) return slash_cmd(argv[2], argv[3], atoll(argv[4]), argv[5], argc == 7 ? atoll(argv[6]) : 10);
     usage(); return 1;
 }
+
+
+/* ===== QRX Dynamic Development Fund ===== */
+
+int qrx_dev_fund_percent(long long block_height){
+    const long long YEAR_BLOCKS = 3153600LL;
+
+    if(block_height < YEAR_BLOCKS) return 20;
+    if(block_height < YEAR_BLOCKS * 2LL) return 10;
+    if(block_height < YEAR_BLOCKS * 3LL) return 5;
+    return 2;
+}
+
+const char *qrx_dev_fund_address(void){
+    return "QRXFOUNDATIONPLACEHOLDER111111111111111111111";
+}
