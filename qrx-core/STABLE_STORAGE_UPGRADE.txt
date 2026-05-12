@@ -1,0 +1,31 @@
+QRX Stable Storage Upgrade (v0.0.4)
+
+This patch introduces the first stable storage metadata layer
+without breaking existing chains.
+
+Added:
+- storage_format=qrx-stable-v1
+- snapshot_format=qrx-snapshot-v1
+- state_schema_version=1
+- supports_snapshot_import_export=1
+
+New directories:
+- chain/snapshots/
+- chain/wal/
+- chain/indexes/
+
+Purpose:
+- Future migration support
+- Snapshot import/export compatibility
+- Stable node format preparation
+- Non-breaking upgrade path for existing 0.0.3/0.0.4 chains
+
+This does NOT alter:
+- block hashes
+- consensus
+- staking
+- transaction format
+- wallet addresses
+
+Therefore:
+Existing chains remain compatible.

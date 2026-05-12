@@ -1,0 +1,62 @@
+QRXDB SHA3-512 + Chain Pipeline Integration Patch
+=================================================
+
+This patch upgrades QRXDB from the earlier production-hardening layer to the QRX chain-native storage layer.
+
+Changes included:
+
+1. SHA3-512 Merkle state
+------------------------
+- QRXDB schema bumped to v4.
+- QRXDB data/WAL magic bumped from QDB3/QWA3 to QDB4/QWA4.
+- Merkle root size changed from 32 bytes to 64 bytes.
+- QRXDB leaf/node hashing now uses OpenSSL EVP_sha3_512().
+- Domain-separated QRXDB Merkle tags:
+  - QRXDB_LEAF_SHA3_512_V1
+  - QRXDB_NODE_SHA3_512_V1
+
+2. Direct chain-pipeline indexes
+--------------------------------
+New QRXDB chain APIs:
+- qrxdb_chain_put_block()
+- qrxdb_chain_index_tx()
+- qrxdb_chain_get_block_by_hash()
+- qrxdb_chain_get_block_hash_by_height()
+- qrxdb_chain_get_tx_location()
+- qrxdb_chain_set_balance()/get_balance()
+- qrxdb_chain_set_nonce()/get_nonce()
+- qrxdb_chain_mark_applied()/is_applied()
+- qrxdb_chain_put_utxo()/spend_utxo()/get_utxo()
+
+Key namespaces:
+- block:hash:<sha3-512-block-hash>
+- block:height:<zero-padded-height>
+- block:meta:<sha3-512-block-hash>
+- tx:loc:<sha3-512-tx-hash>
+- tx:payload:<sha3-512-tx-hash>
+- tx:applied:<sha3-512-tx-hash>
+- acct:balance:<address>
+- acct:nonce:<address>
+- utxo:<txhash>:<vout>
+
+3. qrx.c chain integration
+--------------------------
+- qrx.c now includes qrxdb.h.
+- chain-init creates the QRXDB directory/database.
+- propose-block indexes the produced block and included tx hashes.
+- finalize-block indexes finalized block metadata and tx locations.
+- applytx mirrors balances, nonces, applied tx hash, and direct tx payload into QRXDB.
+- balance first attempts QRXDB and falls back to legacy state/balances.bin.
+- reindex-state rebuilds legacy state and refreshes QRXDB block/tx/account indexes.
+- faucet mirrors updated balance into QRXDB.
+
+4. Compatibility note
+---------------------
+The legacy binary state files still exist for compatibility with the current CLI code paths.
+QRXDB is now wired as the production index/state mirror and can become the canonical source in a later migration pass.
+
+Build status:
+- qrxcore builds
+- qrx builds
+- qrxd builds
+- qrx-cli builds
