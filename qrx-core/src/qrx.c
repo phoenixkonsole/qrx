@@ -102,6 +102,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include "chain_params.h"
+#include "qrxdb.h"
 #include <ctype.h>
 
 #define QRX_PROTOCOL_VERSION 6
@@ -1186,6 +1187,59 @@ static int snapshot_state_cmd(const char *chain_dir, const char *label_in) {
     if ((buf=read_file(journal,&len))) { snprintf(out, sizeof(out), "%s/journal.log", dest); write_file(out, buf, len); free(buf); }
     printf("%s\n", dest); return 0;
 }
+
+static int qrxdb_chain_ingest_block_file(const char *chain_dir, const char *block_file) {
+    if (!chain_dir || !block_file) return -1;
+    char *blk = read_file(block_file, NULL);
+    if (!blk) return -1;
+    char *height_s = cfg_get(blk, "height");
+    char *block_hash = cfg_get(blk, "block_hash");
+    char *tx_count_s = cfg_get(blk, "tx_count");
+    if (!height_s || !block_hash) { free(blk); if(height_s) free(height_s); if(block_hash) free(block_hash); if(tx_count_s) free(tx_count_s); return -1; }
+    QrxDB db;
+    if (qrxdb_init(&db, chain_dir) != 0) { free(blk); free(height_s); free(block_hash); if(tx_count_s) free(tx_count_s); return -1; }
+    uint64_t height = (uint64_t)strtoull(height_s, NULL, 10);
+    int rc = qrxdb_chain_put_block(&db, height, block_hash, blk);
+    int tx_count = tx_count_s ? atoi(tx_count_s) : 0;
+    for (int i = 1; rc == 0 && i <= tx_count; i++) {
+        char key[32]; snprintf(key, sizeof(key), "tx%d", i);
+        char *txhash = cfg_get(blk, key);
+        if (txhash) {
+            rc = qrxdb_chain_index_tx(&db, txhash, block_hash, height, (uint32_t)i, NULL);
+            if (rc == 0) rc = qrxdb_chain_mark_applied(&db, txhash, height);
+            free(txhash);
+        }
+    }
+    if (rc == 0) rc = qrxdb_verify(&db);
+    qrxdb_close(&db);
+    free(blk); free(height_s); free(block_hash); if(tx_count_s) free(tx_count_s);
+    return rc;
+}
+
+static void qrxdb_chain_sync_account_pair(const char *chain_dir, const char *address, long long balance, long long nonce) {
+    if (!chain_dir || !address) return;
+    QrxDB db;
+    if (qrxdb_init(&db, chain_dir) != 0) return;
+    qrxdb_chain_set_balance(&db, address, balance);
+    qrxdb_chain_set_nonce(&db, address, nonce);
+    qrxdb_close(&db);
+}
+
+static void qrxdb_chain_sync_state_files(const char *chain_dir) {
+    if (!chain_dir) return;
+    char bal[1024], nonce[1024], appl[1024];
+    state_paths(chain_dir, bal, sizeof(bal), nonce, sizeof(nonce), appl, sizeof(appl), NULL, 0);
+    StateKVRecord *b=NULL,*n=NULL; StateAppliedRecord *a=NULL; size_t bc=0,nc=0,ac=0;
+    QrxDB db;
+    if (qrxdb_init(&db, chain_dir) != 0) return;
+    if (kv_load(bal, &b, &bc) == 0) for (size_t i=0;i<bc;i++) qrxdb_chain_set_balance(&db, b[i].key, b[i].value);
+    if (kv_load(nonce, &n, &nc) == 0) for (size_t i=0;i<nc;i++) qrxdb_chain_set_nonce(&db, n[i].key, n[i].value);
+    if (applied_load(appl, &a, &ac) == 0) for (size_t i=0;i<ac;i++) qrxdb_chain_mark_applied(&db, a[i].key, 0);
+    qrxdb_verify(&db);
+    qrxdb_close(&db);
+    free(b); free(n); free(a);
+}
+
 static int reindex_state_cmd(const char *chain_dir) {
     char bal[1024], nonce[1024], appl[1024], journal[1024];
     state_paths(chain_dir, bal, sizeof(bal), nonce, sizeof(nonce), appl, sizeof(appl), journal, sizeof(journal));
@@ -1202,8 +1256,10 @@ static int reindex_state_cmd(const char *chain_dir) {
             applied_add_bin(appl, txhash); free(txhash);
         }
         free(blk);
+        qrxdb_chain_ingest_block_file(chain_dir, blkpath);
     }
     pclose_qrx(fp);
+    qrxdb_chain_sync_state_files(chain_dir);
     journal_append(chain_dir, "reindex_state ts=%lld", (long long)time(NULL));
     puts("OK"); return 0;
 }
@@ -1322,9 +1378,14 @@ static int faucet_cmd(const char *chain_dir, const char *addr, long long amt) {
     long long faucet_minted = supply_get(chain_dir, "faucet_minted");
     if (faucet_minted + amt > faucet_cap) die("faucet cap exceeded");
     if (mint_with_cap(chain_dir, "faucet_minted", amt) != 0) die("max supply exceeded");
-    char bal[1024]; state_paths(chain_dir, bal, sizeof(bal), NULL, 0, NULL, 0, NULL, 0); long long cur = kv_get_ll_bin(bal, addr); int rc = kv_set_ll_bin(bal, addr, cur + amt); if (rc == 0) journal_append(chain_dir, "faucet addr=%s amount=%lld", addr, amt); return rc;
+    char bal[1024]; state_paths(chain_dir, bal, sizeof(bal), NULL, 0, NULL, 0, NULL, 0); long long cur = kv_get_ll_bin(bal, addr); int rc = kv_set_ll_bin(bal, addr, cur + amt); if (rc == 0) { qrxdb_chain_sync_account_pair(chain_dir, addr, cur + amt, 0); journal_append(chain_dir, "faucet addr=%s amount=%lld", addr, amt); } return rc;
 }
 static int balance_cmd(const char *chain_dir, const char *addr) {
+    QrxDB db; long long v = 0;
+    if (qrxdb_init(&db, chain_dir) == 0) {
+        if (qrxdb_chain_get_balance(&db, addr, &v) == 0) { qrxdb_close(&db); printf("%lld\n", v); return 0; }
+        qrxdb_close(&db);
+    }
     char bal[1024]; state_paths(chain_dir, bal, sizeof(bal), NULL, 0, NULL, 0, NULL, 0); printf("%lld\n", kv_get_ll_bin(bal, addr)); return 0;
 }
 
@@ -1498,6 +1559,14 @@ static int applytx_cmd(const char *chain_dir, const char *tx_file) {
     if (fee_pool_add(chain_dir, fee) != 0) die("fee pool update failed");
     if (kv_set_ll_bin(noncepath, from, atoll(nonce)) != 0) die("state write failed");
     if (applied_add_bin(applpath, body_hash) != 0) die("state write failed");
+    { QrxDB db; if (qrxdb_init(&db, chain_dir) == 0) {
+        qrxdb_chain_set_balance(&db, from, frombal - amt - fee);
+        qrxdb_chain_set_balance(&db, to, tobal + amt);
+        qrxdb_chain_set_nonce(&db, from, atoll(nonce));
+        qrxdb_chain_mark_applied(&db, body_hash, (uint64_t)current_height_from_chain(chain_dir));
+        qrxdb_chain_index_tx(&db, body_hash, "mempool-or-direct-apply", (uint64_t)current_height_from_chain(chain_dir), 0, tx);
+        qrxdb_close(&db);
+    }}
     journal_append(chain_dir, "applytx from=%s to=%s amount=%lld fee=%lld nonce=%s body_hash=%s", from, to, amt, fee, nonce, body_hash);
     puts("APPLIED");
     free(tx); free(from); free(to); free(amount); if (fee_s) free(fee_s); free(nonce); if (body_hash_sha3) free(body_hash_sha3); if (body_hash_legacy) free(body_hash_legacy); return 0;
@@ -2025,6 +2094,7 @@ static int finalize_block_cmd(const char *chain_dir, const char *block_file) {
     if (write_text(out, final) != 0) die("write finalization failed");
     record_validator_seen(chain_dir, validator, atoll(height_s));
     int offline_penalties = apply_offline_penalties(chain_dir, atoll(height_s));
+    qrxdb_chain_ingest_block_file(chain_dir, block_file);
     journal_append(chain_dir, "finalize height=%s round=%s block_hash=%s yes_power=%lld total_power=%lld offline_penalties=%d", height_s, round_s, block_hash, yes_power, total_power, offline_penalties);
     printf("%s\noffline_penalties=%d\n", out, offline_penalties);
     free(block_hash); free(validator); free(height_s); free(round_s); return 0;
@@ -2145,6 +2215,7 @@ static int propose_block_cmd(const char *node_dir, int max_txs) {
     size_t final_cap = off + strlen(block_hash) + strlen(pub_hex) + strlen(sig_hex) + 256; char *final = malloc(final_cap);
     snprintf(final, final_cap, "%shash_algo=sha3-512\nblock_hash=%s\nblock_hash_sha256_legacy=%s\nblock_sig_ed25519_hex=%s\nblock_pub_ed25519_hex=%s\n", blockbuf, block_hash, block_hash_legacy, sig_hex, pub_hex);
     char blk[1024]; snprintf(blk, sizeof(blk), "%s/blocks/%lld-%s.block", chain_dir, (long long)time(NULL), block_hash); write_text(blk, final);
+    qrxdb_chain_ingest_block_file(chain_dir, blk);
     printf("%s\n", blk);
     free(final); free(pub_hex); free(sig); free(sig_hex); EVP_PKEY_free(priv); EVP_PKEY_free(pub); OPENSSL_cleanse(pass, sizeof(pass));
     free(cfg); free(chain_dir); free(address); free(wallet_dir); free(network_id); free(genesis_hash); free(protocol_version); free(consensus_version); free(chain_id); return 0;

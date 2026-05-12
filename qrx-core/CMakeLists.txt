@@ -19,6 +19,7 @@ add_library(qrxcore STATIC
     src/qrx.c
     src/core_frontend.c
     src/chain_params.c
+    src/qrxdb.c
 )
 
 target_include_directories(qrxcore PUBLIC
@@ -95,16 +96,32 @@ target_link_libraries(qrxd PRIVATE qrxcore Threads::Threads)
 add_executable(qrx-cli src/qrx_cli.c)
 target_link_libraries(qrx-cli PRIVATE qrxcore)
 
+add_executable(qrxdb_verify src/qrxdb_verify_tool.c)
+target_link_libraries(qrxdb_verify PRIVATE qrxcore)
+
+add_executable(qrxdb_salvage src/qrxdb_salvage_tool.c)
+target_link_libraries(qrxdb_salvage PRIVATE qrxcore)
+
+add_executable(qrxdb_compact src/qrxdb_compact_tool.c)
+target_link_libraries(qrxdb_compact PRIVATE qrxcore)
+
+add_executable(qrxdb_snapshot src/qrxdb_snapshot_tool.c)
+target_link_libraries(qrxdb_snapshot PRIVATE qrxcore)
+
 if(WIN32)
     target_link_libraries(qrx PRIVATE ws2_32)
     target_link_libraries(qrxd PRIVATE ws2_32)
     target_link_libraries(qrx-cli PRIVATE ws2_32)
+    target_link_libraries(qrxdb_verify PRIVATE ws2_32)
+    target_link_libraries(qrxdb_salvage PRIVATE ws2_32)
+    target_link_libraries(qrxdb_compact PRIVATE ws2_32)
+    target_link_libraries(qrxdb_snapshot PRIVATE ws2_32)
 endif()
 
 # -----------------------------
 # Linker options
 # -----------------------------
-foreach(tgt qrx qrxd qrx-cli)
+foreach(tgt qrx qrxd qrx-cli qrxdb_verify qrxdb_salvage qrxdb_compact qrxdb_snapshot)
 
     if(QRX_ENABLE_HARDENING)
 

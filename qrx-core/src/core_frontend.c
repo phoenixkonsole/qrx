@@ -80,6 +80,17 @@ static int ensure_chain(const char *base, const QrxProfile *p, char *out_chain, 
     snprintf(cdir,sizeof(cdir),"%s/chain",base);
     if(mkdir_p(cdir)!=0) return -1;
 
+    /* Stable future-proof directories */
+    {
+        char snapshots[PATH_MAX], wal[PATH_MAX], indexes[PATH_MAX];
+        snprintf(snapshots,sizeof(snapshots),"%s/snapshots",cdir);
+        snprintf(wal,sizeof(wal),"%s/wal",cdir);
+        snprintf(indexes,sizeof(indexes),"%s/indexes",cdir);
+        mkdir_p(snapshots);
+        mkdir_p(wal);
+        mkdir_p(indexes);
+    }
+
     snprintf(block_time,sizeof(block_time),"%d",p->block_time_seconds);
     snprintf(max_txs,sizeof(max_txs),"%d",p->max_txs_per_block);
     snprintf(max_block,sizeof(max_block),"%d",p->max_block_bytes);
@@ -137,7 +148,11 @@ static int ensure_chain(const char *base, const QrxProfile *p, char *out_chain, 
         "delegator_reward_percent=%d\n"
         "network_pool_percent=%d\n"
         "default_validator_commission_bps=%lld\n"
-        "allow_runtime_overrides=%d\n",
+        "allow_runtime_overrides=%d\n"
+        "storage_format=qrx-stable-v1\n"
+        "snapshot_format=qrx-snapshot-v1\n"
+        "state_schema_version=1\n"
+        "supports_snapshot_import_export=1\n",
         p->network_id,p->genesis_hash,p->protocol_version,p->magic,p->chain_name,
         p->slash_penalty_threshold,p->slash_redistribute_bps,p->max_supply_atoms,p->epoch_reward_atoms,p->faucet_cap_atoms,
         p->block_time_seconds,p->max_txs_per_block,p->max_block_bytes,p->max_tx_bytes,

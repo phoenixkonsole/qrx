@@ -107,6 +107,7 @@ static void usage(void){
 }
 
 static void on_sig(int sig){ (void)sig; g_running = 0; stop_node_process(); }
+static int handle_command(const char *cmdline, char *resp, size_t resp_sz);
 
 static void dirname_of(const char *path, char *out, size_t out_sz){
     snprintf(out, out_sz, "%s", path && *path ? path : ".");
@@ -990,13 +991,6 @@ qrx_wsa_init_once();
     closesocket(s);
 #else
     close(s);
-#endif
-        if(stop_after) break;
-    }
-#ifdef _WIN32
-    closesocket(s);
-#else
-    close(s); unlink(g_sock);
 #endif
     stop_node_process();
 #ifdef _WIN32
