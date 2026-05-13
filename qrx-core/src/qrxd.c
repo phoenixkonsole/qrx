@@ -81,6 +81,11 @@ static char g_network[64];
 static char g_base[PATH_MAX], g_cdir[PATH_MAX], g_wdir[PATH_MAX], g_ndir[PATH_MAX], g_sock[PATH_MAX];
 static char g_rpc_bind[128] = "127.0.0.1";
 static int g_rpc_port = 0;
+#ifdef _WIN32
+static qrx_socket_t g_rpc_listen_fd = INVALID_SOCKET;
+#else
+static qrx_socket_t g_rpc_listen_fd = -1;
+#endif
 static char g_rpc_user[128] = "";
 static char g_rpc_password[256] = "";
 static char g_wallet_passphrase[256] = "";
@@ -108,7 +113,45 @@ static void usage(void){
     puts("qrxd --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--listen host:port] [--addnode host:port]... [--rpc-bind host:port] [--rpc-user USER] [--rpc-password PASS] [--wallet-passphrase PASS] [--no-wallet-passphrase-default] [--blocktime SECONDS] [--commission-bps BPS] [--no-block-producer]\nJSON-RPC is served over HTTP on --rpc-bind. Default: 127.0.0.1:3766x based on network. Auth is enabled when --rpc-user and --rpc-password are provided. For validator/block-producer signing, set QRX_PASSPHRASE or pass --wallet-passphrase. Alpha/testnet/regtest keep backward compatibility with the auto-generated default passphrase unless --no-wallet-passphrase-default is used.");
 }
 
-static void on_sig(int sig){ (void)sig; g_running = 0; stop_node_process(); }
+static void qrx_close_rpc_listener(void) {
+#ifdef _WIN32
+    if(g_rpc_listen_fd != INVALID_SOCKET) {
+        closesocket(g_rpc_listen_fd);
+        g_rpc_listen_fd = INVALID_SOCKET;
+    }
+#else
+    if(g_rpc_listen_fd >= 0) {
+        close(g_rpc_listen_fd);
+        g_rpc_listen_fd = -1;
+    }
+#endif
+}
+
+static void on_sig(int sig){
+    (void)sig;
+    g_running = 0;
+    qrx_close_rpc_listener(); /* wake blocking accept() */
+#ifndef _WIN32
+    if(g_node_pid > 0) kill(g_node_pid, SIGTERM);
+#else
+    /* Windows shutdown is finalized after the loop. */
+#endif
+}
+
+static void install_signal_handlers(void) {
+#ifdef _WIN32
+    signal(SIGINT, on_sig);
+    signal(SIGTERM, on_sig);
+#else
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_sig;
+    sigemptyset(&sa.sa_mask);
+    /* Do not set SA_RESTART: accept()/recv() must return on Ctrl+C. */
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+#endif
+}
 
 static void configure_wallet_passphrase(const char *network) {
     if(getenv("QRX_PASSPHRASE")) return;
@@ -956,7 +999,7 @@ int main(int argc, char **argv){
     build_backend_path(argv[0]);
     if(qrx_ensure_node(network,datadir,wallet,listen_arg,addnodes,addnode_count,g_base,sizeof(g_base),g_cdir,sizeof(g_cdir),g_wdir,sizeof(g_wdir),g_ndir,sizeof(g_ndir))!=0){ fprintf(stderr,"qrxd: failed to initialize\n"); return 1; }
     snprintf(g_sock, sizeof(g_sock), "http://%s:%d/rpc", g_rpc_bind, g_rpc_port);
-    signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
+    install_signal_handlers();
     if(spawn_node_process()!=0){ fprintf(stderr, "qrxd: failed to start node-run\n"); return 1; }
     MaintCtx ctx = { g_ndir, g_cdir };
 #ifdef _WIN32
@@ -972,6 +1015,7 @@ int main(int argc, char **argv){
 
 qrx_wsa_init_once();
     qrx_socket_t s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    g_rpc_listen_fd = s;
 #ifdef _WIN32
     if(s == INVALID_SOCKET){ fprintf(stderr, "rpc socket failed\n"); return 1; }
 #else
@@ -1018,11 +1062,7 @@ qrx_wsa_init_once();
 #endif
         if(stop_after) break;
     }
-#ifdef _WIN32
-    closesocket(s);
-#else
-    close(s);
-#endif
+    qrx_close_rpc_listener();
     stop_node_process();
 #ifdef _WIN32
     g_running = 0;
