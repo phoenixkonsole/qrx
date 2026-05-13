@@ -30,7 +30,7 @@
 static const QrxProfile PROFILES[] = {
     /* name, chain_name, network_id, genesis_hash, protocol_version, magic, port, seeds, slash_threshold, redistribute_bps, max_supply, epoch_reward, faucet_cap,
        block_time, max_txs, max_block_bytes, max_tx_bytes, validator_pct, delegator_pct, network_pool_pct, default_commission_bps, allow_overrides */
-    {"alpha","QRX Public Alpha","qrx-alpha","9f1ad2e9e8c9f9b8a1d7e2c3456f7890abcdeffedcba09876543210fedcba98700112233445566778899aabbccddeeff11223344556677889900aabbccdd","62","QRXA62",26661,{"127.0.0.1:26661","127.0.0.1:26662","127.0.0.1:26663",NULL},"20","5000","2100000000000000","25000000","0",10,100,524288,8192,30,70,0,1000,0},
+    {"alpha","QRX Public Alpha","qrx-alpha","9f1ad2e9e8c9f9b8a1d7e2c3456f7890abcdeffedcba09876543210fedcba98700112233445566778899aabbccddeeff11223344556677889900aabbccdd","62","QRXA62",26661,{"127.0.0.1:26661","127.0.0.1:26662","127.0.0.1:26663",NULL},"20","5000","2100000000000000","25000000","1000000000000",10,100,524288,8192,30,70,0,1000,0},
     {"testnet","QRX Testnet","qrx-testnet","7c10c4f0a7ee488da5021d31f6b5f42423f94f8c1055d4e0c2a0f1e2d3c4b5a6112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","62","QRXT62",26662,{"127.0.0.1:26662",NULL},"20","5000","2100000000000000","25000000","1000000000000",10,100,524288,8192,30,70,0,1000,0},
     {"regtest","QRX Regtest","qrx-regtest","5b7f9c2a4e6d8b0c1f3a597b2d4e6f8091a2b3c4d5e6f77889900aabbccddeeff1234567890abcdef11223344556677889900aabbccddeeff001122334455","62","QRXR62",26663,{"127.0.0.1:26663",NULL},"10","5000","1000000000000","1000000","1000000000",2,100,262144,8192,30,70,0,1000,1},
     {"mainnet","QRX Mainnet Preview","qrx-mainnet-preview","f0e1d2c3b4a5968778695a4b3c2d1e0ffedcba98765432100123456789abcdeffedcba98765432100123456789abcdeffedcba98765432100123456789abcd","62","QRXM62",26660,{NULL},"20","5000","2100000000000000","50000000","0",10,100,524288,8192,30,70,0,1000,0}
@@ -59,6 +59,19 @@ static char *read_file_simple(const char *path){FILE *f=fopen(path,"rb"); long s
 static int append_unique_line(const char *path, const char *entry){char *txt=read_file_simple(path); FILE *f; size_t elen=strlen(entry); const char *p=txt; if(txt){ while(p&&*p){ const char *e=strchr(p,'\n'); size_t len=e?(size_t)(e-p):strlen(p); if(len==elen && !strncmp(p,entry,len)){ free(txt); return 0;} p=e?e+1:NULL; } free(txt);} f=fopen(path,"ab"); if(!f) return -1; fprintf(f,"%s\n",entry); fclose(f); return 0;}
 
 const QrxProfile *qrx_profile_by_name(const char *name){ size_t i; for(i=0;i<sizeof(PROFILES)/sizeof(PROFILES[0]);++i) if(!strcmp(PROFILES[i].name,name)) return &PROFILES[i]; return NULL; }
+
+const char *qrx_dev_address_for_network(const char *network){
+    if(!network) return "";
+    if(!strcmp(network, "alpha")) return "qrx135710236209946eb1f26ec165f5cbfa2ed4d03f2fb224e4304404e69dc3d87b968ba72d448caf46d46727fdddf32b097920a4783926cb7444eabd08f";
+    if(!strcmp(network, "testnet")) return "qrx1e4982fc3caf9c0f0b614b933760a6e7fddf9344fd5199531095afdb42607e038847172227cb5db795e86602862b5f09d891a09caf544743c6e9c612f";
+    if(!strcmp(network, "mainnet")) return "qrx165b33aec7ea7b23fd20b61b7de53715b39bca6428531e80a6e9aaae89bdef9470a23fd4024c5f9de0f5386bdfbf239cccec1b79837c2a97aba8296d5";
+    if(!strcmp(network, "regtest")) return "qrx1c2c759e4d32dba25f7f812dfd5919462fca1ac6ff867f588605e0438d709044eb3b05bd99380d688fee632a3b2879c9d9b32341fff9a905ad3ce6a90";
+    return "";
+}
+int qrx_network_has_faucet(const char *network){
+    return network && (!strcmp(network, "alpha") || !strcmp(network, "testnet") || !strcmp(network, "regtest"));
+}
+
 int qrx_backend_call(int argc, char **argv){ return qrx_backend_main(argc, argv); }
 void qrx_default_datadir(const char *network, const char *override_datadir, char *out, size_t out_sz){
 #ifdef _WIN32
@@ -152,12 +165,16 @@ static int ensure_chain(const char *base, const QrxProfile *p, char *out_chain, 
         "storage_format=qrx-stable-v1\n"
         "snapshot_format=qrx-snapshot-v1\n"
         "state_schema_version=1\n"
-        "supports_snapshot_import_export=1\n",
+        "supports_snapshot_import_export=1\n"
+        "dev_address=%s\n"
+        "treasury_address=%s\n"
+        "faucet_enabled=%d\n",
         p->network_id,p->genesis_hash,p->protocol_version,p->magic,p->chain_name,
         p->slash_penalty_threshold,p->slash_redistribute_bps,p->max_supply_atoms,p->epoch_reward_atoms,p->faucet_cap_atoms,
         p->block_time_seconds,p->max_txs_per_block,p->max_block_bytes,p->max_tx_bytes,
         p->validator_reward_percent,p->delegator_reward_percent,p->network_pool_percent,
-        p->default_validator_commission_bps,p->allow_runtime_overrides);
+        p->default_validator_commission_bps,p->allow_runtime_overrides,
+        qrx_dev_address_for_network(p->name), qrx_dev_address_for_network(p->name), qrx_network_has_faucet(p->name));
     fclose(f);
 
     snprintf(seedf,sizeof(seedf),"%s/seednodes.txt",cdir);

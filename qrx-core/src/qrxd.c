@@ -785,6 +785,22 @@ static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
         else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"%s\",\"result\":%s}\n", args[0], obj); }
         return 0;
     }
+
+    if(!strcmp(args[0], "getdevaddress")){
+        char out[4096], ajs[1024]={0};
+        char *argv[] = { g_backend_path, "getdevaddress", g_cdir, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "getdevaddress", "backend failed");
+        else { trim_ws_right(out); json_string(ajs,sizeof(ajs),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getdevaddress\",\"result\":{\"address\":%s}}\n", ajs); }
+        return 0;
+    }
+    if(!strcmp(args[0], "faucet") && argc >= 3){
+        char out[8192];
+        char *argv[] = { g_backend_path, "faucet", g_cdir, args[1], args[2], NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "faucet", "backend failed or faucet disabled on this network");
+        else json_ok_raw(resp, resp_sz, "faucet", out);
+        return 0;
+    }
+
     if(!strcmp(args[0], "tokenomics")){
         char out[16384], obj[20000]={0};
         char *argv[] = { g_backend_path, "tokenomics", g_cdir, NULL };

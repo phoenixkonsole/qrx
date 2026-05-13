@@ -37,4 +37,6 @@ int qrx_get_wallet_address(const char *wallet_dir, char *out, size_t out_sz);
 int qrx_backend_call(int argc, char **argv);
 int qrx_parse_hostport(const char *in, char *host, size_t host_sz, char *port, size_t port_sz);
 void qrx_default_datadir(const char *network, const char *override_datadir, char *out, size_t out_sz);
+const char *qrx_dev_address_for_network(const char *network);
+int qrx_network_has_faucet(const char *network);
 #endif
