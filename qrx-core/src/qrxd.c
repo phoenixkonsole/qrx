@@ -83,6 +83,8 @@ static char g_rpc_bind[128] = "127.0.0.1";
 static int g_rpc_port = 0;
 static char g_rpc_user[128] = "";
 static char g_rpc_password[256] = "";
+static char g_wallet_passphrase[256] = "";
+static int g_wallet_passphrase_default_disabled = 0;
 
 typedef struct {
     const char *node_dir;
@@ -103,10 +105,36 @@ static void stop_node_process(void) {
 }
 
 static void usage(void){
-    puts("qrxd --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--listen host:port] [--addnode host:port]... [--rpc-bind host:port] [--rpc-user USER] [--rpc-password PASS] [--blocktime SECONDS] [--commission-bps BPS] [--no-block-producer]\nJSON-RPC is served over HTTP on --rpc-bind. Default: 127.0.0.1:3766x based on network. Auth is enabled when --rpc-user and --rpc-password are provided.");
+    puts("qrxd --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--listen host:port] [--addnode host:port]... [--rpc-bind host:port] [--rpc-user USER] [--rpc-password PASS] [--wallet-passphrase PASS] [--no-wallet-passphrase-default] [--blocktime SECONDS] [--commission-bps BPS] [--no-block-producer]\nJSON-RPC is served over HTTP on --rpc-bind. Default: 127.0.0.1:3766x based on network. Auth is enabled when --rpc-user and --rpc-password are provided. For validator/block-producer signing, set QRX_PASSPHRASE or pass --wallet-passphrase. Alpha/testnet/regtest keep backward compatibility with the auto-generated default passphrase unless --no-wallet-passphrase-default is used.");
 }
 
 static void on_sig(int sig){ (void)sig; g_running = 0; stop_node_process(); }
+
+static void configure_wallet_passphrase(const char *network) {
+    if(getenv("QRX_PASSPHRASE")) return;
+
+    if(g_wallet_passphrase[0]) {
+        setenv("QRX_PASSPHRASE", g_wallet_passphrase, 1);
+        return;
+    }
+
+    /*
+     * Backward compatibility:
+     * qrx_ensure_node() auto-created alpha/testnet/regtest wallets using
+     * QRX_PASSPHRASE=change-me when no passphrase was supplied.
+     * On restart the wallet already exists, so the old code no longer set
+     * the env var and block producer / vote signing prompted interactively.
+     *
+     * Keep this only for non-mainnet networks. Mainnet must use an explicit
+     * QRX_PASSPHRASE or --wallet-passphrase for signing.
+     */
+    if(!g_wallet_passphrase_default_disabled &&
+       network &&
+       strcmp(network, "mainnet") != 0) {
+        setenv("QRX_PASSPHRASE", "change-me", 0);
+    }
+}
+
 static int handle_command(const char *cmdline, char *resp, size_t resp_sz);
 
 static void dirname_of(const char *path, char *out, size_t out_sz){
@@ -905,6 +933,8 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"--rpc-bind")&&i+1<argc) rpc_bind_arg=argv[++i];
         else if(!strcmp(argv[i],"--rpc-user")&&i+1<argc) snprintf(g_rpc_user,sizeof(g_rpc_user),"%s",argv[++i]);
         else if(!strcmp(argv[i],"--rpc-password")&&i+1<argc) snprintf(g_rpc_password,sizeof(g_rpc_password),"%s",argv[++i]);
+        else if(!strcmp(argv[i],"--wallet-passphrase")&&i+1<argc) snprintf(g_wallet_passphrase,sizeof(g_wallet_passphrase),"%s",argv[++i]);
+        else if(!strcmp(argv[i],"--no-wallet-passphrase-default")) g_wallet_passphrase_default_disabled = 1;
         else if(!strcmp(argv[i],"--blocktime")&&i+1<argc) { g_blocktime_override_set=1; g_blocktime_seconds=atoi(argv[++i]); if(g_blocktime_seconds<1) g_blocktime_seconds=1; }
         else if(!strcmp(argv[i],"--commission-bps")&&i+1<argc) { g_commission_override_set=1; g_commission_bps=atoll(argv[++i]); if(g_commission_bps<0) g_commission_bps=0; if(g_commission_bps>10000) g_commission_bps=10000; }
         else if(!strcmp(argv[i],"--no-block-producer")) g_block_producer_enabled=0;
@@ -922,6 +952,7 @@ int main(int argc, char **argv){
     }
     if(!g_blocktime_override_set) g_blocktime_seconds = profile->block_time_seconds;
     if(!g_commission_override_set) g_commission_bps = profile->default_validator_commission_bps;
+    configure_wallet_passphrase(network);
     build_backend_path(argv[0]);
     if(qrx_ensure_node(network,datadir,wallet,listen_arg,addnodes,addnode_count,g_base,sizeof(g_base),g_cdir,sizeof(g_cdir),g_wdir,sizeof(g_wdir),g_ndir,sizeof(g_ndir))!=0){ fprintf(stderr,"qrxd: failed to initialize\n"); return 1; }
     snprintf(g_sock, sizeof(g_sock), "http://%s:%d/rpc", g_rpc_bind, g_rpc_port);

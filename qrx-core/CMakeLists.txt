@@ -5,6 +5,23 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+
+# -----------------------------
+# macOS architecture
+# -----------------------------
+# On Apple Silicon, CMake may still produce x86_64 binaries if the shell,
+# compiler, Homebrew/OpenSSL, or an old CMake cache is running under Rosetta.
+# Default to the native host architecture unless the user explicitly set
+# CMAKE_OSX_ARCHITECTURES.
+if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
+    if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+        set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Build architecture for macOS" FORCE)
+    elseif(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "Build architecture for macOS" FORCE)
+    endif()
+endif()
+
+
 option(QRX_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(QRX_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(QRX_ENABLE_HARDENING "Enable basic hardening flags" ON)
