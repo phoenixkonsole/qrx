@@ -1,3 +1,15 @@
+
+/* === QRX Mainnet Hardening === */
+#include "protocol/qrx_protocol_version.h"
+#include "protocol/qrx_chainid.h"
+#include "protocol/qrx_domain_separation.h"
+#include "security/qrx_secure_memory.h"
+
+#ifndef QRX_MAX_FUTURE_DRIFT_SECONDS
+#define QRX_MAX_FUTURE_DRIFT_SECONDS 300
+#endif
+/* === End Hardening Section === */
+
 #define _GNU_SOURCE
 
 #ifdef _WIN32
