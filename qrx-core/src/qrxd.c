@@ -46,6 +46,8 @@
   #include <dirent.h>
   #include <pthread.h>
   #include <sys/socket.h>
+  #include <arpa/inet.h>
+  #include <netinet/in.h>
   #include <sys/un.h>
   #include <sys/wait.h>
   #include <unistd.h>
@@ -77,6 +79,10 @@ static int g_block_producer_enabled = 1;
 static char g_backend_path[PATH_MAX];
 static char g_network[64];
 static char g_base[PATH_MAX], g_cdir[PATH_MAX], g_wdir[PATH_MAX], g_ndir[PATH_MAX], g_sock[PATH_MAX];
+static char g_rpc_bind[128] = "127.0.0.1";
+static int g_rpc_port = 0;
+static char g_rpc_user[128] = "";
+static char g_rpc_password[256] = "";
 
 typedef struct {
     const char *node_dir;
@@ -97,10 +103,11 @@ static void stop_node_process(void) {
 }
 
 static void usage(void){
-    puts("qrxd --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--listen host:port] [--addnode host:port]... [--blocktime SECONDS] [--commission-bps BPS] [--no-block-producer]\nChain parameters are profile-coded. --blocktime/--commission-bps are accepted only on profiles that allow runtime overrides, currently regtest.");
+    puts("qrxd --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--listen host:port] [--addnode host:port]... [--rpc-bind host:port] [--rpc-user USER] [--rpc-password PASS] [--blocktime SECONDS] [--commission-bps BPS] [--no-block-producer]\nJSON-RPC is served over HTTP on --rpc-bind. Default: 127.0.0.1:3766x based on network. Auth is enabled when --rpc-user and --rpc-password are provided.");
 }
 
 static void on_sig(int sig){ (void)sig; g_running = 0; stop_node_process(); }
+static int handle_command(const char *cmdline, char *resp, size_t resp_sz);
 
 static void dirname_of(const char *path, char *out, size_t out_sz){
     snprintf(out, out_sz, "%s", path && *path ? path : ".");
@@ -454,6 +461,188 @@ static int parse_hostport_local(const char *hp, char *host, size_t host_sz, char
     return qrx_parse_hostport(hp, host, host_sz, port, port_sz);
 }
 
+
+static void parse_rpc_bind_default(const char *network) {
+    snprintf(g_rpc_bind, sizeof(g_rpc_bind), "127.0.0.1");
+    g_rpc_port = qrx_control_port_for_network(network);
+}
+
+static int parse_rpc_bind_arg(const char *arg) {
+    if(!arg || !*arg) return -1;
+    const char *colon = strrchr(arg, ':');
+    if(!colon || colon == arg || !colon[1]) return -1;
+    size_t hlen = (size_t)(colon - arg);
+    if(hlen >= sizeof(g_rpc_bind)) return -1;
+    memcpy(g_rpc_bind, arg, hlen);
+    g_rpc_bind[hlen] = 0;
+    g_rpc_port = atoi(colon + 1);
+    if(g_rpc_port <= 0 || g_rpc_port > 65535) return -1;
+    return 0;
+}
+
+static const char *http_status_text(int code) {
+    if(code == 200) return "OK";
+    if(code == 400) return "Bad Request";
+    if(code == 401) return "Unauthorized";
+    if(code == 403) return "Forbidden";
+    if(code == 404) return "Not Found";
+    return "Internal Server Error";
+}
+
+static void http_response(char *out, size_t out_sz, int code, const char *body, int auth_required) {
+    const char *txt = http_status_text(code);
+    const char *b = body ? body : "";
+    snprintf(out, out_sz,
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: http://localhost\r\n"
+        "Access-Control-Allow-Headers: Authorization, Content-Type\r\n"
+        "Access-Control-Allow-Methods: POST, OPTIONS\r\n"
+        "%s"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "%s",
+        code, txt,
+        auth_required ? "WWW-Authenticate: Basic realm=\"QRX RPC\"\r\n" : "",
+        strlen(b), b);
+}
+
+static char *qrx_base64_encode_local(const unsigned char *data, size_t len) {
+    static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t out_len = ((len + 2) / 3) * 4;
+    char *out = (char*)malloc(out_len + 1);
+    if(!out) return NULL;
+    size_t j = 0;
+    for(size_t i = 0; i < len; i += 3) {
+        unsigned int v = data[i] << 16;
+        if(i + 1 < len) v |= data[i + 1] << 8;
+        if(i + 2 < len) v |= data[i + 2];
+        out[j++] = tbl[(v >> 18) & 63];
+        out[j++] = tbl[(v >> 12) & 63];
+        out[j++] = (i + 1 < len) ? tbl[(v >> 6) & 63] : '=';
+        out[j++] = (i + 2 < len) ? tbl[v & 63] : '=';
+    }
+    out[j] = 0;
+    return out;
+}
+
+static int rpc_auth_ok(const char *http_req) {
+    if(!g_rpc_user[0] && !g_rpc_password[0]) return 1;
+    char pair[512];
+    snprintf(pair, sizeof(pair), "%s:%s", g_rpc_user, g_rpc_password);
+    char *b64 = qrx_base64_encode_local((const unsigned char*)pair, strlen(pair));
+    if(!b64) return 0;
+    char expected[768];
+    snprintf(expected, sizeof(expected), "Authorization: Basic %s", b64);
+    int ok = strstr(http_req, expected) != NULL;
+    free(b64);
+    return ok;
+}
+
+static int json_get_string_field(const char *json, const char *key, char *out, size_t out_sz) {
+    char pat[128];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(json, pat);
+    if(!p) return -1;
+    p = strchr(p, ':');
+    if(!p) return -1;
+    p++;
+    while(*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if(*p != '"') return -1;
+    p++;
+    size_t off = 0;
+    while(*p && *p != '"' && off + 1 < out_sz) {
+        if(*p == '\\' && p[1]) {
+            p++;
+            if(*p == 'n') out[off++] = '\n';
+            else if(*p == 'r') out[off++] = '\r';
+            else if(*p == 't') out[off++] = '\t';
+            else out[off++] = *p;
+            p++;
+        } else {
+            out[off++] = *p++;
+        }
+    }
+    out[off] = 0;
+    return off > 0 ? 0 : -1;
+}
+
+static int json_get_params_as_cmd_tail(const char *json, char *out, size_t out_sz) {
+    out[0] = 0;
+    const char *p = strstr(json, "\"params\"");
+    if(!p) return 0;
+    p = strchr(p, '[');
+    if(!p) return 0;
+    p++;
+    int first = 1;
+    while(*p && *p != ']') {
+        while(*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || *p == ',') p++;
+        char val[1024] = {0};
+        size_t off = 0;
+        if(*p == '"') {
+            p++;
+            while(*p && *p != '"' && off + 1 < sizeof(val)) {
+                if(*p == '\\' && p[1]) p++;
+                val[off++] = *p++;
+            }
+            if(*p == '"') p++;
+        } else {
+            while(*p && *p != ',' && *p != ']' && off + 1 < sizeof(val)) {
+                if(*p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') val[off++] = *p;
+                p++;
+            }
+        }
+        val[off] = 0;
+        if(val[0]) {
+            if(!first) strncat(out, " ", out_sz - strlen(out) - 1);
+            strncat(out, val, out_sz - strlen(out) - 1);
+            first = 0;
+        }
+        while(*p && *p != ',' && *p != ']') p++;
+        if(*p == ',') p++;
+    }
+    return 0;
+}
+
+static void handle_json_rpc_http(const char *req, char *resp, size_t resp_sz) {
+    if(strstr(req, "OPTIONS ") == req) {
+        http_response(resp, resp_sz, 200, "{\"ok\":true}\n", 0);
+        return;
+    }
+    if(!strstr(req, "POST ") || (!strstr(req, " /rpc ") && !strstr(req, " / "))) {
+        http_response(resp, resp_sz, 404, "{\"ok\":false,\"error\":\"not found\"}\n", 0);
+        return;
+    }
+    if(!rpc_auth_ok(req)) {
+        http_response(resp, resp_sz, 401, "{\"ok\":false,\"error\":\"unauthorized\"}\n", 1);
+        return;
+    }
+    const char *body = strstr(req, "\r\n\r\n");
+    if(!body) body = strstr(req, "\n\n");
+    if(!body) {
+        http_response(resp, resp_sz, 400, "{\"ok\":false,\"error\":\"missing body\"}\n", 0);
+        return;
+    }
+    body += (body[1] == '\n') ? 2 : 4;
+
+    char method[128] = {0};
+    char tail[3072] = {0};
+    char cmd[4096] = {0};
+    char raw[65536] = {0};
+
+    if(json_get_string_field(body, "method", method, sizeof(method)) != 0) {
+        http_response(resp, resp_sz, 400, "{\"ok\":false,\"error\":\"missing method\"}\n", 0);
+        return;
+    }
+    json_get_params_as_cmd_tail(body, tail, sizeof(tail));
+    if(tail[0]) snprintf(cmd, sizeof(cmd), "%s %s\n", method, tail);
+    else snprintf(cmd, sizeof(cmd), "%s\n", method);
+
+    handle_command(cmd, raw, sizeof(raw));
+    http_response(resp, resp_sz, 200, raw, 0);
+}
+
 static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
     char line[4096]; snprintf(line, sizeof(line), "%s", cmdline); trim_nl(line);
     char *args[32] = {0}; int argc = 0; char *save = NULL; char *tok = strtok_r(line, " ", &save);
@@ -706,13 +895,16 @@ static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
 }
 
 int main(int argc, char **argv){
-    const char *network="alpha", *datadir=NULL, *wallet="default", *listen_arg=NULL; const char *addnodes[64]; int addnode_count=0;
+    const char *network="alpha", *datadir=NULL, *wallet="default", *listen_arg=NULL; const char *addnodes[64]; int addnode_count=0; const char *rpc_bind_arg=NULL;
     for(int i=1;i<argc;++i){
         if(!strcmp(argv[i],"--network")&&i+1<argc) network=argv[++i];
         else if(!strcmp(argv[i],"--datadir")&&i+1<argc) datadir=argv[++i];
         else if(!strcmp(argv[i],"--wallet")&&i+1<argc) wallet=argv[++i];
         else if(!strcmp(argv[i],"--listen")&&i+1<argc) listen_arg=argv[++i];
         else if(!strcmp(argv[i],"--addnode")&&i+1<argc&&addnode_count<64) addnodes[addnode_count++]=argv[++i];
+        else if(!strcmp(argv[i],"--rpc-bind")&&i+1<argc) rpc_bind_arg=argv[++i];
+        else if(!strcmp(argv[i],"--rpc-user")&&i+1<argc) snprintf(g_rpc_user,sizeof(g_rpc_user),"%s",argv[++i]);
+        else if(!strcmp(argv[i],"--rpc-password")&&i+1<argc) snprintf(g_rpc_password,sizeof(g_rpc_password),"%s",argv[++i]);
         else if(!strcmp(argv[i],"--blocktime")&&i+1<argc) { g_blocktime_override_set=1; g_blocktime_seconds=atoi(argv[++i]); if(g_blocktime_seconds<1) g_blocktime_seconds=1; }
         else if(!strcmp(argv[i],"--commission-bps")&&i+1<argc) { g_commission_override_set=1; g_commission_bps=atoll(argv[++i]); if(g_commission_bps<0) g_commission_bps=0; if(g_commission_bps>10000) g_commission_bps=10000; }
         else if(!strcmp(argv[i],"--no-block-producer")) g_block_producer_enabled=0;
@@ -720,6 +912,8 @@ int main(int argc, char **argv){
         else { fprintf(stderr,"unknown arg: %s\n",argv[i]); usage(); return 1; }
     }
     snprintf(g_network, sizeof(g_network), "%s", network);
+    parse_rpc_bind_default(network);
+    if(rpc_bind_arg && parse_rpc_bind_arg(rpc_bind_arg)!=0){ fprintf(stderr,"bad --rpc-bind, expected host:port\n"); return 1; }
     const QrxProfile *profile = qrx_profile_by_name(network);
     if(!profile){ fprintf(stderr,"unknown network profile: %s\n", network); return 1; }
     if(!profile->allow_runtime_overrides && (g_blocktime_override_set || g_commission_override_set)){
@@ -730,14 +924,7 @@ int main(int argc, char **argv){
     if(!g_commission_override_set) g_commission_bps = profile->default_validator_commission_bps;
     build_backend_path(argv[0]);
     if(qrx_ensure_node(network,datadir,wallet,listen_arg,addnodes,addnode_count,g_base,sizeof(g_base),g_cdir,sizeof(g_cdir),g_wdir,sizeof(g_wdir),g_ndir,sizeof(g_ndir))!=0){ fprintf(stderr,"qrxd: failed to initialize\n"); return 1; }
-    #ifdef _WIN32
-    snprintf(g_sock, sizeof(g_sock), "tcp://127.0.0.1:%d", qrx_control_port_for_network(network));
-#else
-    snprintf(g_sock, sizeof(g_sock), "%s/control.sock", g_base);
-#endif
-    #ifndef _WIN32
-    unlink(g_sock);
-#endif
+    snprintf(g_sock, sizeof(g_sock), "http://%s:%d/rpc", g_rpc_bind, g_rpc_port);
     signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
     if(spawn_node_process()!=0){ fprintf(stderr, "qrxd: failed to start node-run\n"); return 1; }
     MaintCtx ctx = { g_ndir, g_cdir };
@@ -752,44 +939,50 @@ int main(int argc, char **argv){
 #endif
 
 
+qrx_wsa_init_once();
+    qrx_socket_t s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 #ifdef _WIN32
-    qrx_wsa_init_once();
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if(s == INVALID_SOCKET){ fprintf(stderr, "socket failed\n"); return 1; }
+    if(s == INVALID_SOCKET){ fprintf(stderr, "rpc socket failed\n"); return 1; }
+#else
+    if(s < 0){ perror("rpc socket"); return 1; }
+#endif
     int one = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons((unsigned short)qrx_control_port_for_network(network));
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-    if(bind(s, (struct sockaddr*)&addr, sizeof(addr)) != 0){ fprintf(stderr, "bind control tcp failed\n"); return 1; }
-    if(listen(s, 8) != 0){ fprintf(stderr, "listen control tcp failed\n"); return 1; }
-#else
-    int s = socket(AF_UNIX, SOCK_STREAM, 0); if(s < 0){ perror("socket"); return 1; }
-    struct sockaddr_un sun; memset(&sun,0,sizeof(sun)); sun.sun_family = AF_UNIX; snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", g_sock);
-    if(bind(s, (struct sockaddr*)&sun, sizeof(sun)) != 0){ perror("bind control"); return 1; }
-    if(listen(s, 8) != 0){ perror("listen control"); return 1; }
-#endif
-    printf("qrxd running network=%s datadir=%s node=%s control=%s node_pid=%ld blocktime=%d commission_bps=%lld overrides=%s\n", g_network, g_base, g_ndir, g_sock, (long)g_node_pid, g_blocktime_seconds, g_commission_bps, profile->allow_runtime_overrides ? "allowed" : "disabled");
+    addr.sin_port = htons((unsigned short)g_rpc_port);
+    if(inet_pton(AF_INET, g_rpc_bind, &addr.sin_addr) != 1){ fprintf(stderr, "bad rpc bind address: %s\n", g_rpc_bind); return 1; }
+    if(bind(s, (struct sockaddr*)&addr, sizeof(addr)) != 0){ fprintf(stderr, "bind rpc failed on %s:%d\n", g_rpc_bind, g_rpc_port); return 1; }
+    if(listen(s, 16) != 0){ fprintf(stderr, "listen rpc failed\n"); return 1; }
+    printf("qrxd running network=%s datadir=%s node=%s rpc=%s node_pid=%ld blocktime=%d commission_bps=%lld auth=%s overrides=%s\n", g_network, g_base, g_ndir, g_sock, (long)g_node_pid, g_blocktime_seconds, g_commission_bps, (g_rpc_user[0]||g_rpc_password[0]) ? "enabled" : "disabled", profile->allow_runtime_overrides ? "allowed" : "disabled");
     while(g_running){
+        qrx_socket_t fd = accept(s, NULL, NULL);
 #ifdef _WIN32
-        SOCKET fd = accept(s, NULL, NULL);
         if(fd == INVALID_SOCKET) break;
-        char cmd[4096];
+#else
+        if(fd < 0){ if(errno == EINTR) continue; break; }
+#endif
+        char cmd[65536];
+#ifdef _WIN32
         int n = recv(fd, cmd, sizeof(cmd)-1, 0);
+#else
+        ssize_t n = recv(fd, cmd, sizeof(cmd)-1, 0);
+#endif
         if(n < 0) n = 0;
         cmd[n] = 0;
-        char resp[65536];
-        int stop_after = handle_command(cmd, resp, sizeof(resp));
+        char resp[131072];
+        int stop_after = 0;
+        if(strstr(cmd, "POST ") == cmd || strstr(cmd, "OPTIONS ") == cmd || strstr(cmd, "GET ") == cmd) {
+            handle_json_rpc_http(cmd, resp, sizeof(resp));
+            if(strstr(cmd, "\"method\"") && strstr(cmd, "\"stop\"")) stop_after = 1;
+        } else {
+            stop_after = handle_command(cmd, resp, sizeof(resp));
+        }
         write_all(fd, resp, strlen(resp));
+#ifdef _WIN32
         closesocket(fd);
 #else
-        int fd = accept(s, NULL, NULL);
-        if(fd < 0){ if(errno == EINTR) continue; break; }
-        char cmd[4096]; ssize_t n = read(fd, cmd, sizeof(cmd)-1); if(n < 0) n = 0; cmd[n] = 0;
-        char resp[65536]; int stop_after = handle_command(cmd, resp, sizeof(resp));
-        write_all(fd, resp, strlen(resp));
         close(fd);
 #endif
         if(stop_after) break;
@@ -797,7 +990,7 @@ int main(int argc, char **argv){
 #ifdef _WIN32
     closesocket(s);
 #else
-    close(s); unlink(g_sock);
+    close(s);
 #endif
     stop_node_process();
 #ifdef _WIN32

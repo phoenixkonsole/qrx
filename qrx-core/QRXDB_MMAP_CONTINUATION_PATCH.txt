@@ -1,0 +1,22 @@
+QRXDB mmap continuation patch
+============================
+
+Implemented in qrx-core/src/qrxdb.c and qrx-core/src/qrxdb.h:
+
+- mmap backed state.qdb storage with automatic remapping/growth
+- segmented WAL files: qrxdb/wal/state-000001.qwal, state-000002.qwal, ...
+- crash recovery by scanning valid records and truncating dirty logical tail
+- snapshots into qrxdb/snapshots/<name>.qsnap plus metadata file
+- compaction into temporary state.qdb.tmp with atomic replacement
+- MVCC read snapshots via QrxDBReadTxn
+- zero-copy reads via QrxDBView / qrxdb_get_view()
+- Merkle-style rolling state root exposed through qrxdb_merkle_root()
+- parallel validation groundwork via immutable read transaction snapshots
+- compatibility wrappers retained: qrxdb_init, qrxdb_put, qrxdb_get, qrxdb_snapshot, qrxdb_recover
+
+Validation performed:
+- qrxcore static library compiled successfully.
+- standalone QRXDB smoke test passed: put/get, MVCC old-read, snapshot, compaction.
+
+Note:
+The existing qrxd.c in this source tree still has unrelated pre-existing compile errors around handle_command/stop_after control flow. The QRXDB core itself compiles and links.

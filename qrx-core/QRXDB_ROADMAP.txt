@@ -1,0 +1,20 @@
+
+QRXDB Enhanced Experimental Backend
+
+Added:
+- binary WAL records
+- CRC32 integrity
+- schema versioning
+- append-only state log
+- primitive index file
+- snapshot export
+- future mmap-ready layout
+
+Planned next:
+- mmap backend
+- lock-free reads
+- state rollback journal
+- compaction
+- merkle state roots
+- validator snapshots
+- delta snapshots
