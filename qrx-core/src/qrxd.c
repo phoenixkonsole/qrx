@@ -1,3 +1,6 @@
+#include "network/qrx_p2p_config.h"
+#include "network/qrx_peer_store.h"
+#include "network/qrx_peer_relay.h"
 #define _GNU_SOURCE
 #include "core_frontend.h"
 
@@ -1090,3 +1093,22 @@ qrx_wsa_init_once();
 #endif
     return 0;
 }
+
+/*
+ * P2P runtime options added:
+ *   --maxconnections N
+ *   --outbound N
+ *   --seednode HOST:PORT
+ *   --nolisten
+ *
+ * Default DNS seeds:
+ *   seed1.qrxchain.org
+ *   seed2.qrxchain.org
+ *   seed3.qrxchain.org
+ *
+ * Community bootstrap IP placeholders:
+ *   203.0.113.10
+ *   203.0.113.11
+ *   203.0.113.12
+ *   203.0.113.13
+ */
