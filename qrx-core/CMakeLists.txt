@@ -174,3 +174,21 @@ foreach(tgt qrx qrxd qrx-cli qrxdb_verify qrxdb_salvage qrxdb_compact qrxdb_snap
     endif()
 
 endforeach()
+# QRX economics/bootstrap sources
+# qrx-core/src/economics/qrx_economics.c
+# qrx-core/src/treasury/qrx_dev_addresses.c
+# qrx-core/src/genesis/qrx_bootstrap_validators.c
+
+# QRX P2P seed/maxconnection/peer persistence sources:
+# src/network/qrx_p2p_config.c
+# src/network/qrx_peer_store.c
+# src/network/qrx_peer_relay.c
+
+# src/consensus/qrx_deterministic_rotation.c
+
+# Finality voting layer sources
+# src/consensus/qrx_finality.c
+# src/consensus/qrx_finality_state.c
+
+# Slashing/signature enforcement
+# src/consensus/qrx_slashing.c
