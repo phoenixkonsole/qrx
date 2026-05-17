@@ -1,3 +1,15 @@
+
+/* === QRX Mainnet Hardening === */
+#include "protocol/qrx_protocol_version.h"
+#include "protocol/qrx_chainid.h"
+#include "protocol/qrx_domain_separation.h"
+#include "security/qrx_secure_memory.h"
+
+#ifndef QRX_MAX_FUTURE_DRIFT_SECONDS
+#define QRX_MAX_FUTURE_DRIFT_SECONDS 300
+#endif
+/* === End Hardening Section === */
+
 #define _GNU_SOURCE
 
 #ifdef _WIN32
@@ -243,7 +255,7 @@ static void usage(void) {
          "  keygen <wallet-dir>\n  seed-new <wallet-dir>\n  wallet-info <wallet-dir>\n  wallet-recover <wallet-dir> <recovery-file>\n"
          "  address <wallet-dir>\n  legacy-address <wallet-dir>\n  migrate-address <wallet-dir>\n  state-migrate-address <chain-dir> <old-address> <new-address>\n"
          "  init-chain <chain-dir>\n"
-         "  faucet <chain-dir> <address> <amount>\n"
+         "  faucet <chain-dir> <address> <amount>\n  getdevaddress <chain-dir>\n"
          "  balance <chain-dir> <address>\n"
          "  sign <wallet-dir> <chain-dir> <to> <amount> <memo> <tx-file>\n"
          "  verify <chain-dir> <tx-file>\n"
@@ -1069,7 +1081,7 @@ static int chain_allows_manual_mint(const char *chain_dir) {
 }
 
 static int chain_allows_faucet(const char *chain_dir) {
-    return chain_network_is(chain_dir, "regtest") || chain_network_is(chain_dir, "testnet");
+    return chain_network_is(chain_dir, "regtest") || chain_network_is(chain_dir, "testnet") || chain_network_is(chain_dir, "alpha");
 }
 
 static void require_manual_mint_allowed(const char *chain_dir, const char *cmd) {
@@ -1380,6 +1392,15 @@ static int faucet_cmd(const char *chain_dir, const char *addr, long long amt) {
     if (mint_with_cap(chain_dir, "faucet_minted", amt) != 0) die("max supply exceeded");
     char bal[1024]; state_paths(chain_dir, bal, sizeof(bal), NULL, 0, NULL, 0, NULL, 0); long long cur = kv_get_ll_bin(bal, addr); int rc = kv_set_ll_bin(bal, addr, cur + amt); if (rc == 0) { qrxdb_chain_sync_account_pair(chain_dir, addr, cur + amt, 0); journal_append(chain_dir, "faucet addr=%s amount=%lld", addr, amt); } return rc;
 }
+
+static int getdevaddress_cmd(const char *chain_dir) {
+    char *dev = chain_cfg_value(chain_dir, "dev_address");
+    if(!dev || !*dev) die("dev_address not configured");
+    printf("%s\n", dev);
+    free(dev);
+    return 0;
+}
+
 static int balance_cmd(const char *chain_dir, const char *addr) {
     QrxDB db; long long v = 0;
     if (qrxdb_init(&db, chain_dir) == 0) {
@@ -3840,6 +3861,7 @@ int qrx_backend_main(int argc, char **argv) {
     if (!strcmp(argv[1], "tokenomics") && argc == 3) return tokenomics_cmd(argv[2]);
     if (!strcmp(argv[1], "reward-epoch-auto") && (argc == 3 || argc == 4 || argc == 5)) return reward_epoch_auto_cmd(argv[2], argc >= 4 ? atoll(argv[3]) : 1000, argc == 5 && !strcmp(argv[4], "--block-finalized"));
     if (!strcmp(argv[1], "faucet") && argc == 5) return faucet_cmd(argv[2], argv[3], atoll(argv[4]));
+    if (!strcmp(argv[1], "getdevaddress") && argc == 3) return getdevaddress_cmd(argv[2]);
     if (!strcmp(argv[1], "balance") && argc == 4) return balance_cmd(argv[2], argv[3]);
     if (!strcmp(argv[1], "history") && (argc == 3 || argc == 4 || argc == 5)) return history_cmd(argv[2], argc >= 4 ? argv[3] : NULL, argc == 5 ? atoi(argv[4]) : 50);
     if (!strcmp(argv[1], "htlc-create") && (argc == 8 || argc == 9)) return htlc_create_cmd(argv[2], argv[3], argv[4], atoll(argv[5]), argv[6], atoll(argv[7]), argc == 9 ? argv[8] : NULL);

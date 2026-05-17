@@ -89,7 +89,7 @@ static void make_auth_header(char *out, size_t out_sz) {
 }
 
 static void usage(void){
-    puts("qrx-cli --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--rpc-user USER] [--rpc-password PASS] <command>\nCommands: getinfo|getnewaddress|getbalance [addr]|getblockcount|getpeerinfo|getstakinginfo|getwalletinfo|getreward [height]|getparams [height]|gethalving [height]|getforks|getactivefork [height]|sendtoaddress <addr> <amount> [memo]|sendrawtransaction <txfile>|history [addr] [limit]|addnode <host:port>|listpeers|peerstatus|banscores|stake <amount>|delegate <validator> <amount>|validator-set|tokenomics|createswap <recipient> <amount> <hashlock_hex> <timelock_seconds> [memo]|redeemswap <swap_id> <secret>|refundswap <swap_id>|getswap <swap_id>|listswaps|shielded-address|shield <amount> [shielded_address]|shielded-balance|shielded-send <shielded_address> <amount>|unshield <transparent_address> <amount>|shielded-history|stealth-address|stealth-send <stealth_address> <amount> [memo]|stealth-scan|stealth-history|privacy-feature-status|stop");
+    puts("qrx-cli --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--rpc-user USER] [--rpc-password PASS] <command>\nCommands: getinfo|getnewaddress|getbalance [addr]|getblockcount|getpeerinfo|getstakinginfo|getwalletinfo|getreward [height]|getparams [height]|gethalving [height]|getforks|getactivefork [height]|sendtoaddress <addr> <amount> [memo]|sendrawtransaction <txfile>|history [addr] [limit]|addnode <host:port>|listpeers|peerstatus|banscores|stake <amount>|delegate <validator> <amount>|validator-set|tokenomics|getdevaddress|faucet <addr> <amount>|createswap <recipient> <amount> <hashlock_hex> <timelock_seconds> [memo]|redeemswap <swap_id> <secret>|refundswap <swap_id>|getswap <swap_id>|listswaps|shielded-address|shield <amount> [shielded_address]|shielded-balance|shielded-send <shielded_address> <amount>|unshield <transparent_address> <amount>|shielded-history|stealth-address|stealth-send <stealth_address> <amount> [memo]|stealth-scan|stealth-history|privacy-feature-status|stop");
 }
 
 static int socket_call(const char *sock_path, const char *cmd, char *out, size_t out_sz){
@@ -225,6 +225,8 @@ int main(int argc,char **argv){
     else if(!strcmp(argv[cmdi],"listpeers")) snprintf(cmd,sizeof(cmd),"listpeers\n");
     else if(!strcmp(argv[cmdi],"peerstatus")||!strcmp(argv[cmdi],"banscores")) snprintf(cmd,sizeof(cmd),"%s\n", argv[cmdi]);
     else if(!strcmp(argv[cmdi],"tokenomics")) snprintf(cmd,sizeof(cmd),"tokenomics\n");
+    else if(!strcmp(argv[cmdi],"getdevaddress")) snprintf(cmd,sizeof(cmd),"getdevaddress\n");
+    else if(!strcmp(argv[cmdi],"faucet") && cmdi+2<argc) snprintf(cmd,sizeof(cmd),"faucet %s %s\n", argv[cmdi+1], argv[cmdi+2]);
     else if(!strcmp(argv[cmdi],"getreward")) snprintf(cmd,sizeof(cmd), cmdi+1<argc ? "getreward %s\n" : "getreward\n", cmdi+1<argc?argv[cmdi+1]:"");
     else if(!strcmp(argv[cmdi],"getparams")) snprintf(cmd,sizeof(cmd), cmdi+1<argc ? "getparams %s\n" : "getparams\n", cmdi+1<argc?argv[cmdi+1]:"");
     else if(!strcmp(argv[cmdi],"gethalving")) snprintf(cmd,sizeof(cmd), cmdi+1<argc ? "gethalving %s\n" : "gethalving\n", cmdi+1<argc?argv[cmdi+1]:"");

@@ -1,3 +1,6 @@
+#include "network/qrx_p2p_config.h"
+#include "network/qrx_peer_store.h"
+#include "network/qrx_peer_relay.h"
 #define _GNU_SOURCE
 #include "core_frontend.h"
 
@@ -81,8 +84,15 @@ static char g_network[64];
 static char g_base[PATH_MAX], g_cdir[PATH_MAX], g_wdir[PATH_MAX], g_ndir[PATH_MAX], g_sock[PATH_MAX];
 static char g_rpc_bind[128] = "127.0.0.1";
 static int g_rpc_port = 0;
+#ifdef _WIN32
+static qrx_socket_t g_rpc_listen_fd = INVALID_SOCKET;
+#else
+static qrx_socket_t g_rpc_listen_fd = -1;
+#endif
 static char g_rpc_user[128] = "";
 static char g_rpc_password[256] = "";
+static char g_wallet_passphrase[256] = "";
+static int g_wallet_passphrase_default_disabled = 0;
 
 typedef struct {
     const char *node_dir;
@@ -103,10 +113,74 @@ static void stop_node_process(void) {
 }
 
 static void usage(void){
-    puts("qrxd --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--listen host:port] [--addnode host:port]... [--rpc-bind host:port] [--rpc-user USER] [--rpc-password PASS] [--blocktime SECONDS] [--commission-bps BPS] [--no-block-producer]\nJSON-RPC is served over HTTP on --rpc-bind. Default: 127.0.0.1:3766x based on network. Auth is enabled when --rpc-user and --rpc-password are provided.");
+    puts("qrxd --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--listen host:port] [--addnode host:port]... [--rpc-bind host:port] [--rpc-user USER] [--rpc-password PASS] [--wallet-passphrase PASS] [--no-wallet-passphrase-default] [--blocktime SECONDS] [--commission-bps BPS] [--no-block-producer]\nJSON-RPC is served over HTTP on --rpc-bind. Default: 127.0.0.1:3766x based on network. Auth is enabled when --rpc-user and --rpc-password are provided. For validator/block-producer signing, set QRX_PASSPHRASE or pass --wallet-passphrase. Alpha/testnet/regtest keep backward compatibility with the auto-generated default passphrase unless --no-wallet-passphrase-default is used.");
 }
 
-static void on_sig(int sig){ (void)sig; g_running = 0; stop_node_process(); }
+static void qrx_close_rpc_listener(void) {
+#ifdef _WIN32
+    if(g_rpc_listen_fd != INVALID_SOCKET) {
+        closesocket(g_rpc_listen_fd);
+        g_rpc_listen_fd = INVALID_SOCKET;
+    }
+#else
+    if(g_rpc_listen_fd >= 0) {
+        close(g_rpc_listen_fd);
+        g_rpc_listen_fd = -1;
+    }
+#endif
+}
+
+static void on_sig(int sig){
+    (void)sig;
+    g_running = 0;
+    qrx_close_rpc_listener(); /* wake blocking accept() */
+#ifndef _WIN32
+    if(g_node_pid > 0) kill(g_node_pid, SIGTERM);
+#else
+    /* Windows shutdown is finalized after the loop. */
+#endif
+}
+
+static void install_signal_handlers(void) {
+#ifdef _WIN32
+    signal(SIGINT, on_sig);
+    signal(SIGTERM, on_sig);
+#else
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_sig;
+    sigemptyset(&sa.sa_mask);
+    /* Do not set SA_RESTART: accept()/recv() must return on Ctrl+C. */
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+#endif
+}
+
+static void configure_wallet_passphrase(const char *network) {
+    if(getenv("QRX_PASSPHRASE")) return;
+
+    if(g_wallet_passphrase[0]) {
+        setenv("QRX_PASSPHRASE", g_wallet_passphrase, 1);
+        return;
+    }
+
+    /*
+     * Backward compatibility:
+     * qrx_ensure_node() auto-created alpha/testnet/regtest wallets using
+     * QRX_PASSPHRASE=change-me when no passphrase was supplied.
+     * On restart the wallet already exists, so the old code no longer set
+     * the env var and block producer / vote signing prompted interactively.
+     *
+     * Keep this only for non-mainnet networks. Mainnet must use an explicit
+     * QRX_PASSPHRASE or --wallet-passphrase for signing.
+     */
+    if(!g_wallet_passphrase_default_disabled &&
+       network &&
+       strcmp(network, "mainnet") != 0) {
+        setenv("QRX_PASSPHRASE", "change-me", 0);
+    }
+}
+
 static int handle_command(const char *cmdline, char *resp, size_t resp_sz);
 
 static void dirname_of(const char *path, char *out, size_t out_sz){
@@ -714,6 +788,22 @@ static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
         else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"%s\",\"result\":%s}\n", args[0], obj); }
         return 0;
     }
+
+    if(!strcmp(args[0], "getdevaddress")){
+        char out[4096], ajs[1024]={0};
+        char *argv[] = { g_backend_path, "getdevaddress", g_cdir, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "getdevaddress", "backend failed");
+        else { trim_ws_right(out); json_string(ajs,sizeof(ajs),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getdevaddress\",\"result\":{\"address\":%s}}\n", ajs); }
+        return 0;
+    }
+    if(!strcmp(args[0], "faucet") && argc >= 3){
+        char out[8192];
+        char *argv[] = { g_backend_path, "faucet", g_cdir, args[1], args[2], NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "faucet", "backend failed or faucet disabled on this network");
+        else json_ok_raw(resp, resp_sz, "faucet", out);
+        return 0;
+    }
+
     if(!strcmp(args[0], "tokenomics")){
         char out[16384], obj[20000]={0};
         char *argv[] = { g_backend_path, "tokenomics", g_cdir, NULL };
@@ -905,6 +995,8 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"--rpc-bind")&&i+1<argc) rpc_bind_arg=argv[++i];
         else if(!strcmp(argv[i],"--rpc-user")&&i+1<argc) snprintf(g_rpc_user,sizeof(g_rpc_user),"%s",argv[++i]);
         else if(!strcmp(argv[i],"--rpc-password")&&i+1<argc) snprintf(g_rpc_password,sizeof(g_rpc_password),"%s",argv[++i]);
+        else if(!strcmp(argv[i],"--wallet-passphrase")&&i+1<argc) snprintf(g_wallet_passphrase,sizeof(g_wallet_passphrase),"%s",argv[++i]);
+        else if(!strcmp(argv[i],"--no-wallet-passphrase-default")) g_wallet_passphrase_default_disabled = 1;
         else if(!strcmp(argv[i],"--blocktime")&&i+1<argc) { g_blocktime_override_set=1; g_blocktime_seconds=atoi(argv[++i]); if(g_blocktime_seconds<1) g_blocktime_seconds=1; }
         else if(!strcmp(argv[i],"--commission-bps")&&i+1<argc) { g_commission_override_set=1; g_commission_bps=atoll(argv[++i]); if(g_commission_bps<0) g_commission_bps=0; if(g_commission_bps>10000) g_commission_bps=10000; }
         else if(!strcmp(argv[i],"--no-block-producer")) g_block_producer_enabled=0;
@@ -922,10 +1014,11 @@ int main(int argc, char **argv){
     }
     if(!g_blocktime_override_set) g_blocktime_seconds = profile->block_time_seconds;
     if(!g_commission_override_set) g_commission_bps = profile->default_validator_commission_bps;
+    configure_wallet_passphrase(network);
     build_backend_path(argv[0]);
     if(qrx_ensure_node(network,datadir,wallet,listen_arg,addnodes,addnode_count,g_base,sizeof(g_base),g_cdir,sizeof(g_cdir),g_wdir,sizeof(g_wdir),g_ndir,sizeof(g_ndir))!=0){ fprintf(stderr,"qrxd: failed to initialize\n"); return 1; }
     snprintf(g_sock, sizeof(g_sock), "http://%s:%d/rpc", g_rpc_bind, g_rpc_port);
-    signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
+    install_signal_handlers();
     if(spawn_node_process()!=0){ fprintf(stderr, "qrxd: failed to start node-run\n"); return 1; }
     MaintCtx ctx = { g_ndir, g_cdir };
 #ifdef _WIN32
@@ -941,6 +1034,7 @@ int main(int argc, char **argv){
 
 qrx_wsa_init_once();
     qrx_socket_t s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    g_rpc_listen_fd = s;
 #ifdef _WIN32
     if(s == INVALID_SOCKET){ fprintf(stderr, "rpc socket failed\n"); return 1; }
 #else
@@ -987,11 +1081,7 @@ qrx_wsa_init_once();
 #endif
         if(stop_after) break;
     }
-#ifdef _WIN32
-    closesocket(s);
-#else
-    close(s);
-#endif
+    qrx_close_rpc_listener();
     stop_node_process();
 #ifdef _WIN32
     g_running = 0;
@@ -1003,3 +1093,22 @@ qrx_wsa_init_once();
 #endif
     return 0;
 }
+
+/*
+ * P2P runtime options added:
+ *   --maxconnections N
+ *   --outbound N
+ *   --seednode HOST:PORT
+ *   --nolisten
+ *
+ * Default DNS seeds:
+ *   seed1.qrxchain.org
+ *   seed2.qrxchain.org
+ *   seed3.qrxchain.org
+ *
+ * Community bootstrap IP placeholders:
+ *   203.0.113.10
+ *   203.0.113.11
+ *   203.0.113.12
+ *   203.0.113.13
+ */
