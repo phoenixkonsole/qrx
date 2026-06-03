@@ -29,9 +29,30 @@ option(QRX_REQUIRE_PQC "Require OpenSSL with ML-DSA / post-quantum support" ON)
 
 find_package(OpenSSL REQUIRED)
 
-if(QRX_REQUIRE_PQC AND OpenSSL_VERSION VERSION_LESS "3.5.0")
-    message(FATAL_ERROR "QRX hybrid consensus requires OpenSSL >= 3.5.0 with ML-DSA support. Found ${OpenSSL_VERSION}. Build OpenSSL 3.6.x and pass -DOPENSSL_ROOT_DIR=/opt/qrx-openssl, or configure with -DQRX_REQUIRE_PQC=OFF only for non-mainnet developer builds.")
+# Different CMake/OpenSSL versions expose the version string under
+# different variable names. Normalize it first.
+if(DEFINED OPENSSL_VERSION)
+    set(QRX_OPENSSL_VERSION "${OPENSSL_VERSION}")
+elseif(DEFINED OPENSSL_VERSION_STRING)
+    set(QRX_OPENSSL_VERSION "${OPENSSL_VERSION_STRING}")
+elseif(DEFINED OpenSSL_VERSION)
+    set(QRX_OPENSSL_VERSION "${OpenSSL_VERSION}")
+else()
+    set(QRX_OPENSSL_VERSION "0.0.0")
 endif()
+
+message(STATUS "Detected OpenSSL version: ${QRX_OPENSSL_VERSION}")
+
+if(QRX_REQUIRE_PQC AND QRX_OPENSSL_VERSION VERSION_LESS "3.5.0")
+    message(FATAL_ERROR
+        "QRX hybrid consensus requires OpenSSL >= 3.5.0 with ML-DSA support. "
+        "Detected: ${QRX_OPENSSL_VERSION}. "
+        "Please build OpenSSL 3.6.x and configure with "
+        "-DOPENSSL_ROOT_DIR=/opt/qrx-openssl, "
+        "or use -DQRX_REQUIRE_PQC=OFF for developer-only builds."
+    )
+endif()
+
 find_package(Threads REQUIRED)
 
 # -----------------------------
