@@ -113,7 +113,7 @@ static void stop_node_process(void) {
 }
 
 static void usage(void){
-    puts("qrxd --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--listen host:port] [--addnode host:port]... [--rpc-bind host:port] [--rpc-user USER] [--rpc-password PASS] [--wallet-passphrase PASS] [--no-wallet-passphrase-default] [--blocktime SECONDS] [--commission-bps BPS] [--no-block-producer]\nJSON-RPC is served over HTTP on --rpc-bind. Default: 127.0.0.1:3766x based on network. Auth is enabled when --rpc-user and --rpc-password are provided. For validator/block-producer signing, set QRX_PASSPHRASE or pass --wallet-passphrase. Alpha/testnet/regtest keep backward compatibility with the auto-generated default passphrase unless --no-wallet-passphrase-default is used.");
+    puts("qrxd --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--listen host:port] [--addnode host:port]... [--seednode host:port]... [--rpc-bind host:port] [--rpc-user USER] [--rpc-password PASS] [--wallet-passphrase PASS] [--no-wallet-passphrase-default] [--blocktime SECONDS] [--commission-bps BPS] [--no-block-producer]\nJSON-RPC is served over HTTP on --rpc-bind. Default: 127.0.0.1:3766x based on network. Auth is enabled when --rpc-user and --rpc-password are provided. For validator/block-producer signing, set QRX_PASSPHRASE or pass --wallet-passphrase. Alpha/testnet/regtest keep backward compatibility with the auto-generated default passphrase unless --no-wallet-passphrase-default is used.");
 }
 
 static void qrx_close_rpc_listener(void) {
@@ -991,7 +991,7 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"--datadir")&&i+1<argc) datadir=argv[++i];
         else if(!strcmp(argv[i],"--wallet")&&i+1<argc) wallet=argv[++i];
         else if(!strcmp(argv[i],"--listen")&&i+1<argc) listen_arg=argv[++i];
-        else if(!strcmp(argv[i],"--addnode")&&i+1<argc&&addnode_count<64) addnodes[addnode_count++]=argv[++i];
+        else if((!strcmp(argv[i],"--addnode") || !strcmp(argv[i],"--seednode"))&&i+1<argc&&addnode_count<64) addnodes[addnode_count++]=argv[++i];
         else if(!strcmp(argv[i],"--rpc-bind")&&i+1<argc) rpc_bind_arg=argv[++i];
         else if(!strcmp(argv[i],"--rpc-user")&&i+1<argc) snprintf(g_rpc_user,sizeof(g_rpc_user),"%s",argv[++i]);
         else if(!strcmp(argv[i],"--rpc-password")&&i+1<argc) snprintf(g_rpc_password,sizeof(g_rpc_password),"%s",argv[++i]);

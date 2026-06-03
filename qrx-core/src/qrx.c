@@ -617,7 +617,7 @@ static int wallet_build_core(const char *dir, const char *passphrase, char **out
     EVP_PKEY_CTX *ectx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, NULL); if (!ectx) return -1;
     EVP_PKEY *ed = NULL; if (EVP_PKEY_keygen_init(ectx) != 1 || EVP_PKEY_keygen(ectx, &ed) != 1) { EVP_PKEY_CTX_free(ectx); return -1; }
     EVP_PKEY_CTX_free(ectx);
-    EVP_PKEY_CTX *mctx = EVP_PKEY_CTX_new_from_name(NULL, "ML-DSA-65", NULL); if (!mctx) { EVP_PKEY_free(ed); return -1; }
+    EVP_PKEY_CTX *mctx = EVP_PKEY_CTX_new_from_name(NULL, "ML-DSA-65", NULL); if (!mctx) { fprintf(stderr, "ERROR: ML-DSA-65 is not available in this OpenSSL build (%s). QRX mainnet hybrid wallets require OpenSSL >= 3.5, recommended 3.6.x.\n", OpenSSL_version(OPENSSL_VERSION)); EVP_PKEY_free(ed); return -1; }
     EVP_PKEY *ml = NULL; if (EVP_PKEY_keygen_init(mctx) != 1 || EVP_PKEY_generate(mctx, &ml) != 1) { EVP_PKEY_CTX_free(mctx); EVP_PKEY_free(ed); return -1; }
     EVP_PKEY_CTX_free(mctx);
     char path[1024];

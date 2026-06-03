@@ -3,8 +3,8 @@
 #include <stddef.h>
 
 #define QRX_FINALITY_HASH_SIZE 64
-#define QRX_FINALITY_SIG_SIZE  128
-#define QRX_FINALITY_PUB_SIZE  96
+#define QRX_FINALITY_SIG_SIZE  8192
+#define QRX_FINALITY_PUB_SIZE  8192
 
 typedef enum {
     QRX_VOTE_PREVOTE   = 1,

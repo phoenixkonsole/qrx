@@ -25,8 +25,13 @@ endif()
 option(QRX_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(QRX_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(QRX_ENABLE_HARDENING "Enable basic hardening flags" ON)
+option(QRX_REQUIRE_PQC "Require OpenSSL with ML-DSA / post-quantum support" ON)
 
 find_package(OpenSSL REQUIRED)
+
+if(QRX_REQUIRE_PQC AND OpenSSL_VERSION VERSION_LESS "3.5.0")
+    message(FATAL_ERROR "QRX hybrid consensus requires OpenSSL >= 3.5.0 with ML-DSA support. Found ${OpenSSL_VERSION}. Build OpenSSL 3.6.x and pass -DOPENSSL_ROOT_DIR=/opt/qrx-openssl, or configure with -DQRX_REQUIRE_PQC=OFF only for non-mainnet developer builds.")
+endif()
 find_package(Threads REQUIRED)
 
 # -----------------------------
@@ -37,6 +42,9 @@ add_library(qrxcore STATIC
     src/core_frontend.c
     src/chain_params.c
     src/qrxdb.c
+    src/consensus/qrx_finality.c
+    src/consensus/qrx_finality_state.c
+    src/consensus/qrx_slashing.c
 )
 
 target_include_directories(qrxcore PUBLIC
