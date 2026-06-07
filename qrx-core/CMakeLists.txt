@@ -27,6 +27,13 @@ option(QRX_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(QRX_ENABLE_HARDENING "Enable basic hardening flags" ON)
 option(QRX_REQUIRE_PQC "Require OpenSSL with ML-DSA / post-quantum support" ON)
 
+# Prefer a caller-supplied OpenSSL root, especially for QRX static/PQC builds.
+# Example:
+#   -DOPENSSL_ROOT_DIR=/opt/qrx-openssl-static
+if(DEFINED OPENSSL_ROOT_DIR AND OPENSSL_ROOT_DIR)
+    list(PREPEND CMAKE_PREFIX_PATH "${OPENSSL_ROOT_DIR}")
+endif()
+
 find_package(OpenSSL REQUIRED)
 
 # Different CMake/OpenSSL versions expose the version string under
@@ -58,7 +65,7 @@ find_package(Threads REQUIRED)
 # -----------------------------
 # Core Library
 # -----------------------------
-add_library(qrxcore STATIC
+set(QRX_CORE_SOURCES
     src/qrx.c
     src/core_frontend.c
     src/chain_params.c
@@ -68,13 +75,21 @@ add_library(qrxcore STATIC
     src/consensus/qrx_slashing.c
 )
 
+add_library(qrxcore STATIC ${QRX_CORE_SOURCES})
+
 target_include_directories(qrxcore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${OPENSSL_INCLUDE_DIR}
 )
 
-target_link_libraries(qrxcore PUBLIC
-    OpenSSL::Crypto
-)
+# Prefer the explicit OpenSSL crypto library path when the caller provides one.
+# This avoids accidental linking against system OpenSSL, e.g. Ubuntu 3.0.x or
+# Intel Homebrew OpenSSL on Apple Silicon.
+if(OPENSSL_CRYPTO_LIBRARY)
+    target_link_libraries(qrxcore PUBLIC ${OPENSSL_CRYPTO_LIBRARY})
+else()
+    target_link_libraries(qrxcore PUBLIC OpenSSL::Crypto)
+endif()
 
 if(WIN32)
     target_link_libraries(qrxcore PUBLIC ws2_32)
@@ -133,25 +148,30 @@ endif()
 # -----------------------------
 # Executables
 # -----------------------------
-add_executable(qrx src/qrx_main.c)
+set(QRX_OPENSSL_APPLINK_SRC "")
+if(WIN32)
+    set(QRX_OPENSSL_APPLINK_SRC src/openssl_applink.c)
+endif()
+
+add_executable(qrx src/qrx_main.c ${QRX_OPENSSL_APPLINK_SRC})
 target_link_libraries(qrx PRIVATE qrxcore)
 
-add_executable(qrxd src/qrxd.c)
+add_executable(qrxd src/qrxd.c ${QRX_OPENSSL_APPLINK_SRC})
 target_link_libraries(qrxd PRIVATE qrxcore Threads::Threads)
 
-add_executable(qrx-cli src/qrx_cli.c)
+add_executable(qrx-cli src/qrx_cli.c ${QRX_OPENSSL_APPLINK_SRC})
 target_link_libraries(qrx-cli PRIVATE qrxcore)
 
-add_executable(qrxdb_verify src/qrxdb_verify_tool.c)
+add_executable(qrxdb_verify src/qrxdb_verify_tool.c ${QRX_OPENSSL_APPLINK_SRC})
 target_link_libraries(qrxdb_verify PRIVATE qrxcore)
 
-add_executable(qrxdb_salvage src/qrxdb_salvage_tool.c)
+add_executable(qrxdb_salvage src/qrxdb_salvage_tool.c ${QRX_OPENSSL_APPLINK_SRC})
 target_link_libraries(qrxdb_salvage PRIVATE qrxcore)
 
-add_executable(qrxdb_compact src/qrxdb_compact_tool.c)
+add_executable(qrxdb_compact src/qrxdb_compact_tool.c ${QRX_OPENSSL_APPLINK_SRC})
 target_link_libraries(qrxdb_compact PRIVATE qrxcore)
 
-add_executable(qrxdb_snapshot src/qrxdb_snapshot_tool.c)
+add_executable(qrxdb_snapshot src/qrxdb_snapshot_tool.c ${QRX_OPENSSL_APPLINK_SRC})
 target_link_libraries(qrxdb_snapshot PRIVATE qrxcore)
 
 if(WIN32)
