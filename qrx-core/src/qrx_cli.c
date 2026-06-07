@@ -42,6 +42,47 @@
   #define PATH_MAX 4096
 #endif
 
+static void qrx_trim_line(char *s) {
+    if(!s) return;
+    s[strcspn(s, "\r\n \t")] = 0;
+}
+
+static int qrx_read_file_first_line(const char *path, char *out, size_t out_sz) {
+    FILE *f;
+    if(!path || !out || out_sz == 0) return -1;
+    f = fopen(path, "rb");
+    if(!f) return -1;
+    if(!fgets(out, (int)out_sz, f)) { fclose(f); return -1; }
+    fclose(f);
+    qrx_trim_line(out);
+    return out[0] ? 0 : -1;
+}
+
+static void qrx_global_state_path(char *out, size_t out_sz, const char *leaf) {
+#ifdef _WIN32
+    const char *home = getenv("USERPROFILE");
+    if(!home) home = getenv("APPDATA");
+#else
+    const char *home = getenv("HOME");
+#endif
+    if(!home) home = ".";
+    snprintf(out, out_sz, "%s/.qrx/%s", home, leaf);
+}
+
+static const char *qrx_detect_network(char *buf, size_t buf_sz) {
+    const char *env = getenv("QRX_NETWORK");
+    char path[PATH_MAX];
+    if(env && *env) {
+        snprintf(buf, buf_sz, "%s", env);
+        qrx_trim_line(buf);
+        return buf;
+    }
+    qrx_global_state_path(path, sizeof(path), "current_network");
+    if(qrx_read_file_first_line(path, buf, buf_sz) == 0) return buf;
+    snprintf(buf, buf_sz, "alpha");
+    return buf;
+}
+
 static int qrx_control_port_for_network(const char *network) {
     if (!network || !*network) return 37661;
     if (!strcmp(network, "mainnet")) return 37660;
@@ -89,7 +130,7 @@ static void make_auth_header(char *out, size_t out_sz) {
 }
 
 static void usage(void){
-    puts("qrx-cli --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--rpc-user USER] [--rpc-password PASS] <command>\nCommands: getinfo|getnewaddress|getbalance [addr]|getblockcount|getpeerinfo|getstakinginfo|getwalletinfo|getreward [height]|getparams [height]|gethalving [height]|getforks|getactivefork [height]|sendtoaddress <addr> <amount> [memo]|sendrawtransaction <txfile>|history [addr] [limit]|addnode <host:port>|listpeers|peerstatus|banscores|stake <amount>|delegate <validator> <amount>|validator-set|tokenomics|getdevaddress|faucet <addr> <amount>|createswap <recipient> <amount> <hashlock_hex> <timelock_seconds> [memo]|redeemswap <swap_id> <secret>|refundswap <swap_id>|getswap <swap_id>|listswaps|shielded-address|shield <amount> [shielded_address]|shielded-balance|shielded-send <shielded_address> <amount>|unshield <transparent_address> <amount>|shielded-history|stealth-address|stealth-send <stealth_address> <amount> [memo]|stealth-scan|stealth-history|privacy-feature-status|stop");
+    puts("qrx-cli [--network <alpha|testnet|regtest|mainnet>] [--datadir PATH] [--wallet NAME] [--rpc-user USER] [--rpc-password PASS] <command>\nCommands: getinfo|getnewaddress|listaddresses|getbalance [addr]|getblockcount|getblockchaininfo|getnetworkinfo|getnodestatus|getuptime|getbuildinfo|getpeerinfo|getstakinginfo|getwalletinfo|getreward [height]|getparams [height]|gethalving [height]|getforks|getactivefork [height]|sendtoaddress <addr> <amount> [memo]|sendrawtransaction <txfile>|history [addr] [limit]|addnode <host:port>|listpeers|peerstatus|banscores|stake <amount>|delegate <validator> <amount>|validator-set|tokenomics|getdevaddress|faucet <addr> <amount>|createswap <recipient> <amount> <hashlock_hex> <timelock_seconds> [memo]|redeemswap <swap_id> <secret>|refundswap <swap_id>|getswap <swap_id>|listswaps|shielded-address|shield <amount> [shielded_address]|shielded-balance|shielded-send <shielded_address> <amount>|unshield <transparent_address> <amount>|shielded-history|stealth-address|stealth-send <stealth_address> <amount> [memo]|stealth-scan|stealth-history|privacy-feature-status|stop");
 }
 
 static int socket_call(const char *sock_path, const char *cmd, char *out, size_t out_sz){
@@ -195,7 +236,8 @@ static int socket_call(const char *sock_path, const char *cmd, char *out, size_t
 
 
 int main(int argc,char **argv){
-    const char *network="alpha", *datadir=NULL, *wallet="default"; int cmdi=-1;
+    char detected_network[64];
+    const char *network=NULL, *datadir=NULL, *wallet="default"; int cmdi=-1;
     char base[PATH_MAX], cdir[PATH_MAX], wdir[PATH_MAX], ndir[PATH_MAX], sock[PATH_MAX];
     for(int i=1;i<argc;++i){
         if(!strcmp(argv[i],"--network")&&i+1<argc){network=argv[++i]; continue;}
@@ -210,7 +252,9 @@ int main(int argc,char **argv){
     snprintf(sock, sizeof(sock), "http://127.0.0.1:%d/rpc", qrx_control_port_for_network(network));
     char cmd[4096] = {0};
     if(!strcmp(argv[cmdi],"getinfo")) snprintf(cmd,sizeof(cmd),"getinfo\n");
-    else if(!strcmp(argv[cmdi],"getnewaddress")||!strcmp(argv[cmdi],"address")||!strcmp(argv[cmdi],"receive")) snprintf(cmd,sizeof(cmd),"getnewaddress\n");
+    else if(!strcmp(argv[cmdi],"getnewaddress")) snprintf(cmd,sizeof(cmd),"getnewaddress\n");
+    else if(!strcmp(argv[cmdi],"address")||!strcmp(argv[cmdi],"receive")) snprintf(cmd,sizeof(cmd),"address\n");
+    else if(!strcmp(argv[cmdi],"listaddresses")) snprintf(cmd,sizeof(cmd),"listaddresses\n");
     else if(!strcmp(argv[cmdi],"getbalance")) snprintf(cmd,sizeof(cmd), cmdi+1<argc ? "getbalance %s\n" : "getbalance\n", cmdi+1<argc?argv[cmdi+1]:"");
     else if(!strcmp(argv[cmdi],"getblockcount")) snprintf(cmd,sizeof(cmd),"getblockcount\n");
     else if(!strcmp(argv[cmdi],"getpeerinfo")) snprintf(cmd,sizeof(cmd),"getpeerinfo\n");

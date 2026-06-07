@@ -107,6 +107,7 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -191,7 +192,7 @@ static void on_sigint(int sig) { (void)sig; g_stop = 1; }
 static long long count_regular_files_local(const char *dirpath) {
 #ifdef _WIN32
     char pattern[1024];
-    snprintf(pattern, sizeof(pattern), "%s\*", dirpath);
+    snprintf(pattern, sizeof(pattern), "%s\\*", dirpath);
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pattern, &fd);
     if (h == INVALID_HANDLE_VALUE) return 0;
@@ -249,10 +250,38 @@ static int collect_fork_heights_from_genesis(const char *chain_dir, long long *h
 static void die(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt); vfprintf(stderr, fmt, ap); va_end(ap); fputc('\n', stderr); exit(1);
 }
+
+static long long parse_ll_strict(const char *s, const char *field) {
+    if (!s || !*s) die("missing %s", field);
+    errno = 0;
+    char *end = NULL;
+    long long v = strtoll(s, &end, 10);
+    if (errno == ERANGE || end == s || (end && *end != '\0')) die("invalid %s", field);
+    return v;
+}
+
+static long long parse_positive_ll_strict(const char *s, const char *field) {
+    long long v = parse_ll_strict(s, field);
+    if (v <= 0) die("%s must be > 0", field);
+    return v;
+}
+
+static long long parse_nonnegative_ll_strict(const char *s, const char *field) {
+    long long v = parse_ll_strict(s, field);
+    if (v < 0) die("%s must be >= 0", field);
+    return v;
+}
+
+static void checked_add_ll(long long a, long long b, const char *what, long long *out) {
+    if (b > 0 && a > LLONG_MAX - b) die("%s overflow", what);
+    if (b < 0 && a < LLONG_MIN - b) die("%s underflow", what);
+    *out = a + b;
+}
+
 static void usage(void) {
     puts("qrx rc6.2-tokenomics\n"
          "Commands:\n"
-         "  keygen <wallet-dir>\n  seed-new <wallet-dir>\n  wallet-info <wallet-dir>\n  wallet-recover <wallet-dir> <recovery-file>\n"
+         "  keygen <wallet-dir>\n  seed-new <wallet-dir>\n  wallet-info <wallet-dir>\n  wallet-new-address <wallet-dir>\n  listaddresses <wallet-dir>\n  wallet-recover <wallet-dir> <recovery-file>\n"
          "  address <wallet-dir>\n  legacy-address <wallet-dir>\n  migrate-address <wallet-dir>\n  state-migrate-address <chain-dir> <old-address> <new-address>\n"
          "  init-chain <chain-dir>\n"
          "  faucet <chain-dir> <address> <amount>\n  getdevaddress <chain-dir>\n"
@@ -721,6 +750,96 @@ static char *wallet_address(const char *dir) {
     char path[1024]; snprintf(path, sizeof(path), "%s/address.txt", dir); return read_file(path, NULL);
 }
 
+static int address_seen_in_text(const char *txt, const char *addr) {
+    if(!txt || !addr || !*addr) return 0;
+    size_t alen = strlen(addr);
+    const char *p = txt;
+    while(p && *p) {
+        const char *e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        while(len && (p[len-1] == '\r' || p[len-1] == ' ' || p[len-1] == '\t')) len--;
+        if(len == alen && !strncmp(p, addr, alen)) return 1;
+        p = e ? e + 1 : NULL;
+    }
+    return 0;
+}
+
+static int wallet_addresses_index_add(const char *dir, const char *addr) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/addresses.txt", dir);
+    char *txt = read_file(path, NULL);
+    if(txt && address_seen_in_text(txt, addr)) { free(txt); return 0; }
+    free(txt);
+    char line[768];
+    snprintf(line, sizeof(line), "%s\n", addr);
+    return append_text(path, line);
+}
+
+static int wallet_index_primary_address(const char *dir) {
+    char *primary = wallet_address(dir);
+    if(!primary) return 0;
+    primary[strcspn(primary, "\r\n")] = 0;
+    int rc = wallet_addresses_index_add(dir, primary);
+    free(primary);
+    return rc;
+}
+
+static int wallet_new_address_cmd(const char *dir) {
+    if(ensure_wallet_dir(dir) != 0) die("failed to create wallet dir");
+    wallet_index_primary_address(dir);
+
+    char pass[256];
+    if(get_passphrase(pass, sizeof(pass), "Passphrase: ") != 0) die("passphrase failed");
+
+    char addrs_dir[1024];
+    snprintf(addrs_dir, sizeof(addrs_dir), "%s/addresses", dir);
+    if(mkdir_p(addrs_dir) != 0) die("failed to create addresses dir");
+
+    char tmpdir[1024];
+    unsigned char rnd[8];
+    if(RAND_bytes(rnd, sizeof(rnd)) != 1) die("entropy failed");
+    char *rndhex = bytes_to_hex(rnd, sizeof(rnd));
+    snprintf(tmpdir, sizeof(tmpdir), "%s/.new-%lld-%s", addrs_dir, (long long)time(NULL), rndhex ? rndhex : "tmp");
+    free(rndhex);
+    if(mkdir_p(tmpdir) != 0) die("failed to create address dir");
+
+    char *addr = NULL; EVP_PKEY *ed = NULL, *ml = NULL;
+    if(wallet_build_core(tmpdir, pass, &addr, &ed, &ml) != 0) die("wallet address build failed");
+
+    char finaldir[1536];
+    snprintf(finaldir, sizeof(finaldir), "%s/%s", addrs_dir, addr);
+    if(rename(tmpdir, finaldir) != 0) {
+        /* If rename fails because the address directory already exists, keep the temp dir readable
+           but still return the new address. This is extremely unlikely. */
+    }
+
+    if(wallet_addresses_index_add(dir, addr) != 0) die("address index write failed");
+    printf("%s\n", addr);
+
+    OPENSSL_cleanse(pass, sizeof(pass));
+    free(addr); EVP_PKEY_free(ed); EVP_PKEY_free(ml);
+    return 0;
+}
+
+static int wallet_list_addresses_cmd(const char *dir) {
+    wallet_index_primary_address(dir);
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/addresses.txt", dir);
+    char *txt = read_file(path, NULL);
+    if(txt && *txt) {
+        printf("%s", txt);
+        if(txt[strlen(txt)-1] != '\n') printf("\n");
+        free(txt);
+        return 0;
+    }
+    free(txt);
+    char *primary = wallet_address(dir);
+    if(!primary) die("missing address");
+    primary[strcspn(primary, "\r\n")] = 0;
+    printf("%s\n", primary);
+    free(primary);
+    return 0;
+}
 
 static int legacy_address_cmd(const char *dir) {
     char pass[8] = {0}; (void)pass;
@@ -1520,6 +1639,11 @@ static int verify_tx_text(const char *chain_dir, const char *tx) {
     char *exp_gen = chain_cfg_value(chain_dir, "genesis_hash");
     char *exp_ver = chain_cfg_value(chain_dir, "protocol_version");
     if (strcmp(network_id, exp_net) || strcmp(genesis_hash, exp_gen) || strcmp(protocol_version, exp_ver)) die("tx network binding mismatch");
+    if (!from || !*from || !to || !*to) die("invalid tx addresses");
+    long long amt_check = parse_positive_ll_strict(amount, "amount");
+    long long fee_check = parse_nonnegative_ll_strict(fee, "fee");
+    long long debit_check = 0;
+    checked_add_ll(amt_check, fee_check, "amount plus fee", &debit_check);
 
     char *body = canonical_tx_body(network_id, genesis_hash, protocol_version, from, to, amount, fee, nonce, timestamp, memo, ed_pub_hex, ml_pub_b64);
     char body_hash_sha3_calc[129]; hash_primary_hex((unsigned char*)body, strlen(body), body_hash_sha3_calc);
@@ -1550,8 +1674,9 @@ static int verify_tx_text(const char *chain_dir, const char *tx) {
     char noncepath[1024], applpath[1024];
     state_paths(chain_dir, NULL, 0, noncepath, sizeof(noncepath), applpath, sizeof(applpath), NULL, 0);
     long long current = kv_get_ll_bin(noncepath, from);
-    long long n = atoll(nonce);
-    if (n <= current) die("stale nonce");
+    long long n = parse_positive_ll_strict(nonce, "nonce");
+    if (current == LLONG_MAX) die("nonce overflow");
+    if (n != current + 1) die("invalid nonce: expected current nonce + 1");
     if (applied_has_bin(applpath, applied_key)) die("already applied tx");
 
     free(network_id); free(genesis_hash); free(protocol_version); free(from); free(to); free(amount); free(fee); free(nonce); free(timestamp); free(memo); free(ed_pub_hex); free(ml_pub_b64); if (body_hash_algo) free(body_hash_algo); if (body_hash_sha3) free(body_hash_sha3); if (body_hash_sha256_legacy) free(body_hash_sha256_legacy); if (body_hash_legacy) free(body_hash_legacy); free(sig1_hex); free(sig2_hex); free(exp_net); free(exp_gen); free(exp_ver); free(body); free(mlpem); free(mlpemstr); free(sig1); free(sig2);
@@ -1570,20 +1695,31 @@ static int applytx_cmd(const char *chain_dir, const char *tx_file) {
     char *from = cfg_get(tx, "from"); char *to = cfg_get(tx, "to"); char *amount = cfg_get(tx, "amount"); char *fee_s = cfg_get(tx, "fee"); char *nonce = cfg_get(tx, "nonce");
     char *body_hash_sha3 = cfg_get(tx, "body_hash_sha3_512"); char *body_hash_legacy = cfg_get(tx, "body_hash");
     const char *body_hash = body_hash_sha3 ? body_hash_sha3 : body_hash_legacy;
-    long long amt = atoll(amount); long long fee = fee_s ? atoll(fee_s) : 0; if (fee < 0) die("invalid fee");
+    if (!from || !*from || !to || !*to) die("invalid tx addresses");
+    long long amt = parse_positive_ll_strict(amount, "amount");
+    long long fee = fee_s ? parse_nonnegative_ll_strict(fee_s, "fee") : 0;
+    long long n = parse_positive_ll_strict(nonce, "nonce");
+    long long debit = 0;
+    checked_add_ll(amt, fee, "amount plus fee", &debit);
     char balpath[1024], noncepath[1024], applpath[1024];
     state_paths(chain_dir, balpath, sizeof(balpath), noncepath, sizeof(noncepath), applpath, sizeof(applpath), NULL, 0);
-    long long frombal = kv_get_ll_bin(balpath, from); if (frombal < amt + fee) die("insufficient funds");
+    long long current_nonce = kv_get_ll_bin(noncepath, from);
+    if (current_nonce == LLONG_MAX) die("nonce overflow");
+    if (n != current_nonce + 1) die("invalid nonce: expected current nonce + 1");
+    long long frombal = kv_get_ll_bin(balpath, from); if (frombal < debit) die("insufficient funds");
     long long tobal = kv_get_ll_bin(balpath, to);
-    if (kv_set_ll_bin(balpath, from, frombal - amt - fee) != 0) die("state write failed");
-    if (kv_set_ll_bin(balpath, to, tobal + amt) != 0) die("state write failed");
+    long long new_frombal = 0, new_tobal = 0;
+    checked_add_ll(frombal, -debit, "sender balance", &new_frombal);
+    checked_add_ll(tobal, amt, "recipient balance", &new_tobal);
+    if (kv_set_ll_bin(balpath, from, new_frombal) != 0) die("state write failed");
+    if (kv_set_ll_bin(balpath, to, new_tobal) != 0) die("state write failed");
     if (fee_pool_add(chain_dir, fee) != 0) die("fee pool update failed");
-    if (kv_set_ll_bin(noncepath, from, atoll(nonce)) != 0) die("state write failed");
+    if (kv_set_ll_bin(noncepath, from, n) != 0) die("state write failed");
     if (applied_add_bin(applpath, body_hash) != 0) die("state write failed");
     { QrxDB db; if (qrxdb_init(&db, chain_dir) == 0) {
-        qrxdb_chain_set_balance(&db, from, frombal - amt - fee);
-        qrxdb_chain_set_balance(&db, to, tobal + amt);
-        qrxdb_chain_set_nonce(&db, from, atoll(nonce));
+        qrxdb_chain_set_balance(&db, from, new_frombal);
+        qrxdb_chain_set_balance(&db, to, new_tobal);
+        qrxdb_chain_set_nonce(&db, from, n);
         qrxdb_chain_mark_applied(&db, body_hash, (uint64_t)current_height_from_chain(chain_dir));
         qrxdb_chain_index_tx(&db, body_hash, "mempool-or-direct-apply", (uint64_t)current_height_from_chain(chain_dir), 0, tx);
         qrxdb_close(&db);
@@ -3846,6 +3982,8 @@ int qrx_backend_main(int argc, char **argv) {
     if (!strcmp(argv[1], "keygen") && argc == 3) return wallet_keygen(argv[2]);
     if (!strcmp(argv[1], "seed-new") && argc == 3) return wallet_seed_new(argv[2]);
     if (!strcmp(argv[1], "wallet-info") && argc == 3) return wallet_info_cmd(argv[2]);
+    if (!strcmp(argv[1], "wallet-new-address") && argc == 3) return wallet_new_address_cmd(argv[2]);
+    if (!strcmp(argv[1], "listaddresses") && argc == 3) return wallet_list_addresses_cmd(argv[2]);
     if (!strcmp(argv[1], "hybrid-status") && argc == 3) return hybrid_status_cmd(argv[2]);
     if (!strcmp(argv[1], "wallet-recover") && argc == 4) return wallet_recover_cmd(argv[2], argv[3]);
     if (!strcmp(argv[1], "address") && argc == 3) { char *a = wallet_address(argv[2]); if (!a) return 1; printf("%s", a); free(a); return 0; }

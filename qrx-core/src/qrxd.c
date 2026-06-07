@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
+#include <openssl/crypto.h>
 
 #ifdef _WIN32
   #ifndef WIN32_LEAN_AND_MEAN
@@ -63,6 +65,59 @@
   #define PATH_MAX 4096
 #endif
 
+static void qrx_trim_line(char *s) {
+    if(!s) return;
+    s[strcspn(s, "\r\n \t")] = 0;
+}
+
+static int qrx_mkdir_simple(const char *path) {
+#ifdef _WIN32
+    if(_mkdir(path) != 0 && errno != EEXIST) return -1;
+#else
+    if(mkdir(path, 0700) != 0 && errno != EEXIST) return -1;
+#endif
+    return 0;
+}
+
+static void qrx_global_state_path(char *out, size_t out_sz, const char *leaf) {
+#ifdef _WIN32
+    const char *home = getenv("USERPROFILE");
+    if(!home) home = getenv("APPDATA");
+#else
+    const char *home = getenv("HOME");
+#endif
+    if(!home) home = ".";
+    snprintf(out, out_sz, "%s/.qrx/%s", home, leaf);
+}
+
+static int qrx_write_current_network(const char *network) {
+    char dir[PATH_MAX], path[PATH_MAX];
+    FILE *f;
+#ifdef _WIN32
+    const char *home = getenv("USERPROFILE");
+    if(!home) home = getenv("APPDATA");
+#else
+    const char *home = getenv("HOME");
+#endif
+    if(!home) home = ".";
+    snprintf(dir, sizeof(dir), "%s/.qrx", home);
+    if(qrx_mkdir_simple(dir) != 0) return -1;
+    qrx_global_state_path(path, sizeof(path), "current_network");
+    f = fopen(path, "wb");
+    if(!f) return -1;
+    fprintf(f, "%s\n", network ? network : "alpha");
+    fclose(f);
+    return 0;
+}
+
+#ifndef QRX_VERSION
+#define QRX_VERSION "0.0.6"
+#endif
+
+#ifndef QRX_BUILD_ID
+#define QRX_BUILD_ID __DATE__ " " __TIME__
+#endif
+
 static int qrx_control_port_for_network(const char *network) {
     if (!network || !*network) return 37661;
     if (!strcmp(network, "mainnet")) return 37660;
@@ -93,6 +148,7 @@ static char g_rpc_user[128] = "";
 static char g_rpc_password[256] = "";
 static char g_wallet_passphrase[256] = "";
 static int g_wallet_passphrase_default_disabled = 0;
+static time_t g_start_time = 0;
 
 typedef struct {
     const char *node_dir;
@@ -113,7 +169,7 @@ static void stop_node_process(void) {
 }
 
 static void usage(void){
-    puts("qrxd --network <alpha|testnet|regtest|mainnet> [--datadir PATH] [--wallet NAME] [--listen host:port] [--addnode host:port]... [--seednode host:port]... [--rpc-bind host:port] [--rpc-user USER] [--rpc-password PASS] [--wallet-passphrase PASS] [--no-wallet-passphrase-default] [--blocktime SECONDS] [--commission-bps BPS] [--no-block-producer]\nJSON-RPC is served over HTTP on --rpc-bind. Default: 127.0.0.1:3766x based on network. Auth is enabled when --rpc-user and --rpc-password are provided. For validator/block-producer signing, set QRX_PASSPHRASE or pass --wallet-passphrase. Alpha/testnet/regtest keep backward compatibility with the auto-generated default passphrase unless --no-wallet-passphrase-default is used.");
+    puts("qrxd [--network <alpha|testnet|regtest|mainnet>] [--datadir PATH] [--wallet NAME] [--listen host:port] [--addnode host:port]... [--seednode host:port]... [--rpc-bind host:port] [--rpc-user USER] [--rpc-password PASS] [--wallet-passphrase PASS] [--no-wallet-passphrase-default] [--blocktime SECONDS] [--commission-bps BPS] [--no-block-producer]\nJSON-RPC is served over HTTP on --rpc-bind. Default: 127.0.0.1:3766x based on network. Auth is enabled when --rpc-user and --rpc-password are provided. For validator/block-producer signing, set QRX_PASSPHRASE or pass --wallet-passphrase. Alpha/testnet/regtest keep backward compatibility with the auto-generated default passphrase unless --no-wallet-passphrase-default is used.");
 }
 
 static void qrx_close_rpc_listener(void) {
@@ -156,11 +212,20 @@ static void install_signal_handlers(void) {
 #endif
 }
 
+static int qrx_set_env(const char *name, const char *value, int overwrite) {
+#ifdef _WIN32
+    if(!overwrite && getenv(name)) return 0;
+    return _putenv_s(name, value ? value : "");
+#else
+    return setenv(name, value ? value : "", overwrite);
+#endif
+}
+
 static void configure_wallet_passphrase(const char *network) {
     if(getenv("QRX_PASSPHRASE")) return;
 
     if(g_wallet_passphrase[0]) {
-        setenv("QRX_PASSPHRASE", g_wallet_passphrase, 1);
+        qrx_set_env("QRX_PASSPHRASE", g_wallet_passphrase, 1);
         return;
     }
 
@@ -177,7 +242,7 @@ static void configure_wallet_passphrase(const char *network) {
     if(!g_wallet_passphrase_default_disabled &&
        network &&
        strcmp(network, "mainnet") != 0) {
-        setenv("QRX_PASSPHRASE", "change-me", 0);
+        qrx_set_env("QRX_PASSPHRASE", "change-me", 0);
     }
 }
 
@@ -358,7 +423,11 @@ static void *maint_loop(void *arg){
         run_capture(decay, buf, sizeof(buf));
         for(int i=0;i<5 && g_running;i++) sleep(1);
     }
+#ifdef _WIN32
+    return 0;
+#else
     return NULL;
+#endif
 }
 
 #ifdef _WIN32
@@ -397,7 +466,11 @@ static void *producer_loop(void *arg){
         char *publish[] = { g_backend_path, "node-publish-block", g_ndir, block_path, NULL };
         run_capture(publish,out,sizeof(out));
     }
+#ifdef _WIN32
+    return 0;
+#else
     return NULL;
+#endif
 }
 
 static int write_all(qrx_socket_t fd, const char *buf, size_t len){
@@ -511,7 +584,7 @@ static void json_lines_array(char *dst, size_t dst_sz, const char *text){
 static long long count_regular_files(const char *dirpath){
 #ifdef _WIN32
     char search[MAX_PATH];
-    snprintf(search, sizeof(search), "%s\*", dirpath);
+    snprintf(search, sizeof(search), "%s\\*", dirpath);
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(search, &fd);
     if(h == INVALID_HANDLE_VALUE) return 0;
@@ -528,6 +601,166 @@ static long long count_regular_files(const char *dirpath){
     while((de = readdir(d))){ if(de->d_name[0]=='.') continue; if(de->d_type == DT_REG || de->d_type == DT_UNKNOWN) n++; }
     closedir(d); return n;
 #endif
+}
+
+static char *read_text_file_local(const char *path){
+    FILE *f = fopen(path, "rb");
+    if(!f) return NULL;
+    if(fseek(f, 0, SEEK_END) != 0){ fclose(f); return NULL; }
+    long n = ftell(f);
+    if(n < 0){ fclose(f); return NULL; }
+    rewind(f);
+    char *buf = (char*)malloc((size_t)n + 1);
+    if(!buf){ fclose(f); return NULL; }
+    size_t r = fread(buf, 1, (size_t)n, f);
+    fclose(f);
+    buf[r] = 0;
+    return buf;
+}
+
+static int cfg_value_local(const char *text, const char *key, char *out, size_t out_sz){
+    if(!text || !key || !out || out_sz == 0) return -1;
+    out[0] = 0;
+    size_t klen = strlen(key);
+    const char *p = text;
+    while(p && *p){
+        const char *e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if(len > klen && !strncmp(p, key, klen) && p[klen] == '='){
+            size_t vlen = len - klen - 1;
+            if(vlen >= out_sz) vlen = out_sz - 1;
+            memcpy(out, p + klen + 1, vlen);
+            out[vlen] = 0;
+            return 0;
+        }
+        p = e ? e + 1 : NULL;
+    }
+    return -1;
+}
+
+static long long parse_ll_safe(const char *s, long long fallback){
+    if(!s || !*s) return fallback;
+    char *end = NULL;
+    long long v = strtoll(s, &end, 10);
+    return end && end != s ? v : fallback;
+}
+
+static void qrx_best_block_info(long long *height, char *hash, size_t hash_sz, long long *block_time){
+    if(height) *height = 0;
+    if(hash && hash_sz) hash[0] = 0;
+    if(block_time) *block_time = 0;
+    char bdir[PATH_MAX];
+    snprintf(bdir, sizeof(bdir), "%s/blocks", g_cdir);
+    long long best_h = -1;
+    char best_hash[256] = {0};
+    long long best_ts = 0;
+#ifdef _WIN32
+    char search[MAX_PATH];
+    snprintf(search, sizeof(search), "%s\\*", bdir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(search, &fd);
+    if(h != INVALID_HANDLE_VALUE){
+        do {
+            if(fd.cFileName[0] == '.' || (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+            char path[MAX_PATH];
+            snprintf(path, sizeof(path), "%s\\%s", bdir, fd.cFileName);
+#else
+    DIR *d = opendir(bdir);
+    if(d){
+        struct dirent *fd;
+        while((fd = readdir(d))){
+            if(fd->d_name[0] == '.') continue;
+            char path[PATH_MAX];
+            snprintf(path, sizeof(path), "%s/%s", bdir, fd->d_name);
+#endif
+            char *txt = read_text_file_local(path);
+            if(txt){
+                char hs[64] = {0}, bh[256] = {0}, ts[64] = {0};
+                long long hval = -1;
+                if(cfg_value_local(txt, "height", hs, sizeof(hs)) == 0) hval = parse_ll_safe(hs, -1);
+                if(hval < 0) hval = 0;
+                cfg_value_local(txt, "block_hash", bh, sizeof(bh));
+                cfg_value_local(txt, "timestamp", ts, sizeof(ts));
+                if(hval > best_h){
+                    best_h = hval;
+                    snprintf(best_hash, sizeof(best_hash), "%s", bh);
+                    best_ts = parse_ll_safe(ts, 0);
+                }
+                free(txt);
+            }
+#ifdef _WIN32
+        } while(FindNextFileA(h, &fd));
+        FindClose(h);
+#else
+        }
+        closedir(d);
+#endif
+    }
+    if(best_h < 0) best_h = 0;
+    if(height) *height = best_h;
+    if(hash && hash_sz) snprintf(hash, hash_sz, "%s", best_hash);
+    if(block_time) *block_time = best_ts;
+}
+
+static long long qrx_count_lines_in_file(const char *path){
+    FILE *f = fopen(path, "rb");
+    if(!f) return 0;
+    long long n = 0;
+    char line[1024];
+    while(fgets(line, sizeof(line), f)){
+        char *p = line;
+        while(*p == ' ' || *p == '\t') p++;
+        if(*p && *p != '\r' && *p != '\n' && *p != '[' && strncmp(p, "no peers", 8)) n++;
+    }
+    fclose(f);
+    return n;
+}
+
+static long long qrx_connection_count(void){
+    char p[PATH_MAX];
+    snprintf(p, sizeof(p), "%s/peers.txt", g_ndir);
+    long long n = qrx_count_lines_in_file(p);
+    if(n <= 0){
+        snprintf(p, sizeof(p), "%s/known_peers.txt", g_ndir);
+        n = qrx_count_lines_in_file(p);
+    }
+    return n;
+}
+
+static long long qrx_best_peer_height(long long local_height){
+    char p[PATH_MAX];
+    snprintf(p, sizeof(p), "%s/peer_state.db", g_ndir);
+    char *txt = read_text_file_local(p);
+    if(!txt) return local_height;
+    long long best = local_height;
+    char *save = NULL;
+    char *line = strtok_r(txt, "\n", &save);
+    while(line){
+        char lower[512];
+        size_t i;
+        for(i=0; line[i] && i+1<sizeof(lower); ++i){
+            char c = line[i];
+            lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+        }
+        lower[i] = 0;
+        if(strstr(lower, "height") || strstr(lower, "block")){
+            char *eq = strchr(line, '=');
+            if(eq){
+                long long v = parse_ll_safe(eq+1, -1);
+                if(v > best) best = v;
+            }
+        }
+        line = strtok_r(NULL, "\n", &save);
+    }
+    free(txt);
+    return best;
+}
+
+static void qrx_uptime_human(long long sec, char *out, size_t out_sz){
+    long long d = sec / 86400; sec %= 86400;
+    long long h = sec / 3600; sec %= 3600;
+    long long m = sec / 60; sec %= 60;
+    snprintf(out, out_sz, "%lldd %lldh %lldm %llds", d, h, m, sec);
 }
 
 
@@ -734,10 +967,79 @@ static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
         char bdir[PATH_MAX]; snprintf(bdir,sizeof(bdir), "%s/blocks", g_cdir);
         return json_ok_number(resp, resp_sz, "getblockcount", "count", count_regular_files(bdir)), 0;
     }
-    if(!strcmp(args[0], "getnewaddress") || !strcmp(args[0], "address") || !strcmp(args[0], "receive")){
+    if(!strcmp(args[0], "getuptime")){
+        long long up = g_start_time ? (long long)(time(NULL) - g_start_time) : 0;
+        char human[128]; qrx_uptime_human(up, human, sizeof(human));
+        char hjs[256]; json_string(hjs, sizeof(hjs), human);
+        snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getuptime\",\"result\":{\"uptime\":%lld,\"uptime_human\":%s}}\n", up, hjs);
+        return 0;
+    }
+    if(!strcmp(args[0], "getbuildinfo")){
+        char ssl[512], vjs[128], bjs[256], sjs[768];
+        json_string(vjs, sizeof(vjs), QRX_VERSION);
+        json_string(bjs, sizeof(bjs), QRX_BUILD_ID);
+        json_string(sjs, sizeof(sjs), OpenSSL_version(OPENSSL_VERSION));
+        snprintf(ssl, sizeof(ssl), "%s", sjs);
+        snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getbuildinfo\",\"result\":{\"version\":%s,\"build\":%s,\"openssl\":%s,\"hybrid_crypto\":true,\"mldsa\":true}}\n", vjs, bjs, ssl);
+        return 0;
+    }
+    if(!strcmp(args[0], "getblockchaininfo")){
+        long long h=0, bt=0; char bh[256]={0};
+        qrx_best_block_info(&h, bh, sizeof(bh), &bt);
+        long long peer_h = qrx_best_peer_height(h);
+        long long highest = peer_h > h ? peer_h : h;
+        double progress = highest > 0 ? ((double)h / (double)highest) : 1.0;
+        if(progress > 1.0) progress = 1.0;
+        char net[128], hashjs[512]; json_string(net,sizeof(net),g_network); json_string(hashjs,sizeof(hashjs),bh);
+        snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getblockchaininfo\",\"result\":{\"chain\":%s,\"blocks\":%lld,\"headers\":%lld,\"bestblockhash\":%s,\"mediantime\":%lld,\"verificationprogress\":%.6f,\"initialblockdownload\":%s}}\n", net, h, highest, hashjs, bt, progress, progress >= 0.999 ? "false" : "true");
+        return 0;
+    }
+    if(!strcmp(args[0], "getnetworkinfo")){
+        long long con = qrx_connection_count();
+        char vjs[128], subjs[256]; json_string(vjs,sizeof(vjs),QRX_VERSION);
+        char sub[128]; snprintf(sub,sizeof(sub),"/QRX:%s/", QRX_VERSION); json_string(subjs,sizeof(subjs),sub);
+        snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getnetworkinfo\",\"result\":{\"version\":%s,\"subversion\":%s,\"protocolversion\":6,\"connections\":%lld,\"listen\":true,\"networkactive\":true,\"localservices\":\"NODE_NETWORK\"}}\n", vjs, subjs, con);
+        return 0;
+    }
+    if(!strcmp(args[0], "getnodestatus")){
+        long long h=0, bt=0; char bh[256]={0};
+        qrx_best_block_info(&h, bh, sizeof(bh), &bt);
+        long long peer_h = qrx_best_peer_height(h);
+        long long highest = peer_h > h ? peer_h : h;
+        long long behind = highest > h ? highest - h : 0;
+        double sync = highest > 0 ? ((double)h * 100.0 / (double)highest) : 100.0;
+        if(sync > 100.0) sync = 100.0;
+        long long up = g_start_time ? (long long)(time(NULL) - g_start_time) : 0;
+        long long con = qrx_connection_count();
+        char addr[512]={0}, ajs[1024], net[128], hashjs[512], vjs[128], bjs[256], ssljs[768];
+        int wallet_loaded = qrx_get_wallet_address(g_wdir, addr, sizeof(addr)) == 0;
+        json_string(ajs,sizeof(ajs),wallet_loaded ? addr : "");
+        json_string(net,sizeof(net),g_network);
+        json_string(hashjs,sizeof(hashjs),bh);
+        json_string(vjs,sizeof(vjs),QRX_VERSION);
+        json_string(bjs,sizeof(bjs),QRX_BUILD_ID);
+        json_string(ssljs,sizeof(ssljs),OpenSSL_version(OPENSSL_VERSION));
+        snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getnodestatus\",\"result\":{\"version\":%s,\"build\":%s,\"network\":%s,\"uptime\":%lld,\"connections\":%lld,\"listening\":true,\"networkactive\":true,\"local_height\":%lld,\"best_peer_height\":%lld,\"highest_known_block\":%lld,\"blocks_behind\":%lld,\"sync_percent\":%.2f,\"bestblockhash\":%s,\"wallet_loaded\":%s,\"wallet_address\":%s,\"block_producer\":%s,\"node_pid\":%ld,\"rpc\":\"%s\",\"hybrid_crypto\":true,\"mldsa\":true,\"openssl\":%s}}\n", vjs, bjs, net, up, con, h, peer_h, highest, behind, sync, hashjs, wallet_loaded ? "true" : "false", ajs, g_block_producer_enabled ? "true" : "false", (long)g_node_pid, g_sock, ssljs);
+        return 0;
+    }
+    if(!strcmp(args[0], "getnewaddress")){
+        char out[8192], addr[1024]={0};
+        char *argv[] = { g_backend_path, "wallet-new-address", g_wdir, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "getnewaddress", "wallet-new-address failed");
+        else { trim_ws_right(out); snprintf(addr,sizeof(addr),"%s",out); json_ok_string(resp, resp_sz, "getnewaddress", "address", addr); }
+        return 0;
+    }
+    if(!strcmp(args[0], "address") || !strcmp(args[0], "receive")){
         char addr[512];
         if(qrx_get_wallet_address(g_wdir, addr, sizeof(addr)) != 0) json_error(resp, resp_sz, args[0], "address unavailable");
         else json_ok_string(resp, resp_sz, args[0], "address", addr);
+        return 0;
+    }
+    if(!strcmp(args[0], "listaddresses")){
+        char out[32768], arr[40000]={0};
+        char *argv[] = { g_backend_path, "listaddresses", g_wdir, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "listaddresses", "backend failed");
+        else { json_lines_array(arr,sizeof(arr),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"listaddresses\",\"result\":{\"addresses\":%s}}\n", arr); }
         return 0;
     }
     if(!strcmp(args[0], "getbalance")){
@@ -985,6 +1287,7 @@ static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
 }
 
 int main(int argc, char **argv){
+    g_start_time = time(NULL);
     const char *network="alpha", *datadir=NULL, *wallet="default", *listen_arg=NULL; const char *addnodes[64]; int addnode_count=0; const char *rpc_bind_arg=NULL;
     for(int i=1;i<argc;++i){
         if(!strcmp(argv[i],"--network")&&i+1<argc) network=argv[++i];
