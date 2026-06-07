@@ -1,0 +1,2 @@
+This archive contains qrx-core/src/qrx_cli.c with getblockchaininfo, getnetworkinfo, getnodestatus, getuptime, getbuildinfo and listaddresses in usage() and command forwarding.
+Build clean: rm -rf build-* ; cmake ... ; cmake --build .
