@@ -248,6 +248,23 @@ int main(int argc,char **argv){
         cmdi=i; break;
     }
     if(cmdi<0){ usage(); return 1; }
+
+    /*
+     * Network auto-detection:
+     *  1. explicit --network
+     *  2. QRX_NETWORK environment variable
+     *  3. ~/.qrx/current_network written by qrxd
+     *  4. fallback to alpha
+     *
+     * Important: the resolved value must be assigned back to `network` before
+     * calling qrx_ensure_node() and qrx_control_port_for_network(). Passing a
+     * NULL network into the node path setup can crash on some platforms when
+     * qrx-cli is invoked without --network.
+     */
+    if(!network || !*network) {
+        network = qrx_detect_network(detected_network, sizeof(detected_network));
+    }
+
     if(qrx_ensure_node(network,datadir,wallet,NULL,NULL,0,base,sizeof(base),cdir,sizeof(cdir),wdir,sizeof(wdir),ndir,sizeof(ndir))!=0){ fprintf(stderr,"qrx-cli: failed to initialize\n"); return 1; }
     snprintf(sock, sizeof(sock), "http://127.0.0.1:%d/rpc", qrx_control_port_for_network(network));
     char cmd[4096] = {0};
@@ -257,6 +274,11 @@ int main(int argc,char **argv){
     else if(!strcmp(argv[cmdi],"listaddresses")) snprintf(cmd,sizeof(cmd),"listaddresses\n");
     else if(!strcmp(argv[cmdi],"getbalance")) snprintf(cmd,sizeof(cmd), cmdi+1<argc ? "getbalance %s\n" : "getbalance\n", cmdi+1<argc?argv[cmdi+1]:"");
     else if(!strcmp(argv[cmdi],"getblockcount")) snprintf(cmd,sizeof(cmd),"getblockcount\n");
+    else if(!strcmp(argv[cmdi],"getblockchaininfo")) snprintf(cmd,sizeof(cmd),"getblockchaininfo\n");
+    else if(!strcmp(argv[cmdi],"getnetworkinfo")) snprintf(cmd,sizeof(cmd),"getnetworkinfo\n");
+    else if(!strcmp(argv[cmdi],"getnodestatus")) snprintf(cmd,sizeof(cmd),"getnodestatus\n");
+    else if(!strcmp(argv[cmdi],"getuptime")) snprintf(cmd,sizeof(cmd),"getuptime\n");
+    else if(!strcmp(argv[cmdi],"getbuildinfo")) snprintf(cmd,sizeof(cmd),"getbuildinfo\n");
     else if(!strcmp(argv[cmdi],"getpeerinfo")) snprintf(cmd,sizeof(cmd),"getpeerinfo\n");
     else if(!strcmp(argv[cmdi],"getstakinginfo")) snprintf(cmd,sizeof(cmd),"getstakinginfo\n");
     else if(!strcmp(argv[cmdi],"getwalletinfo")) snprintf(cmd,sizeof(cmd),"getwalletinfo\n");
