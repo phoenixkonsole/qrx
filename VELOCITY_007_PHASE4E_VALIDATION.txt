@@ -1,0 +1,73 @@
+QRX Core 0.0.7 VELOCITY Phase 4E validation
+==============================================
+
+Release scope:
+- Speculative Parallel Execution
+- runtime exact read-set tracking
+- predicate/prefix read tracking for dynamic discovery
+- deterministic directional OCC conflict resolution
+- deterministic plan-order winners independent of worker completion order
+- selective retry of losing transactions only
+- market-scoped native-order predicate conflict reduction
+- one QRXDB WAL batch / atomic commit / state root retained
+- Phase 4D dynamic matching semantics retained
+
+Normal test build:
+  velocity_phase4_engine                 PASS
+  velocity_phase4b_mvcc                  PASS
+  velocity_phase4c_stateful_mvcc         PASS
+  velocity_phase4d_dynamic_mvcc          PASS
+  velocity_phase4e_speculative_mvcc      PASS
+
+ASan + UBSan test build:
+  velocity_phase4_engine                 PASS
+  velocity_phase4b_mvcc                  PASS
+  velocity_phase4c_stateful_mvcc         PASS
+  velocity_phase4d_dynamic_mvcc          PASS
+  velocity_phase4e_speculative_mvcc      PASS
+
+Phase 4E determinism/conflict cases:
+  same-market competing BUY speculation  PASS
+  deterministic earlier-plan winner      PASS
+  later conflicting TX selective retry   PASS
+  maker filled exactly once to 5/5       PASS
+  balances / reserves / fees / nonce     PASS
+  trade + settlement sequencing          PASS
+  state root workers=1 vs workers=8      IDENTICAL
+  cross-market TOK/QUB + ALT/QUB         PASS
+  cross-market selective retries         0
+
+Regression smoke tests:
+  velocity_phase3a_trading.sh            PASS
+  velocity_phase3b_matching.sh           PASS
+  velocity_phase3c_gateway.sh            PASS
+  velocity_phase3d_crosschain.sh         PASS
+  velocity_phase3d1_bitcoin_spv.sh       PASS
+
+Legacy feature audit:
+  scripts/audit-0.0.6-regression.sh       PASS
+  59 audited 0.0.6 CLI commands retained
+  dashboard RPC surface retained
+  mobile-wallet raw-TX RPC pipeline retained
+  QRXDB/release/PQC build surfaces retained
+
+QRXDB crash atomicity:
+  scripts/test-qrxdb-atomic-batch.sh      PASS
+  multi-key WAL batch recovered atomically
+
+Barrier contract retained:
+  EXTERNAL_ORDER                         SERIAL BARRIER
+  EXECUTION_REPORT                       SERIAL BARRIER
+  CROSSCHAIN_ORDER                       SERIAL BARRIER
+  CROSSCHAIN_REDEEM                      SERIAL BARRIER
+  CROSSCHAIN_REFUND                      SERIAL BARRIER
+  BTC_SPV_HEADER                         SERIAL BARRIER
+  BTC_SPV_FUNDING_PROOF                  SERIAL BARRIER
+
+Notes:
+- An earlier combined legacy regression command reached its shell execution
+  limit while inside the longer cross-chain sequence. Cross-chain was then
+  executed separately and completed with PASS; this was not treated as a
+  successful result until the separate complete run finished.
+- Sanitizer tests were run with AddressSanitizer leak detection and UBSan
+  stack traces enabled. All five VELOCITY tests completed successfully.

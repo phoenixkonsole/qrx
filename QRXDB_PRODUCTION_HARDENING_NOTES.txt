@@ -1,0 +1,37 @@
+QRXDB Production Hardening Patch
+================================
+
+This patch hardens QRXDB beyond the previous mmap continuation layer.
+
+Implemented:
+- mmap remapping with growth before append writes
+- segmented WAL with BEGIN/PUT/COMMIT records and fsync on POSIX
+- crash recovery with valid-tail scanning and replay of committed WAL transactions
+- deterministic SHA-256 Merkle state root over the latest live key/value set
+- zero-copy reads via QrxDBView pointers into the mmap region
+- MVCC read snapshots through QrxDBReadTxn generation/write_offset pinning
+- in-memory latest-key index rebuilt from the append log and persisted as state.qix
+- compaction preserving latest live values and restoring deterministic Merkle root
+- snapshot export with generation, write_offset and Merkle metadata
+- qrxdb_verify(), qrxdb_rebuild_index(), qrxdb_generation(), qrxdb_write_offset()
+- qrxd RPC merge compile fix: handle_command forward declaration and duplicated socket-close block removed
+
+Validation performed:
+- cmake configure succeeded
+- qrxcore built
+- qrx built
+- qrxd built
+- qrx-cli built
+- standalone QRXDB smoke test passed:
+  - init
+  - put
+  - MVCC snapshot read
+  - latest read
+  - verify
+  - snapshot
+  - compaction
+  - reopen/recovery
+
+Important production note:
+QRXDB is now structurally production-hardened for the current key/value state-store use.
+For full blockchain production use, the next integration step is wiring block/hash/height/tx/UTXO-specific indexes into the chain pipeline. The storage engine now exposes the pieces needed for that safely.

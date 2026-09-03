@@ -1,0 +1,50 @@
+QRX Core 0.0.7 VELOCITY Phase 4F.2 validation
+================================================
+
+Implemented:
+- Cross-venue BTC/QUB -> Kraken BTC/EUR decision engine
+- Executable L2 bid-depth VWAP and worst executable limit
+- Opportunity, paper and explicit-confirmation modes
+- Fee, slippage, risk, profit, margin, quantity, daily and exposure limits
+- Rolling persisted risk reservations for live candidates
+- Prefunded-live requirement
+- Freshness gates for order book and QUB/EUR reference
+- Separate ARBITRAGE_CROSS_VENUE permission
+- Matched owner BTC/QUB BUY source validation
+- QRX EXTERNAL_ORDER metadata: time_in_force, arbitrage_id, source_order_id
+- Kraken LIMIT IOC routing with short request deadline
+- Signed temporary-file wallet broadcast flow
+- Deterministic client-order reconciliation inherited from the Kraken gateway
+- Seven-file CSV ledger plus checksummed manifest
+- German and international CSV profiles
+- Spreadsheet formula-injection protection
+- Fail-closed export: no final directory or manifest on incomplete sources
+- Atomic publication with QRXDB generation and State-Root consistency proof
+- No fixed trade or transaction-history record limit
+- Shared Rust BDK key-store service used by Tauri and qrx-wallet-cli
+- Ledger V3 all-time, UTC from/to, annual and quarterly periods
+- Inclusive date-only end boundary and exact period metadata in manifest
+- Unified Core -> CLI/tools -> BTC service -> Tauri multi-target release builder
+- Five-job native CI matrix for Linux x64/ARM64, macOS Intel/Apple Silicon and Windows x64
+
+Executed in this environment:
+- Python arbitrage, ledger, wallet-parity, gateway and multi-target build tests: 53/53 PASS
+- VELOCITY native regression tests 4, 4B, 4C, 4D, 4E, 4F: 6/6 PASS
+- qrx, qrx-cli and qrxd manual native builds: PASS
+- C11 syntax validation for qrx.c, qrxd.c and qrx_cli.c: PASS
+- Native create-arbitrage-hedge-raw-tx dispatch/payload smoke test: PASS
+- JSON syntax checks for all Tauri configuration files: PASS
+- Wallet JavaScript syntax check: PASS
+- Python bytecode compilation for bundled scripts: PASS
+- Unbounded `list-trades ... all` Core path and full-field trade output: PASS
+- Tauri Complete Command Center registration and no-shell argument bridge: PASS
+- Complete Ledger V3 fail-closed, wallet-filter, bounded-period and State-Root snapshot tests: PASS
+- Native journal timestamp plus from/to boundary smoke test: PASS
+- Multi-target plans, dependency order, sidecar gate and CI matrix tests: PASS
+
+Environment limitations:
+- Cargo/Rustc are not installed, so the Tauri application and the new shared Rust BTC wallet service were statically inspected but not compiled here.
+- The system OpenSSL is 3.0.13 and does not provide ML-DSA-65. Wallet/signature integration tests that require QRX's OpenSSL >= 3.5 PQC build could not run in this environment.
+- No private Kraken credentials were provided and no real Kraken order was submitted.
+
+The live feature must remain opt-in and should first be exercised with small limits.

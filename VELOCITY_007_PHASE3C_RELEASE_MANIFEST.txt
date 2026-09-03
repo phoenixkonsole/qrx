@@ -1,0 +1,24 @@
+QRX Core 0.0.7 VELOCITY - Phase 3C
+External Execution Gateway + Atomic State Commit
+
+Verified on fresh Linux Release build:
+- QRX Core 0.0.6 regression audit: PASS
+- VELOCITY Phase 3A trading smoke test: PASS
+- VELOCITY Phase 3B deterministic matching + settlement: PASS
+- VELOCITY Phase 3C gateway + execution reports: PASS
+- Outer applytx WAL crash recovery: PASS
+- QRXDB multi-key atomic recovery: PASS
+
+Atomic authoritative apply state includes:
+- balances
+- fee pool
+- nonce / nonce lane
+- applied transaction marker
+- tx location/payload index
+- agent/order/gateway/execution-report state as applicable
+- reserved native trading assets and agent usage as applicable
+
+Native matching settlement flow:
+Matching -> Settlement Batch -> QRXDB WAL -> Atomic Commit -> State Root
+
+External USDT/USDC market symbols are venue-side assets only. No native QRX USDT/USDC is created by this release.
