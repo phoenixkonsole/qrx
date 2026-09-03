@@ -10,7 +10,14 @@
     "build:macos": "tauri build --config src-tauri/tauri.macos.conf.json",
     "build:windows": "tauri build --config src-tauri/tauri.windows.conf.json",
     "build:debug": "tauri build --debug",
-    "check:sidecars": "bash scripts/check-sidecars.sh"
+    "prepare:sidecars": "bash scripts/prepare-sidecars.sh",
+    "check:sidecars": "bash scripts/check-sidecars.sh",
+    "build:release:linux": "bash ../scripts/build-all-targets.sh --target linux-x64",
+    "build:release:linux-arm64": "bash ../scripts/build-all-targets.sh --target linux-arm64",
+    "build:release:host": "bash ../scripts/build-all-targets.sh --target host",
+    "build:release:macos-intel": "bash ../scripts/build-all-targets.sh --target macos-x64",
+    "build:release:macos-arm64": "bash ../scripts/build-all-targets.sh --target macos-arm64",
+    "build:release:windows": "bash ../scripts/build-all-targets.sh --target windows-x64"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^1.6.0"

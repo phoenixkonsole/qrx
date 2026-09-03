@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     fs::{self, File, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
     net::{TcpStream, ToSocketAddrs},
 };
 use tauri::Manager;
@@ -36,6 +37,49 @@ use bdk::miniscript::Segwitv0;
 struct DaemonState {
     child: Mutex<Option<Child>>,
 }
+
+struct KrakenGatewayState {
+    child: Mutex<Option<Child>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct KrakenCredentialVault {
+    version: u32,
+    venue: String,
+    kdf: String,
+    cipher: String,
+    kdf_salt: String,
+    nonce: String,
+    ciphertext: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct KrakenCredentialPlain {
+    api_key: String,
+    api_secret: String,
+}
+
+#[derive(Debug, Serialize)]
+struct KrakenCredentialStatus {
+    configured: bool,
+    encrypted_at_rest: bool,
+    venue: String,
+    storage: String,
+}
+
+#[derive(Debug, Serialize)]
+struct KrakenGatewayStatus {
+    running: bool,
+    pid: Option<u32>,
+    gateway_address: Option<String>,
+    venue: String,
+    stdout_log: String,
+    stderr_log: String,
+    credential_vault_present: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentManagerResult { action: String, agent: String, venue: String, raw_transaction_created: bool, broadcast: CommandResult }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct WalletContext {
@@ -424,6 +468,36 @@ fn run_cli(
         .ok_or_else(|| AppError::Message(format!("Unexpected qrx-cli output: {stdout}")))?;
     Ok(serde_json::from_str(json_line)?)
 }
+
+fn required_clean(value: &str, label: &str) -> Result<String, String> { let clean=value.trim(); if clean.is_empty(){return Err(format!("{label} is required"));} if clean.chars().any(char::is_whitespace){return Err(format!("{label} must not contain whitespace"));} Ok(clean.to_string()) }
+fn positive_u64(value: &str, label: &str) -> Result<String, String> { let parsed=value.trim().parse::<u64>().map_err(|_|format!("{label} must be a whole number"))?; if parsed==0{return Err(format!("{label} must be greater than zero"));} Ok(parsed.to_string()) }
+
+fn sign_and_broadcast_raw(app:&tauri::AppHandle,network:&str,wallet:&str,raw:&str,passphrase:Option<&str>,label:&str)->Result<CommandResult,String>{
+    let stamp=SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e|e.to_string())?.as_nanos();
+    let dir=std::env::temp_dir().join(format!("qrx-{label}-{}-{stamp}",std::process::id()));
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    let raw_path=dir.join("transaction.raw"); let signed_path=dir.join("transaction.signed");
+    let result=(||{
+        fs::write(&raw_path,raw.as_bytes()).map_err(|e|e.to_string())?;
+        let raw_arg=raw_path.to_string_lossy().to_string(); let signed_arg=signed_path.to_string_lossy().to_string();
+        run_cli(Some(app),network,wallet,&["signrawtransactionwithwallet",&raw_arg,&signed_arg],passphrase).map_err(|e|e.to_string())?;
+        if !signed_path.exists(){return Err("QRX wallet did not create a signed transaction".into());}
+        run_cli(Some(app),network,wallet,&["sendrawtransaction",&signed_arg],passphrase).map_err(|e|e.to_string())
+    })();
+    let _=fs::remove_file(&raw_path); let _=fs::remove_file(&signed_path); let _=fs::remove_dir(&dir);
+    result
+}
+
+fn broadcast_created_transaction(app:&tauri::AppHandle,network:&str,wallet:&str,created:CommandResult,passphrase:Option<&str>,action:&str,agent:&str)->Result<AgentManagerResult,String>{ let raw=created.result.get("raw_tx").and_then(Value::as_str).ok_or_else(||"QRX Core did not return a raw transaction".to_string())?; let broadcast=sign_and_broadcast_raw(app,network,wallet,raw,passphrase,"agent-manager")?; Ok(AgentManagerResult{action:action.into(),agent:agent.into(),venue:"KRAKEN".into(),raw_transaction_created:true,broadcast}) }
+
+#[tauri::command]
+fn agent_manager_list(app:tauri::AppHandle,network:Option<String>,wallet:Option<String>,owner:Option<String>,passphrase:Option<String>)->Result<CommandResult,String>{ let network=network.unwrap_or_else(||"alpha".into()); let wallet=sanitize_wallet_name(wallet.unwrap_or_else(||"node1".into()).as_str()).map_err(String::from)?; let owner=owner.unwrap_or_default(); let args=if owner.trim().is_empty(){vec!["listagents"]}else{vec!["listagents",owner.trim()]}; run_cli(Some(&app),&network,&wallet,&args,passphrase.as_deref()).map_err(|e|e.to_string()) }
+
+#[tauri::command]
+fn agent_manager_register(app:tauri::AppHandle,network:Option<String>,wallet:Option<String>,owner:String,agent:String,agent_ed_pub:String,agent_mldsa_pub:String,max_trade_atoms:String,daily_limit_atoms:String,markets:String,expires_height:String,owner_ed_pub:String,owner_mldsa_pub:String,lane:String,tx_expiry:String,allow_arbitrage:bool,passphrase:Option<String>)->Result<AgentManagerResult,String>{ let network=network.unwrap_or_else(||"alpha".into()); let wallet=sanitize_wallet_name(wallet.unwrap_or_else(||"node1".into()).as_str()).map_err(String::from)?; let owner=required_clean(&owner,"Owner address")?; let agent=required_clean(&agent,"Agent address")?; let markets=markets.split(',').map(str::trim).filter(|v|!v.is_empty()).collect::<Vec<_>>().join(","); if markets.is_empty()||markets.split(',').any(|m|!m.contains('/')){return Err("Enter at least one market like BTC/EUR".into());} let max_trade=positive_u64(&max_trade_atoms,"Maximum per trade")?; let daily=positive_u64(&daily_limit_atoms,"Daily limit")?; let expires=positive_u64(&expires_height,"Agent expiry height")?; let tx_expiry=positive_u64(&tx_expiry,"Transaction expiry height")?; let permissions=if allow_arbitrage{"TRADE_EXTERNAL,ARBITRAGE_CROSS_VENUE"}else{"TRADE_EXTERNAL"}; let created=run_cli(Some(&app),&network,&wallet,&["createagentregistertransaction",&owner,&agent,agent_ed_pub.trim(),agent_mldsa_pub.trim(),permissions,&max_trade,&daily,&markets,&expires,owner_ed_pub.trim(),owner_mldsa_pub.trim(),lane.trim(),&tx_expiry],passphrase.as_deref()).map_err(|e|e.to_string())?; broadcast_created_transaction(&app,&network,&wallet,created,passphrase.as_deref(),"register",&agent) }
+
+#[tauri::command]
+fn agent_manager_revoke(app:tauri::AppHandle,network:Option<String>,wallet:Option<String>,owner:String,agent:String,owner_ed_pub:String,owner_mldsa_pub:String,lane:String,tx_expiry:String,passphrase:Option<String>)->Result<AgentManagerResult,String>{ let network=network.unwrap_or_else(||"alpha".into()); let wallet=sanitize_wallet_name(wallet.unwrap_or_else(||"node1".into()).as_str()).map_err(String::from)?; let owner=required_clean(&owner,"Owner address")?; let agent=required_clean(&agent,"Agent address")?; let tx_expiry=positive_u64(&tx_expiry,"Transaction expiry height")?; let created=run_cli(Some(&app),&network,&wallet,&["createagentrevoketransaction",&owner,&agent,owner_ed_pub.trim(),owner_mldsa_pub.trim(),lane.trim(),&tx_expiry],passphrase.as_deref()).map_err(|e|e.to_string())?; broadcast_created_transaction(&app,&network,&wallet,created,passphrase.as_deref(),"revoke",&agent) }
 
 fn child_pid(child: &Child) -> u32 {
     child.id()
@@ -1456,93 +1530,35 @@ fn choose_active_endpoint(endpoints: &[String]) -> (String, Vec<EndpointHealth>)
     (active, health)
 }
 
-#[tauri::command]
-fn btc_get_status(endpoint: Option<String>, passphrase: Option<String>) -> Result<BtcLightStatus, String> {
-    let mode = read_setting("btc_mode.txt", "electrum");
-    if let Some(ep) = endpoint.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        let endpoints = parse_endpoint_list(ep, &mode);
-        write_setting("btc_endpoints.txt", &endpoints.join("\n")).map_err(String::from)?;
-        write_setting("btc_endpoint.txt", endpoints.first().map(String::as_str).unwrap_or("")).map_err(String::from)?;
-    }
-
-    let raw = read_setting("btc_endpoints.txt", &default_btc_endpoints(&mode).join("\n"));
-    let endpoints = parse_endpoint_list(&raw, &mode);
-    let (active_endpoint, endpoint_health) = choose_active_endpoint(&endpoints);
-    let endpoint = endpoints.first().cloned().unwrap_or_else(|| active_endpoint.clone());
-    let privacy_level = if mode == "neutrino" { "enhanced-local-filter-checks" } else { "medium-server-assisted" };
-
-    let mut confirmed_sats = 0u64;
-    let mut trusted_pending_sats = 0u64;
-    let mut untrusted_pending_sats = 0u64;
-    let mut immature_sats = 0u64;
-    let mut synced = false;
-
-    if mode == "electrum" {
-        if let Ok((wallet, blockchain)) = open_bdk_wallet(&active_endpoint, passphrase.clone()) {
-            if wallet.sync(&blockchain, SyncOptions::default()).is_ok() {
-                let b = wallet.get_balance().map_err(|e| e.to_string())?;
-                confirmed_sats = b.confirmed;
-                trusted_pending_sats = b.trusted_pending;
-                untrusted_pending_sats = b.untrusted_pending;
-                immature_sats = b.immature;
-                synced = true;
-            }
-        }
-    }
-
-    let total_sats = confirmed_sats
-        .saturating_add(trusted_pending_sats)
-        .saturating_add(untrusted_pending_sats)
-        .saturating_add(immature_sats);
-
-    Ok(BtcLightStatus {
-        mode: mode.clone(),
-        balance: format!("{:.8} BTC", total_sats as f64 / 100_000_000.0),
-        confirmed_sats,
-        trusted_pending_sats,
-        untrusted_pending_sats,
-        immature_sats,
-        endpoint,
-        active_endpoint,
-        endpoints,
-        endpoint_health,
-        fallback_enabled: true,
-        privacy_level: privacy_level.into(),
-        neutrino_ready: mode == "neutrino",
-        full_node_required: false,
-        synced,
-        explanation: "BTC Light uses BDK + Electrum in this build. No Bitcoin full-node download is required. Endpoint fallback is configurable; the wallet uses the first reachable endpoint.".into(),
-        disclaimer: "This is non-custodial wallet software. It does not hold BTC and does not provide exchange, custody, brokerage or investment services. Public endpoints can see network metadata; use your own endpoint or Neutrino when available for better privacy.".into(),
-    })
+fn shared_btc_service<T: serde::de::DeserializeOwned>(app: &tauri::AppHandle, request: Value) -> Result<T, String> {
+    let binary=resolve_binary(Some(app),"qrx-btc-wallet-service").map_err(|e|e.to_string())?;
+    let mut child=Command::new(binary).arg("--data-dir").arg(app_data_dir().map_err(|e|e.to_string())?)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e|format!("Could not start shared BTC wallet service: {e}"))?;
+    if let Some(stdin)=child.stdin.as_mut(){stdin.write_all(serde_json::to_string(&request).map_err(|e|e.to_string())?.as_bytes()).map_err(|e|e.to_string())?;}else{return Err("BTC wallet service stdin unavailable".into())}
+    drop(child.stdin.take());let output=child.wait_with_output().map_err(|e|e.to_string())?;
+    let envelope:Value=serde_json::from_slice(&output.stdout).map_err(|_|format!("BTC wallet service returned invalid JSON: {}",String::from_utf8_lossy(&output.stderr)))?;
+    if !output.status.success()||!envelope.get("ok").and_then(Value::as_bool).unwrap_or(false){return Err(envelope.get("error").and_then(Value::as_str).unwrap_or("BTC wallet service failed").to_string())}
+    serde_json::from_value(envelope.get("result").cloned().unwrap_or(Value::Null)).map_err(|e|e.to_string())
 }
 
 #[tauri::command]
-fn btc_set_mode(mode: String, endpoint: Option<String>) -> Result<BtcLightStatus, String> {
-    let clean = match mode.as_str() { "electrum" | "esplora" | "neutrino" => mode, _ => "electrum".into() };
-    write_setting("btc_mode.txt", &clean).map_err(String::from)?;
-    if let Some(ep) = endpoint.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        let endpoints = parse_endpoint_list(ep, &clean);
-        write_setting("btc_endpoints.txt", &endpoints.join("\n")).map_err(String::from)?;
-        write_setting("btc_endpoint.txt", endpoints.first().map(String::as_str).unwrap_or("")).map_err(String::from)?;
-    } else {
-        write_setting("btc_endpoints.txt", &default_btc_endpoints(&clean).join("\n")).map_err(String::from)?;
-    }
-    btc_get_status(None, None)
+fn btc_get_status(app:tauri::AppHandle,endpoint: Option<String>, passphrase: Option<String>) -> Result<BtcLightStatus, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"status","endpoint":endpoint,"passphrase":passphrase}))
 }
 
 #[tauri::command]
-fn btc_test_endpoints(endpoint: Option<String>) -> Result<Vec<EndpointHealth>, String> {
-    let mode = read_setting("btc_mode.txt", "electrum");
-    let raw = endpoint.unwrap_or_else(|| read_setting("btc_endpoints.txt", &default_btc_endpoints(&mode).join("\n")));
-    let endpoints = parse_endpoint_list(&raw, &mode);
-    Ok(endpoints.iter().map(|ep| test_endpoint_quick(ep)).collect())
+fn btc_set_mode(app:tauri::AppHandle,mode: String, endpoint: Option<String>) -> Result<BtcLightStatus, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"set-mode","mode":mode,"endpoint":endpoint}))
 }
 
 #[tauri::command]
-fn btc_start_neutrino() -> Result<BtcLightStatus, String> {
-    write_setting("btc_mode.txt", "neutrino").map_err(String::from)?;
-    write_setting("btc_endpoints.txt", &default_btc_endpoints("neutrino").join("\n")).map_err(String::from)?;
-    btc_get_status(None, None)
+fn btc_test_endpoints(app:tauri::AppHandle,endpoint: Option<String>) -> Result<Vec<EndpointHealth>, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"test-endpoints","endpoint":endpoint}))
+}
+
+#[tauri::command]
+fn btc_start_neutrino(app:tauri::AppHandle) -> Result<BtcLightStatus, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"start-neutrino"}))
 }
 
 
@@ -1561,6 +1577,331 @@ fn btc_network() -> Network {
     Network::Bitcoin
 }
 
+
+
+fn kraken_vault_file(network: &str, wallet: &str) -> Result<PathBuf, String> {
+    Ok(wallet_settings_dir(network, wallet).map_err(|e| e.to_string())?.join("kraken_credentials.enc.json"))
+}
+
+fn kraken_gateway_state_dir(network: &str, wallet: &str) -> Result<PathBuf, String> {
+    let dir = wallet_settings_dir(network, wallet).map_err(|e| e.to_string())?.join("kraken-gateway");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn kraken_gateway_log_paths(network: &str, wallet: &str) -> Result<(PathBuf, PathBuf), String> {
+    let dir = logs_dir(network, wallet).map_err(|e| e.to_string())?;
+    Ok((dir.join("kraken-gateway.stdout.log"), dir.join("kraken-gateway.stderr.log")))
+}
+
+fn protect_private_file(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path).map_err(|e| e.to_string())?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn encrypt_kraken_credentials(api_key: &str, api_secret: &str, passphrase: &str) -> Result<KrakenCredentialVault, String> {
+    if api_key.trim().is_empty() || api_secret.trim().is_empty() {
+        return Err("Kraken API key and API secret are required".into());
+    }
+    if passphrase.trim().is_empty() {
+        return Err("Wallet/session passphrase is required to encrypt Kraken credentials".into());
+    }
+    let plain = KrakenCredentialPlain { api_key: api_key.trim().to_string(), api_secret: api_secret.trim().to_string() };
+    let bytes = serde_json::to_vec(&plain).map_err(|e| e.to_string())?;
+    let mut salt = [0u8; 16]; rand::thread_rng().fill_bytes(&mut salt);
+    let key = derive_btc_key(passphrase, &salt)?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+    let mut nonce_bytes = [0u8; 12]; rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher.encrypt(nonce, bytes.as_ref()).map_err(|e| e.to_string())?;
+    Ok(KrakenCredentialVault {
+        version: 1,
+        venue: "KRAKEN".into(),
+        kdf: "argon2id-m65536-t3-p1".into(),
+        cipher: "aes-256-gcm".into(),
+        kdf_salt: general_purpose::STANDARD.encode(salt),
+        nonce: general_purpose::STANDARD.encode(nonce_bytes),
+        ciphertext: general_purpose::STANDARD.encode(ciphertext),
+    })
+}
+
+fn decrypt_kraken_credentials(vault: &KrakenCredentialVault, passphrase: &str) -> Result<KrakenCredentialPlain, String> {
+    if vault.version != 1 || vault.venue != "KRAKEN" || vault.cipher != "aes-256-gcm" {
+        return Err("Unsupported Kraken credential vault format".into());
+    }
+    if passphrase.trim().is_empty() { return Err("Wallet/session passphrase is required".into()); }
+    let salt = general_purpose::STANDARD.decode(&vault.kdf_salt).map_err(|e| e.to_string())?;
+    let nonce_bytes = general_purpose::STANDARD.decode(&vault.nonce).map_err(|e| e.to_string())?;
+    let ciphertext = general_purpose::STANDARD.decode(&vault.ciphertext).map_err(|e| e.to_string())?;
+    if nonce_bytes.len() != 12 { return Err("Invalid Kraken vault nonce".into()); }
+    let key = derive_btc_key(passphrase, &salt)?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let mut plain = cipher.decrypt(nonce, ciphertext.as_ref()).map_err(|_| "Could not decrypt Kraken credentials. Check the wallet/session passphrase.".to_string())?;
+    let parsed: KrakenCredentialPlain = serde_json::from_slice(&plain).map_err(|e| e.to_string())?;
+    plain.fill(0);
+    Ok(parsed)
+}
+
+fn resolve_kraken_gateway_script(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let mut candidates = Vec::new();
+    if let Ok(p) = std::env::var("QRX_KRAKEN_GATEWAY_SCRIPT") { candidates.push(PathBuf::from(p)); }
+    if let Some(r) = app.path_resolver().resource_dir() {
+        candidates.push(r.join("qrx-gateway-kraken.py"));
+        candidates.push(r.join("resources").join("qrx-gateway-kraken.py"));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("src-tauri").join("resources").join("qrx-gateway-kraken.py"));
+        candidates.push(cwd.join("..").join("qrx-core").join("gateways").join("qrx-gateway-kraken.py"));
+        candidates.push(cwd.join("qrx-core").join("gateways").join("qrx-gateway-kraken.py"));
+    }
+    candidates.into_iter().find(|p| p.exists()).ok_or_else(|| "Could not find bundled qrx-gateway-kraken.py".to_string())
+}
+
+fn resolve_bundled_python_script(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
+    let mut candidates = Vec::new();
+    if let Some(r) = app.path_resolver().resource_dir() { candidates.push(r.join(name)); candidates.push(r.join("resources").join(name)); }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("src-tauri").join("resources").join(name));
+        candidates.push(cwd.join("resources").join(name));
+    }
+    candidates.into_iter().find(|p| p.exists()).ok_or_else(|| format!("Could not find bundled {name}"))
+}
+
+fn arbitrage_state_dir(network: &str, wallet: &str) -> Result<PathBuf, String> {
+    let dir = wallet_settings_dir(network, wallet).map_err(|e| e.to_string())?.join("arbitrage");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?; Ok(dir)
+}
+
+fn run_python_json(app: &tauri::AppHandle, script_name: &str, args: &[String], input: Option<&Value>) -> Result<Value, String> {
+    let script = resolve_bundled_python_script(app, script_name)?;
+    let (python, prefix) = resolve_python_launcher()?;
+    let mut cmd = Command::new(python); for a in prefix { cmd.arg(a); } cmd.arg(script).args(args);
+    if input.is_some() { cmd.stdin(Stdio::piped()); }
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    if let Some(value) = input {
+        let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
+        let mut stdin = child.stdin.take().ok_or_else(|| "Python stdin unavailable".to_string())?;
+        stdin.write_all(&bytes).map_err(|e| e.to_string())?; stdin.write_all(b"\n").map_err(|e| e.to_string())?;
+    }
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).trim().to_string()); }
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("Invalid JSON from {script_name}: {e}"))
+}
+
+#[tauri::command]
+fn arbitrage_evaluate(app: tauri::AppHandle, network: Option<String>, wallet: Option<String>, payload: Value, paper: bool) -> Result<Value, String> {
+    let network=network.unwrap_or_else(||"alpha".into()); let wallet=sanitize_wallet_name(wallet.unwrap_or_else(||"node1".into()).as_str()).map_err(String::from)?;
+    let state=arbitrage_state_dir(&network,&wallet)?; let mut args=vec![if paper{"--paper-json".into()}else{"--evaluate-json".into()},"--state-dir".into(),state.to_string_lossy().to_string()];
+    run_python_json(&app,"qrx-arbitrage-engine.py",&args,Some(&payload))
+}
+
+#[tauri::command]
+fn arbitrage_approve(app: tauri::AppHandle, network: Option<String>, wallet: Option<String>, arbitrage_id: String) -> Result<Value, String> {
+    let network=network.unwrap_or_else(||"alpha".into()); let wallet=sanitize_wallet_name(wallet.unwrap_or_else(||"node1".into()).as_str()).map_err(String::from)?;
+    let state=arbitrage_state_dir(&network,&wallet)?; let args=vec!["--approve".into(),required_clean(&arbitrage_id,"Arbitrage ID")?,"--state-dir".into(),state.to_string_lossy().to_string()];
+    run_python_json(&app,"qrx-arbitrage-engine.py",&args,None)
+}
+
+fn plan_positive_integer(plan:&Value,path:&str,label:&str)->Result<String,String>{
+    let value=plan.pointer(path).ok_or_else(||format!("Approved plan is missing {label}"))?;
+    let text=if let Some(n)=value.as_u64(){n.to_string()}else if let Some(s)=value.as_str(){s.to_string()}else{return Err(format!("Approved plan has invalid {label}"));};
+    positive_u64(&text,label)
+}
+
+#[tauri::command]
+fn arbitrage_broadcast_hedge(app:tauri::AppHandle,network:Option<String>,wallet:Option<String>,arbitrage_id:String,source_buy_order_id:String,agent:String,owner:String,agent_ed_pub:String,agent_mldsa_pub:String,lane:String,order_expiry:String,tx_expiry:String,passphrase:Option<String>)->Result<Value,String>{
+    let network=network.unwrap_or_else(||"alpha".into()); let wallet=sanitize_wallet_name(wallet.unwrap_or_else(||"node1".into()).as_str()).map_err(String::from)?;
+    let arb_id=required_clean(&arbitrage_id,"Arbitrage ID")?; let source=required_clean(&source_buy_order_id,"Matched cross-chain BUY order ID")?;
+    let agent=required_clean(&agent,"Agent address")?; let owner=required_clean(&owner,"Owner address")?;
+    let agent_ed=required_clean(&agent_ed_pub,"Agent Ed25519 public key")?; let agent_ml=required_clean(&agent_mldsa_pub,"Agent ML-DSA public key")?;
+    let lane=required_clean(&lane,"Lane")?; lane.parse::<u32>().map_err(|_|"Lane must be a non-negative whole number".to_string())?;
+    let order_expiry=positive_u64(&order_expiry,"Order expiry height")?; let tx_expiry=positive_u64(&tx_expiry,"Transaction expiry height")?;
+    if passphrase.as_deref().unwrap_or("").is_empty(){return Err("Unlock the agent wallet with the session passphrase first".into());}
+    let state=arbitrage_state_dir(&network,&wallet)?;
+    let plan_args=vec!["--approved-plan".into(),arb_id.clone(),"--state-dir".into(),state.to_string_lossy().to_string()];
+    let plan=run_python_json(&app,"qrx-arbitrage-engine.py",&plan_args,None)?;
+    let quantity=plan_positive_integer(&plan,"/kraken_hedge/quantity_atoms","hedge quantity")?;
+    let price=plan_positive_integer(&plan,"/kraken_hedge/limit_price_atoms","hedge limit price")?;
+    let created=run_cli(Some(&app),&network,&wallet,&["createarbitragehedgetransaction",&agent,&owner,&source,&arb_id,&quantity,&price,&order_expiry,&agent_ed,&agent_ml,&lane,&tx_expiry],passphrase.as_deref()).map_err(|e|e.to_string())?;
+    let raw=created.result.get("raw_tx").and_then(Value::as_str).ok_or_else(||"QRX Core did not return an arbitrage hedge raw transaction".to_string())?;
+    let broadcast=sign_and_broadcast_raw(&app,&network,&wallet,raw,passphrase.as_deref(),"arbitrage-hedge")?;
+    let hedge_ref=["order_id","txid","id","hash"].iter().find_map(|k|broadcast.result.get(*k)).and_then(|v|v.as_str().map(str::to_string).or_else(||v.as_u64().map(|n|n.to_string()))).unwrap_or_else(||format!("{arb_id}:broadcast"));
+    let mark_args=vec!["--mark-broadcast".into(),arb_id.clone(),"--qrx-hedge-order-id".into(),hedge_ref.clone(),"--state-dir".into(),state.to_string_lossy().to_string()];
+    let ledger_link=run_python_json(&app,"qrx-arbitrage-engine.py",&mark_args,None).unwrap_or_else(|e|serde_json::json!({"warning":e,"arbitrage_id":arb_id,"qrx_hedge_order_id":hedge_ref}));
+    Ok(serde_json::json!({"approved_plan":plan,"source_buy_order_id":source,"broadcast":broadcast,"ledger_link":ledger_link}))
+}
+
+#[tauri::command]
+fn arbitrage_list(app: tauri::AppHandle, network: Option<String>, wallet: Option<String>) -> Result<Value, String> {
+    let network=network.unwrap_or_else(||"alpha".into()); let wallet=sanitize_wallet_name(wallet.unwrap_or_else(||"node1".into()).as_str()).map_err(String::from)?;
+    let state=arbitrage_state_dir(&network,&wallet)?; let args=vec!["--list".into(),"--state-dir".into(),state.to_string_lossy().to_string()];
+    run_python_json(&app,"qrx-arbitrage-engine.py",&args,None)
+}
+
+#[tauri::command]
+fn arbitrage_fetch_kraken_book(app: tauri::AppHandle) -> Result<Value, String> {
+    run_python_json(&app,"qrx-arbitrage-engine.py",&["--fetch-book".into()],None)
+}
+
+#[tauri::command]
+fn arbitrage_get_order(app: tauri::AppHandle, network: Option<String>, wallet: Option<String>, order_id: String, passphrase: Option<String>) -> Result<CommandResult, String> {
+    let network=network.unwrap_or_else(||"alpha".into()); let wallet=sanitize_wallet_name(wallet.unwrap_or_else(||"node1".into()).as_str()).map_err(String::from)?;
+    let order_id=required_clean(&order_id,"Cross-chain order ID")?;
+    run_cli(Some(&app),&network,&wallet,&["getorder",&order_id],passphrase.as_deref()).map_err(|e|e.to_string())
+}
+
+#[tauri::command]
+fn export_complete_ledger(app: tauri::AppHandle, network: Option<String>, wallet: Option<String>, profile: String, from_date: Option<String>, to_date: Option<String>, year: Option<u32>, quarter: Option<u8>) -> Result<Value, String> {
+    let network=network.unwrap_or_else(||"alpha".into()); let wallet=sanitize_wallet_name(wallet.unwrap_or_else(||"node1".into()).as_str()).map_err(String::from)?;
+    let profile=if profile=="international"{"international"}else{"de"};
+    let epoch=SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e|e.to_string())?.as_millis();
+    let export_root=wallet_settings_dir(&network,&wallet).map_err(|e|e.to_string())?.join("exports"); fs::create_dir_all(&export_root).map_err(|e|e.to_string())?;
+    let period_label=if let Some(y)=year{if let Some(q)=quarter{format!("{y}-Q{q}")}else{y.to_string()}}else if from_date.as_deref().unwrap_or("").is_empty()&&to_date.as_deref().unwrap_or("").is_empty(){"all-time".into()}else{"custom-period".into()};
+    let output=export_root.join(format!("ledger-{period_label}-{epoch}-{profile}"));
+    let core=resolve_binary(Some(&app),"qrx").map_err(|e|e.to_string())?; let datadir=app_data_dir().map_err(|e|e.to_string())?;
+    let chain_dir=datadir.join(&network).join("chain"); let selected_wallet_dir=wallet_dir(&network,&wallet).map_err(|e|e.to_string())?;
+    let kdb=kraken_gateway_state_dir(&network,&wallet)?.join("kraken-gateway.sqlite3"); let adb=arbitrage_state_dir(&network,&wallet)?.join("arbitrage.sqlite3");
+    let mut args=vec!["--output".into(),output.to_string_lossy().to_string(),"--profile".into(),profile.into(),"--qrx".into(),core.to_string_lossy().to_string(),"--chain-dir".into(),chain_dir.to_string_lossy().to_string(),"--wallet-dir".into(),selected_wallet_dir.to_string_lossy().to_string(),"--network".into(),network,"--datadir".into(),datadir.to_string_lossy().to_string(),"--wallet".into(),wallet,"--kraken-db".into(),kdb.to_string_lossy().to_string(),"--arbitrage-db".into(),adb.to_string_lossy().to_string()];
+    if let Some(v)=from_date.filter(|v|!v.trim().is_empty()){args.extend(["--from-date".into(),v]);}if let Some(v)=to_date.filter(|v|!v.trim().is_empty()){args.extend(["--to-date".into(),v]);}if let Some(v)=year{args.extend(["--year".into(),v.to_string()]);}if let Some(v)=quarter{args.extend(["--quarter".into(),v.to_string()]);}
+    let mut result=run_python_json(&app,"qrx-complete-ledger-export.py",&args,None)?; if let Some(o)=result.as_object_mut(){o.insert("output_dir".into(),Value::String(output.to_string_lossy().to_string()));} Ok(result)
+}
+
+fn resolve_python_launcher() -> Result<(String, Vec<String>), String> {
+    if let Ok(p) = std::env::var("QRX_PYTHON") {
+        if !p.trim().is_empty() { return Ok((p, Vec::new())); }
+    }
+    let candidates = if cfg!(target_os = "windows") {
+        vec![("py".to_string(), vec!["-3".to_string()]), ("python".to_string(), vec![])]
+    } else {
+        vec![("python3".to_string(), vec![]), ("python".to_string(), vec![])]
+    };
+    for (program, prefix) in candidates {
+        let mut c = Command::new(&program);
+        for a in &prefix { c.arg(a); }
+        if c.arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
+            return Ok((program, prefix));
+        }
+    }
+    Err("Python 3 is required for the QRX Kraken gateway MVP and was not found".into())
+}
+
+#[tauri::command]
+fn kraken_credentials_status(network: Option<String>, wallet: Option<String>) -> Result<KrakenCredentialStatus, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = wallet.unwrap_or_else(|| "node1".into());
+    let path = kraken_vault_file(&network, &wallet)?;
+    Ok(KrakenCredentialStatus { configured: path.exists(), encrypted_at_rest: path.exists(), venue: "KRAKEN".into(), storage: "Argon2id + AES-256-GCM local vault; no plaintext API secret config".into() })
+}
+
+#[tauri::command]
+fn kraken_store_credentials(network: Option<String>, wallet: Option<String>, api_key: String, api_secret: String, passphrase: String) -> Result<KrakenCredentialStatus, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = wallet.unwrap_or_else(|| "node1".into());
+    let vault = encrypt_kraken_credentials(&api_key, &api_secret, &passphrase)?;
+    let path = kraken_vault_file(&network, &wallet)?;
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(&vault).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    protect_private_file(&tmp)?;
+    #[cfg(windows)]
+    if path.exists() { fs::remove_file(&path).map_err(|e| e.to_string())?; }
+    fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    protect_private_file(&path)?;
+    Ok(KrakenCredentialStatus { configured: true, encrypted_at_rest: true, venue: "KRAKEN".into(), storage: "Argon2id + AES-256-GCM local vault".into() })
+}
+
+#[tauri::command]
+fn kraken_delete_credentials(network: Option<String>, wallet: Option<String>) -> Result<KrakenCredentialStatus, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = wallet.unwrap_or_else(|| "node1".into());
+    let path = kraken_vault_file(&network, &wallet)?;
+    if path.exists() { fs::remove_file(path).map_err(|e| e.to_string())?; }
+    Ok(KrakenCredentialStatus { configured: false, encrypted_at_rest: false, venue: "KRAKEN".into(), storage: "No saved credentials".into() })
+}
+
+#[tauri::command]
+fn kraken_gateway_status(state: tauri::State<KrakenGatewayState>, network: Option<String>, wallet: Option<String>) -> Result<KrakenGatewayStatus, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = wallet.unwrap_or_else(|| "node1".into());
+    let mut guard = state.child.lock().map_err(|_| "Kraken gateway state lock poisoned".to_string())?;
+    let mut running = false; let mut pid = None;
+    if let Some(child) = guard.as_mut() {
+        match child.try_wait() {
+            Ok(None) => { running = true; pid = Some(child.id()); }
+            Ok(Some(_)) | Err(_) => { *guard = None; }
+        }
+    }
+    let wdir = wallet_dir(&network, &wallet).map_err(|e| e.to_string())?;
+    let address = read_address(&wdir);
+    let (outlog, errlog) = kraken_gateway_log_paths(&network, &wallet)?;
+    Ok(KrakenGatewayStatus { running, pid, gateway_address: address, venue: "KRAKEN".into(), stdout_log: outlog.to_string_lossy().to_string(), stderr_log: errlog.to_string_lossy().to_string(), credential_vault_present: kraken_vault_file(&network, &wallet)?.exists() })
+}
+
+#[tauri::command]
+fn kraken_start_gateway(app: tauri::AppHandle, state: tauri::State<KrakenGatewayState>, network: Option<String>, wallet: Option<String>, passphrase: String, use_saved_credentials: bool, api_key: Option<String>, api_secret: Option<String>) -> Result<KrakenGatewayStatus, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = sanitize_wallet_name(&wallet.unwrap_or_else(|| "node1".into())).map_err(|e| e.to_string())?;
+    let mut guard = state.child.lock().map_err(|_| "Kraken gateway state lock poisoned".to_string())?;
+    if let Some(child) = guard.as_mut() {
+        if child.try_wait().map_err(|e| e.to_string())?.is_none() { return Err("Kraken gateway is already running".into()); }
+        *guard = None;
+    }
+    let creds = if use_saved_credentials {
+        let path = kraken_vault_file(&network, &wallet)?;
+        let bytes = fs::read(path).map_err(|_| "No encrypted Kraken credentials saved for this wallet".to_string())?;
+        let vault: KrakenCredentialVault = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        decrypt_kraken_credentials(&vault, &passphrase)?
+    } else {
+        let k = api_key.unwrap_or_default(); let s = api_secret.unwrap_or_default();
+        if k.trim().is_empty() || s.trim().is_empty() { return Err("Enter Kraken API key and API secret in the wallet".into()); }
+        KrakenCredentialPlain { api_key: k.trim().to_string(), api_secret: s.trim().to_string() }
+    };
+    let gateway_address = read_address(&wallet_dir(&network, &wallet).map_err(|e| e.to_string())?).ok_or_else(|| "Current wallet has no QRX address".to_string())?;
+    let qrx_cli = resolve_binary(Some(&app), "qrx-cli").map_err(|e| e.to_string())?;
+    let script = resolve_kraken_gateway_script(&app)?;
+    let (python, prefix) = resolve_python_launcher()?;
+    let state_dir = kraken_gateway_state_dir(&network, &wallet)?;
+    let (outlog, errlog) = kraken_gateway_log_paths(&network, &wallet)?;
+    let stdout = OpenOptions::new().create(true).append(true).open(&outlog).map_err(|e| e.to_string())?;
+    let stderr = OpenOptions::new().create(true).append(true).open(&errlog).map_err(|e| e.to_string())?;
+    let mut cmd = Command::new(python);
+    for a in prefix { cmd.arg(a); }
+    cmd.arg(script)
+        .arg("--qrx-cli").arg(qrx_cli)
+        .arg("--network").arg(&network)
+        .arg("--datadir").arg(app_data_dir().map_err(|e| e.to_string())?)
+        .arg("--wallet").arg(&wallet)
+        .arg("--gateway-address").arg(&gateway_address)
+        .arg("--state-dir").arg(&state_dir)
+        .stdin(Stdio::piped()).stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr));
+    let mut child = cmd.spawn().map_err(|e| format!("Could not start Kraken gateway: {e}"))?;
+    let payload = serde_json::json!({"api_key":creds.api_key,"api_secret":creds.api_secret});
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(serde_json::to_string(&payload).map_err(|e| e.to_string())?.as_bytes()).map_err(|e| e.to_string())?;
+        stdin.write_all(b"\n").map_err(|e| e.to_string())?;
+        stdin.flush().map_err(|e| e.to_string())?;
+    } else { let _ = child.kill(); return Err("Kraken gateway stdin pipe unavailable".into()); }
+    drop(child.stdin.take());
+    let pid = child.id();
+    *guard = Some(child);
+    Ok(KrakenGatewayStatus { running: true, pid: Some(pid), gateway_address: Some(gateway_address), venue: "KRAKEN".into(), stdout_log: outlog.to_string_lossy().to_string(), stderr_log: errlog.to_string_lossy().to_string(), credential_vault_present: kraken_vault_file(&network, &wallet)?.exists() })
+}
+
+#[tauri::command]
+fn kraken_stop_gateway(state: tauri::State<KrakenGatewayState>, network: Option<String>, wallet: Option<String>) -> Result<KrakenGatewayStatus, String> {
+    {
+        let mut guard = state.child.lock().map_err(|_| "Kraken gateway state lock poisoned".to_string())?;
+        if let Some(child) = guard.as_mut() { let _ = child.kill(); let _ = child.wait(); }
+        *guard = None;
+    }
+    kraken_gateway_status(state, network, wallet)
+}
 
 fn btc_password_file() -> Result<PathBuf, String> {
     Ok(btc_wallet_dir()?.join(".dev_password_hint"))
@@ -1766,152 +2107,43 @@ fn active_btc_endpoint() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn btc_init_wallet(passphrase: Option<String>) -> Result<BtcWalletInitResult, String> {
-    let endpoint = active_btc_endpoint()?;
-    let (wallet, _blockchain) = open_bdk_wallet(&endpoint, passphrase)?;
-    let address = wallet
-        .get_address(AddressIndex::Peek(0))
-        .map_err(|e| e.to_string())?
-        .address
-        .to_string();
-
-    Ok(BtcWalletInitResult {
-        status: "bdk-wallet-ready".into(),
-        network: "bitcoin".into(),
-        address,
-        warning: "BTC mnemonic is encrypted locally with Argon2id + AES-GCM. Keep backups safe.".into(),
-    })
+fn btc_init_wallet(app:tauri::AppHandle,passphrase: Option<String>) -> Result<BtcWalletInitResult, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"init","passphrase":passphrase}))
 }
 
 #[tauri::command]
-fn btc_backup_phrase(passphrase: Option<String>) -> Result<BtcBackupResult, String> {
-    let pass = btc_password(passphrase)?;
-    let wallet = ensure_btc_wallet_file(&pass)?;
-    let words = decrypt_btc_mnemonic(&wallet, &pass)?;
-    Ok(BtcBackupResult {
-        status: "backup-phrase-decrypted".into(),
-        mnemonic: words,
-        warning: "Write this recovery phrase down offline. Anyone with these words can spend the BTC wallet. Never share it.".into(),
-    })
+fn btc_backup_phrase(app:tauri::AppHandle,passphrase: Option<String>) -> Result<BtcBackupResult, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"backup","passphrase":passphrase}))
 }
 
 #[tauri::command]
-fn btc_restore_wallet(mnemonic: String, passphrase: Option<String>, overwrite: bool) -> Result<BtcRestoreResult, String> {
-    let words = mnemonic.split_whitespace().collect::<Vec<_>>().join(" ");
-    if words.is_empty() {
-        return Err("Recovery phrase is required".into());
-    }
-
-    let path = btc_wallet_file()?;
-    if path.exists() && !overwrite {
-        return Err("BTC wallet already exists. Enable overwrite to replace it after backing up current funds.".into());
-    }
-
-    // Validate by parsing and deriving descriptors.
-    let pass = btc_password(passphrase)?;
-    let wallet = wallet_file_from_words(
-        &words,
-        &pass,
-        "Restored from recovery phrase. BTC mnemonic is encrypted locally with Argon2id + AES-GCM.",
-    )?;
-    write_btc_wallet(&wallet)?;
-
-    let _ = fs::remove_file(btc_wallet_dir()?.join("address_index.txt"));
-
-    let endpoint = active_btc_endpoint()?;
-    let (bdk_wallet, _blockchain) = open_bdk_wallet(&endpoint, Some(pass))?;
-    let first_address = bdk_wallet
-        .get_address(AddressIndex::Peek(0))
-        .map_err(|e| e.to_string())?
-        .address
-        .to_string();
-
-    Ok(BtcRestoreResult {
-        status: "btc-wallet-restored".into(),
-        network: "bitcoin".into(),
-        first_address,
-        warning: "Restored wallet. Run sync to check balance/history.".into(),
-    })
+fn btc_restore_wallet(app:tauri::AppHandle,mnemonic: String, passphrase: Option<String>, overwrite: bool) -> Result<BtcRestoreResult, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"restore","mnemonic":mnemonic,"passphrase":passphrase,"overwrite":overwrite}))
 }
 
 #[tauri::command]
-fn btc_reset_wallet(confirm: String) -> Result<String, String> {
-    if confirm.trim() != "DELETE BTC WALLET" {
-        return Err("Type DELETE BTC WALLET to confirm reset.".into());
-    }
-    let path = btc_wallet_file()?;
-    if path.exists() {
-        fs::remove_file(&path).map_err(|e| e.to_string())?;
-    }
-    let _ = fs::remove_file(btc_wallet_dir()?.join("address_index.txt"));
-    Ok("Local encrypted BTC wallet removed. This does not move funds; you need the recovery phrase to restore access.".into())
+fn btc_reset_wallet(app:tauri::AppHandle,confirm: String) -> Result<String, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"reset","confirm":confirm}))
 }
 
 #[tauri::command]
-fn btc_sync(passphrase: Option<String>) -> Result<BtcLightStatus, String> {
-    btc_get_status(None, passphrase)
+fn btc_sync(app:tauri::AppHandle,passphrase: Option<String>) -> Result<BtcLightStatus, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"sync","passphrase":passphrase}))
 }
 
 #[tauri::command]
-fn btc_get_balance(passphrase: Option<String>) -> Result<BtcLightStatus, String> {
-    btc_get_status(None, passphrase)
+fn btc_get_balance(app:tauri::AppHandle,passphrase: Option<String>) -> Result<BtcLightStatus, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"balance","passphrase":passphrase}))
 }
 
 #[tauri::command]
-fn btc_new_address(passphrase: Option<String>) -> Result<BtcReceiveAddress, String> {
-    let endpoint = active_btc_endpoint()?;
-    let (wallet, _blockchain) = open_bdk_wallet(&endpoint, passphrase)?;
-    let counter_path = btc_wallet_dir()?.join("address_index.txt");
-    let current = fs::read_to_string(&counter_path)
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(0);
-    let address = wallet
-        .get_address(AddressIndex::Peek(current))
-        .map_err(|e| e.to_string())?
-        .address
-        .to_string();
-    fs::write(&counter_path, (current + 1).to_string()).map_err(|e| e.to_string())?;
-
-    Ok(BtcReceiveAddress {
-        address,
-        status: "bdk-address".into(),
-        note: "Real BTC address generated by BDK descriptor wallet. BTC mnemonic is encrypted locally. Keep your password and backup safe.".into(),
-    })
+fn btc_new_address(app:tauri::AppHandle,passphrase: Option<String>) -> Result<BtcReceiveAddress, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"new-address","passphrase":passphrase}))
 }
 
 #[tauri::command]
-fn btc_send(to_address: String, amount_sats: u64, fee_rate_sat_vb: Option<f32>, passphrase: Option<String>) -> Result<BtcSendResult, String> {
-    if amount_sats == 0 {
-        return Err("amount_sats must be greater than zero".into());
-    }
-    let endpoint = active_btc_endpoint()?;
-    let (wallet, blockchain) = open_bdk_wallet(&endpoint, passphrase)?;
-    wallet.sync(&blockchain, SyncOptions::default()).map_err(|e| e.to_string())?;
-
-    let address = Address::from_str(to_address.trim()).map_err(|e| e.to_string())?;
-    let address = address.require_network(btc_network()).map_err(|e| e.to_string())?;
-    let mut builder = wallet.build_tx();
-    builder.add_recipient(address.script_pubkey(), amount_sats);
-    if let Some(rate) = fee_rate_sat_vb {
-        if rate > 0.0 {
-            builder.fee_rate(FeeRate::from_sat_per_vb(rate));
-        }
-    }
-
-    let (mut psbt, _details) = builder.finish().map_err(|e| e.to_string())?;
-    let finalized = wallet.sign(&mut psbt, SignOptions::default()).map_err(|e| e.to_string())?;
-    if !finalized {
-        return Err("Could not finalize BTC transaction".into());
-    }
-    let tx = psbt.extract_tx();
-    blockchain.broadcast(&tx).map_err(|e| e.to_string())?;
-    Ok(BtcSendResult {
-        txid: tx.txid().to_string(),
-        amount_sats,
-        recipient: to_address,
-        endpoint,
-    })
+fn btc_send(app:tauri::AppHandle,to_address: String, amount_sats: u64, fee_rate_sat_vb: Option<f32>, passphrase: Option<String>) -> Result<BtcSendResult, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"send","to_address":to_address,"amount_sats":amount_sats,"fee_rate_sat_vb":fee_rate_sat_vb,"passphrase":passphrase}))
 }
 
 
@@ -2516,9 +2748,59 @@ fn privacy_set_mode(mode: String) -> Result<PrivacyStatus, String> {
     privacy_get_status()
 }
 
+fn wallet_cli_is_read_only(command: &str) -> bool {
+    matches!(command,
+        "getinfo"|"address"|"receive"|"listaddresses"|"getbalance"|"getblockcount"|
+        "getaddressnonce"|"getnoncelanes"|"getagent"|"listagents"|"getagentlimits"|
+        "getorder"|"listorders"|"gettrade"|"listtrades"|"getorderbook"|"getassetbalance"|
+        "listassets"|"gettradinginfo"|"getgateway"|"listgateways"|"getexecutionreport"|
+        "getstateroot"|"getsettlement"|"getcrosschaininfo"|"getcrosschainswap"|
+        "listcrosschainswaps"|"getcrosschainorderbook"|"getbtchtlctemplate"|"getbtcspvinfo"|
+        "getbtcbestheader"|"getbtcheader"|"verifybtcproof"|"getbtcconfirmations"|
+        "verifycrosschainfunding"|"getcrosschainfunding"|"getcrosschainsecurity"|
+        "getvelocityinfo"|"getvelocityengineinfo"|"getblockchaininfo"|"getnetworkinfo"|
+        "getnodestatus"|"getuptime"|"getbuildinfo"|"getmempoolinfo"|"getrecentblocks"|
+        "getrecenttransactions"|"getvalidatorstatus"|"getblockproducerinfo"|"getfeeinfo"|
+        "getpeerinfo"|"getstakinginfo"|"getwalletinfo"|"getreward"|"getparams"|
+        "gethalving"|"getforks"|"getactivefork"|"history"|"listpeers"|"peerstatus"|
+        "banscores"|"validator-set"|"tokenomics"|"getdevaddress"|"getswap"|"listswaps"|
+        "shielded-balance"|"shielded-history"|"stealth-history"|"privacy-feature-status"|
+        "decoderawtransaction"|"gettxid"
+    )
+}
+
+#[tauri::command]
+fn wallet_cli_capabilities() -> Value {
+    serde_json::json!({
+        "surface":"qrx-cli",
+        "coverage":"all qrx-cli commands",
+        "mutations_require_confirmation":true,
+        "mutations_require_wallet_passphrase":true,
+        "complete_trade_selector":"qrx list-trades <chain-dir> * all",
+        "complete_ledger_command":"qrx-wallet-cli export-ledger",
+        "note":"The desktop command center passes argument arrays directly without a shell."
+    })
+}
+
+#[tauri::command]
+fn wallet_cli_execute(app:tauri::AppHandle,network:Option<String>,wallet:Option<String>,arguments:Vec<String>,confirmed:bool,passphrase:Option<String>)->Result<CommandResult,String>{
+    let network=network.unwrap_or_else(||"alpha".into()); let wallet=sanitize_wallet_name(wallet.unwrap_or_else(||"node1".into()).as_str()).map_err(String::from)?;
+    if arguments.is_empty(){return Err("Enter a qrx-cli command".into());}
+    if arguments.len()>64{return Err("Too many command arguments".into());}
+    for value in &arguments{if value.contains('\0')||value.len()>131072{return Err("Invalid or oversized command argument".into());}}
+    let read_only=wallet_cli_is_read_only(arguments[0].as_str());
+    if !read_only&&!confirmed{return Err("This command can change wallet or chain state. Confirm it explicitly first.".into());}
+    if !read_only&&passphrase.as_deref().unwrap_or("").is_empty(){return Err("Unlock the wallet before executing a state-changing command".into());}
+    let refs=arguments.iter().map(String::as_str).collect::<Vec<_>>();
+    run_cli(Some(&app),&network,&wallet,&refs,passphrase.as_deref()).map_err(|e|e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(DaemonState {
+            child: Mutex::new(None),
+        })
+        .manage(KrakenGatewayState {
             child: Mutex::new(None),
         })
         .setup(|app| {
@@ -2528,6 +2810,22 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_context,
+            kraken_credentials_status,
+            kraken_store_credentials,
+            kraken_delete_credentials,
+            kraken_gateway_status,
+            kraken_start_gateway,
+            kraken_stop_gateway,
+            arbitrage_evaluate,
+            arbitrage_approve,
+            arbitrage_broadcast_hedge,
+            arbitrage_list,
+            arbitrage_fetch_kraken_book,
+            arbitrage_get_order,
+            export_complete_ledger,
+            agent_manager_list,
+            agent_manager_register,
+            agent_manager_revoke,
             list_wallets,
             create_wallet,
             restore_wallet_from_recovery,
@@ -2585,6 +2883,8 @@ fn main() {
             privacy_action_preview,
             privacy_get_status,
             privacy_set_mode,
+            wallet_cli_capabilities,
+            wallet_cli_execute,
             dashboard_snapshot,
         ])
         .run(tauri::generate_context!())

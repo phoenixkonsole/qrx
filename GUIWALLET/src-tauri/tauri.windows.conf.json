@@ -9,7 +9,12 @@
         "wix": {
           "language": "en-US"
         }
-      }
+      },
+      "resources": [
+        "resources/qrx-gateway-kraken.py",
+        "resources/qrx-arbitrage-engine.py",
+        "resources/qrx-complete-ledger-export.py"
+      ]
     }
   }
 }
