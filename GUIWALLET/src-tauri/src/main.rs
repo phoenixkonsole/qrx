@@ -104,6 +104,27 @@ struct LegacyGuiWalletCandidate {
     already_in_shared_store: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct LegacyNetworkWalletCandidate {
+    name: String,
+    network: String,
+    path: String,
+    address: Option<String>,
+    has_recovery_file: bool,
+    wallet_version: Option<u64>,
+    hybrid_ready: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LegacyNetworkWalletGroup {
+    name: String,
+    shared_exists: bool,
+    shared_address: Option<String>,
+    conflict: bool,
+    unique_addresses: Vec<String>,
+    candidates: Vec<LegacyNetworkWalletCandidate>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct WalletAddressSet {
     wallet: String,
@@ -171,6 +192,15 @@ struct CreateWalletResult {
     address: Option<String>,
     recovery_phrase: Option<String>,
     output: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RecoveryRefreshResult {
+    wallet: String,
+    address: Option<String>,
+    recovery_phrase: String,
+    recovery_file: String,
+    safety_backup: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -267,7 +297,10 @@ fn app_data_dir() -> Result<PathBuf, AppError> {
 
 
 fn wallet_settings_dir(network: &str, wallet: &str) -> Result<PathBuf, AppError> {
-    let dir = wallet_dir(network, wallet)?.join("settings");
+    // Settings/runtime state can be network-specific even though the private
+    // wallet identity is shared across all QRX networks.
+    let wallet = sanitize_wallet_name(wallet)?;
+    let dir = network_root(network)?.join("wallet-settings").join(wallet);
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -295,12 +328,85 @@ fn network_root(network: &str) -> Result<PathBuf, AppError> {
     Ok(app_data_dir()?.join(network))
 }
 
-fn wallet_root(network: &str) -> Result<PathBuf, AppError> {
-    Ok(network_root(network)?.join("wallets"))
+fn wallet_root(_network: &str) -> Result<PathBuf, AppError> {
+    // QRX wallet identity is network-independent. Chain state remains under
+    // ~/.qrx/<network>, while one hybrid key identity lives under ~/.qrx/wallets.
+    let root = app_data_dir()?.join("wallets");
+    fs::create_dir_all(&root)?;
+    Ok(root)
+}
+
+fn legacy_network_candidates_for_wallet(wallet: &str) -> Result<Vec<LegacyNetworkWalletCandidate>, AppError> {
+    let wallet = sanitize_wallet_name(wallet)?;
+    let root = app_data_dir()?;
+    let mut out = Vec::new();
+    for network in ["mainnet", "alpha", "testnet", "regtest"] {
+        let path = root.join(network).join("wallets").join(&wallet);
+        if !path.is_dir() { continue; }
+        let hybrid_ready = ["ed25519_priv.pem", "ed25519_pub.pem", "mldsa65_priv.pem", "mldsa65_pub.pem"]
+            .iter().all(|name| path.join(name).is_file());
+        out.push(LegacyNetworkWalletCandidate {
+            name: wallet.clone(),
+            network: network.to_string(),
+            path: path.to_string_lossy().to_string(),
+            address: read_address(&path),
+            has_recovery_file: path.join("recovery.qrxseed").is_file(),
+            wallet_version: read_wallet_version(&path),
+            hybrid_ready,
+        });
+    }
+    Ok(out)
+}
+
+fn best_legacy_network_candidate(candidates: &[LegacyNetworkWalletCandidate]) -> Option<LegacyNetworkWalletCandidate> {
+    candidates.iter().cloned().max_by_key(|c| {
+        let mut score = 0u32;
+        if c.hybrid_ready { score += 100; }
+        if c.has_recovery_file { score += 20; }
+        if c.address.is_some() { score += 10; }
+        score += c.wallet_version.unwrap_or(0).min(50) as u32;
+        score
+    })
 }
 
 fn wallet_dir(network: &str, wallet: &str) -> Result<PathBuf, AppError> {
-    Ok(wallet_root(network)?.join(wallet))
+    let wallet = sanitize_wallet_name(wallet)?;
+    let shared = wallet_root(network)?.join(&wallet);
+    if shared.is_dir() { return Ok(shared); }
+
+    // Safe one-time migration from the former per-network layout. We never
+    // privilege Alpha/Mainnet/Testnet by name. If all discovered copies resolve
+    // to one identity, copy the most complete source. If different addresses
+    // exist under the same wallet name, stop and let the GUI Migration Conflict
+    // Wizard choose explicitly; never overwrite or silently pick a network.
+    let candidates = legacy_network_candidates_for_wallet(&wallet)?;
+    if candidates.is_empty() { return Ok(shared); }
+    let mut unique_addresses: Vec<String> = candidates.iter().filter_map(|c| c.address.clone()).collect();
+    unique_addresses.sort(); unique_addresses.dedup();
+    let all_candidates_identified = candidates.iter().all(|c| c.address.is_some());
+    if unique_addresses.len() > 1 || (candidates.len() > 1 && (!all_candidates_identified || unique_addresses.len() != 1)) {
+        let detail = if unique_addresses.is_empty() { "addresses unavailable".to_string() } else { unique_addresses.join(", ") };
+        return Err(AppError::Message(format!(
+            "Legacy wallet migration conflict for '{}': the old per-network stores cannot be proven to contain the same QUB identity ({}). Open Wallets → Migration Conflict Wizard and choose explicitly; no files were changed.",
+            wallet, detail
+        )));
+    }
+    let source = best_legacy_network_candidate(&candidates)
+        .ok_or_else(|| AppError::Message("No usable legacy wallet candidate found".into()))?;
+    let source_path = PathBuf::from(&source.path);
+    copy_dir_recursive(&source_path, &shared)?;
+    let marker = serde_json::json!({
+        "migration":"network-independent-wallet-identity",
+        "source":source.path,
+        "source_network":source.network,
+        "destination":shared.to_string_lossy(),
+        "address":source.address,
+        "candidate_count":candidates.len(),
+        "policy":"copy-only; no network preference; source preserved; conflict requires explicit GUI choice",
+        "created_unix":SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e|AppError::Message(e.to_string()))?.as_secs()
+    });
+    fs::write(shared.join("QRX_SHARED_IDENTITY_MIGRATION.json"), serde_json::to_vec_pretty(&marker).map_err(|e|AppError::Message(e.to_string()))?)?;
+    Ok(shared)
 }
 
 fn ensure_context(network: &str, wallet: &str) -> Result<WalletContext, AppError> {
@@ -1151,6 +1257,77 @@ async fn import_legacy_gui_wallet(network: Option<String>, wallet: String, sourc
 }
 
 #[tauri::command]
+fn list_legacy_network_wallets() -> Result<Vec<LegacyNetworkWalletGroup>, String> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let root = app_data_dir().map_err(String::from)?;
+    let shared_root = wallet_root("alpha").map_err(String::from)?;
+    let mut by_name: BTreeMap<String, Vec<LegacyNetworkWalletCandidate>> = BTreeMap::new();
+    for network in ["mainnet", "alpha", "testnet", "regtest"] {
+        let wallets_root = root.join(network).join("wallets");
+        if !wallets_root.is_dir() { continue; }
+        for entry in fs::read_dir(&wallets_root).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if !path.is_dir() { continue; }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if sanitize_wallet_name(&name).is_err() { continue; }
+            let hybrid_ready = ["ed25519_priv.pem", "ed25519_pub.pem", "mldsa65_priv.pem", "mldsa65_pub.pem"]
+                .iter().all(|f| path.join(f).is_file());
+            by_name.entry(name.clone()).or_default().push(LegacyNetworkWalletCandidate {
+                name, network: network.to_string(), path: path.to_string_lossy().to_string(),
+                address: read_address(&path), has_recovery_file: path.join("recovery.qrxseed").is_file(),
+                wallet_version: read_wallet_version(&path), hybrid_ready,
+            });
+        }
+    }
+    let mut groups = Vec::new();
+    for (name, candidates) in by_name {
+        let shared = shared_root.join(&name);
+        let shared_exists = shared.is_dir();
+        let shared_address = if shared_exists { read_address(&shared) } else { None };
+        let mut addresses = BTreeSet::new();
+        for c in &candidates { if let Some(a)=&c.address { addresses.insert(a.clone()); } }
+        if let Some(a)=&shared_address { addresses.insert(a.clone()); }
+        let all_candidates_identified = candidates.iter().all(|c| c.address.is_some());
+        let conflict = addresses.len() > 1 || (candidates.len() > 1 && (!all_candidates_identified || addresses.len() != 1));
+        groups.push(LegacyNetworkWalletGroup {
+            name, shared_exists, shared_address,
+            conflict,
+            unique_addresses: addresses.into_iter().collect(), candidates,
+        });
+    }
+    Ok(groups)
+}
+
+#[tauri::command]
+fn migrate_legacy_network_wallet(source_network: String, wallet: String, target_wallet: String) -> Result<WalletInspection, String> {
+    let source_network = source_network.to_lowercase();
+    if !["mainnet","alpha","testnet","regtest"].contains(&source_network.as_str()) { return Err("Invalid source network".into()); }
+    let wallet = sanitize_wallet_name(&wallet).map_err(String::from)?;
+    let target_wallet = sanitize_wallet_name(&target_wallet).map_err(String::from)?;
+    let root = app_data_dir().map_err(String::from)?;
+    let source = root.join(&source_network).join("wallets").join(&wallet);
+    if !source.is_dir() { return Err("Selected legacy wallet source no longer exists".into()); }
+    let shared_root = wallet_root("alpha").map_err(String::from)?;
+    let target = shared_root.join(&target_wallet);
+    if target.exists() { return Err(format!("Shared wallet '{}' already exists. Choose a new wallet name; existing identities are never overwritten.", target_wallet)); }
+    copy_dir_recursive(&source, &target).map_err(String::from)?;
+    let marker = serde_json::json!({
+        "migration":"explicit-network-wallet-import",
+        "source_network":source_network,
+        "source":source.to_string_lossy(),
+        "destination":target.to_string_lossy(),
+        "source_wallet_name":wallet,
+        "target_wallet_name":target_wallet,
+        "address":read_address(&target),
+        "policy":"explicit user choice; copy-only; source preserved; no overwrite",
+        "created_unix":SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e|e.to_string())?.as_secs()
+    });
+    fs::write(target.join("QRX_SHARED_IDENTITY_MIGRATION.json"), serde_json::to_vec_pretty(&marker).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    inspect_wallet_inner("alpha", &target_wallet).map_err(String::from)
+}
+
+#[tauri::command]
 fn get_context(network: Option<String>, wallet: Option<String>) -> Result<WalletContext, String> {
     ensure_context(
         network.as_deref().unwrap_or("alpha"),
@@ -1278,6 +1455,55 @@ fn create_wallet(
             .map(|s| s.to_string()),
         output,
     })
+}
+
+#[tauri::command]
+fn refresh_recovery_backup(
+    app: tauri::AppHandle,
+    network: Option<String>,
+    wallet: String,
+    passphrase: String,
+) -> Result<RecoveryRefreshResult, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = sanitize_wallet_name(&wallet).map_err(String::from)?;
+    let dir = wallet_dir(&network, &wallet).map_err(String::from)?;
+    if !dir.is_dir() { return Err("Wallet directory does not exist".into()); }
+    let safety_backup = create_wallet_security_backup(&network, &wallet, "pre-recovery-refresh").map_err(String::from)?;
+    let output = run_qrx(
+        Some(&app),
+        &["wallet-recovery-refresh", dir.to_string_lossy().as_ref()],
+        Some(&passphrase),
+        None,
+    ).map_err(String::from)?;
+    let parsed = parse_key_value_lines(&output);
+    let phrase = parsed.get("recovery_phrase").and_then(|v|v.as_str()).unwrap_or("").to_string();
+    if phrase.is_empty() { return Err("Core did not return a recovery phrase".into()); }
+    Ok(RecoveryRefreshResult {
+        wallet,
+        address: parsed.get("address").and_then(|v|v.as_str()).map(|v|v.to_string()),
+        recovery_phrase: phrase,
+        recovery_file: dir.join("recovery.qrxseed").to_string_lossy().to_string(),
+        safety_backup,
+    })
+}
+
+#[tauri::command]
+fn export_recovery_file(
+    network: Option<String>,
+    wallet: String,
+    destination_file: String,
+) -> Result<String, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = sanitize_wallet_name(&wallet).map_err(String::from)?;
+    let source = wallet_dir(&network, &wallet).map_err(String::from)?.join("recovery.qrxseed");
+    if !source.is_file() { return Err("This wallet has no recovery.qrxseed yet".into()); }
+    let destination = PathBuf::from(destination_file);
+    if let Some(parent)=destination.parent(){ fs::create_dir_all(parent).map_err(|e|e.to_string())?; }
+    fs::copy(&source,&destination).map_err(|e|format!("Could not save recovery file: {e}"))?;
+    let src_len=fs::metadata(&source).map_err(|e|e.to_string())?.len();
+    let dst_len=fs::metadata(&destination).map_err(|e|e.to_string())?.len();
+    if src_len!=dst_len { return Err("Recovery file verification failed after copy".into()); }
+    Ok(destination.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -3303,6 +3529,8 @@ fn main() {
             agent_manager_register,
             agent_manager_revoke,
             list_wallets,
+            list_legacy_network_wallets,
+            migrate_legacy_network_wallet,
             list_legacy_gui_wallets,
             import_legacy_gui_wallet,
             inspect_wallet,
@@ -3312,6 +3540,8 @@ fn main() {
             import_key_set_directory,
             prepare_existing_wallet,
             create_wallet,
+            refresh_recovery_backup,
+            export_recovery_file,
             restore_wallet_from_recovery,
             import_wallet_directory,
             export_wallet_directory,
