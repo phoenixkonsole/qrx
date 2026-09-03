@@ -25,27 +25,88 @@ endif()
 option(QRX_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(QRX_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(QRX_ENABLE_HARDENING "Enable basic hardening flags" ON)
+option(QRX_REQUIRE_PQC "Require OpenSSL with ML-DSA / post-quantum support" ON)
+option(QRX_BUILD_TESTS "Build QRX internal test executables" OFF)
+
+# Prefer caller-supplied OpenSSL root/library paths.
+# Recommended static build:
+#   -DOPENSSL_USE_STATIC_LIBS=TRUE
+#   -DOPENSSL_ROOT_DIR=/opt/qrx-openssl-static
+#   -DOPENSSL_INCLUDE_DIR=/opt/qrx-openssl-static/include
+#   -DOPENSSL_CRYPTO_LIBRARY=/opt/qrx-openssl-static/lib64/libcrypto.a
+if(DEFINED OPENSSL_ROOT_DIR AND OPENSSL_ROOT_DIR)
+    list(PREPEND CMAKE_PREFIX_PATH "${OPENSSL_ROOT_DIR}")
+endif()
 
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 
+# Different CMake/OpenSSL versions expose the version string under
+# different variable names. Normalize it first.
+if(DEFINED OPENSSL_VERSION)
+    set(QRX_OPENSSL_VERSION "${OPENSSL_VERSION}")
+elseif(DEFINED OPENSSL_VERSION_STRING)
+    set(QRX_OPENSSL_VERSION "${OPENSSL_VERSION_STRING}")
+elseif(DEFINED OpenSSL_VERSION)
+    set(QRX_OPENSSL_VERSION "${OpenSSL_VERSION}")
+else()
+    set(QRX_OPENSSL_VERSION "0.0.0")
+endif()
+
+message(STATUS "Detected OpenSSL version: ${QRX_OPENSSL_VERSION}")
+message(STATUS "OpenSSL include dir: ${OPENSSL_INCLUDE_DIR}")
+message(STATUS "OpenSSL crypto lib : ${OPENSSL_CRYPTO_LIBRARY}")
+
+if(QRX_REQUIRE_PQC AND QRX_OPENSSL_VERSION VERSION_LESS "3.5.0")
+    message(FATAL_ERROR
+        "QRX hybrid consensus requires OpenSSL >= 3.5.0 with ML-DSA support. "
+        "Detected: ${QRX_OPENSSL_VERSION}. "
+        "Please build OpenSSL 3.6.x and configure with "
+        "-DOPENSSL_ROOT_DIR=/opt/qrx-openssl-static, "
+        "or use -DQRX_REQUIRE_PQC=OFF for developer-only builds."
+    )
+endif()
+
 # -----------------------------
 # Core Library
 # -----------------------------
-add_library(qrxcore STATIC
+set(QRX_CORE_SOURCES
     src/qrx.c
     src/core_frontend.c
     src/chain_params.c
     src/qrxdb.c
+    src/mempool/qrx_velocity_mempool.c
+    src/mempool/qrx_velocity_scheduler.c
+    src/mempool/qrx_velocity_mvcc.c
+    src/bitcoin/qrx_btc_spv.c
+    src/consensus/qrx_finality.c
+    src/consensus/qrx_finality_state.c
+    src/consensus/qrx_slashing.c
 )
+
+add_library(qrxcore STATIC ${QRX_CORE_SOURCES})
 
 target_include_directories(qrxcore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${OPENSSL_INCLUDE_DIR}
 )
 
-target_link_libraries(qrxcore PUBLIC
-    OpenSSL::Crypto
-)
+# Build a robust OpenSSL link list.
+# We intentionally keep the library path explicit when OPENSSL_CRYPTO_LIBRARY
+# is provided, because OpenSSL::Crypto can otherwise resolve to system OpenSSL
+# on Linux/macOS cache-heavy builds.
+set(QRX_OPENSSL_LINK_LIBS "")
+if(OPENSSL_CRYPTO_LIBRARY)
+    list(APPEND QRX_OPENSSL_LINK_LIBS "${OPENSSL_CRYPTO_LIBRARY}")
+else()
+    list(APPEND QRX_OPENSSL_LINK_LIBS OpenSSL::Crypto)
+endif()
+
+if(UNIX AND NOT APPLE)
+    list(APPEND QRX_OPENSSL_LINK_LIBS Threads::Threads ${CMAKE_DL_LIBS})
+endif()
+
+target_link_libraries(qrxcore PUBLIC ${QRX_OPENSSL_LINK_LIBS})
 
 if(WIN32)
     target_link_libraries(qrxcore PUBLIC ws2_32)
@@ -104,26 +165,51 @@ endif()
 # -----------------------------
 # Executables
 # -----------------------------
-add_executable(qrx src/qrx_main.c)
-target_link_libraries(qrx PRIVATE qrxcore)
+set(QRX_OPENSSL_APPLINK_SRC "")
+if(WIN32)
+    set(QRX_OPENSSL_APPLINK_SRC src/openssl_applink.c)
+endif()
 
-add_executable(qrxd src/qrxd.c)
-target_link_libraries(qrxd PRIVATE qrxcore Threads::Threads)
+add_executable(qrx src/qrx_main.c ${QRX_OPENSSL_APPLINK_SRC})
+target_link_libraries(qrx PRIVATE qrxcore ${QRX_OPENSSL_LINK_LIBS})
 
-add_executable(qrx-cli src/qrx_cli.c)
-target_link_libraries(qrx-cli PRIVATE qrxcore)
+add_executable(qrxd src/qrxd.c ${QRX_OPENSSL_APPLINK_SRC})
+target_link_libraries(qrxd PRIVATE qrxcore Threads::Threads ${QRX_OPENSSL_LINK_LIBS})
 
-add_executable(qrxdb_verify src/qrxdb_verify_tool.c)
-target_link_libraries(qrxdb_verify PRIVATE qrxcore)
+add_executable(qrx-cli src/qrx_cli.c ${QRX_OPENSSL_APPLINK_SRC})
+target_link_libraries(qrx-cli PRIVATE qrxcore ${QRX_OPENSSL_LINK_LIBS})
 
-add_executable(qrxdb_salvage src/qrxdb_salvage_tool.c)
-target_link_libraries(qrxdb_salvage PRIVATE qrxcore)
+# Keep the extended command-line wallet in the build output beside qrx-cli.
+# It is the shared non-shell frontend for Phase 4F.2 arbitrage, secure Kraken
+# startup and the State-Root-verified complete ledger exporter.
+add_custom_target(qrx-wallet-cli ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/qrx-wallet-cli.py
+        ${CMAKE_CURRENT_BINARY_DIR}/qrx-wallet-cli.py
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        ${CMAKE_CURRENT_BINARY_DIR}/qrx-wallet-resources
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/qrx-complete-ledger-export.py
+        ${CMAKE_CURRENT_BINARY_DIR}/qrx-wallet-resources/qrx-complete-ledger-export.py
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_SOURCE_DIR}/gateways/qrx-arbitrage-engine.py
+        ${CMAKE_CURRENT_BINARY_DIR}/qrx-wallet-resources/qrx-arbitrage-engine.py
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_SOURCE_DIR}/gateways/qrx-gateway-kraken.py
+        ${CMAKE_CURRENT_BINARY_DIR}/qrx-wallet-resources/qrx-gateway-kraken.py
+)
 
-add_executable(qrxdb_compact src/qrxdb_compact_tool.c)
-target_link_libraries(qrxdb_compact PRIVATE qrxcore)
+add_executable(qrxdb_verify src/qrxdb_verify_tool.c ${QRX_OPENSSL_APPLINK_SRC})
+target_link_libraries(qrxdb_verify PRIVATE qrxcore ${QRX_OPENSSL_LINK_LIBS})
 
-add_executable(qrxdb_snapshot src/qrxdb_snapshot_tool.c)
-target_link_libraries(qrxdb_snapshot PRIVATE qrxcore)
+add_executable(qrxdb_salvage src/qrxdb_salvage_tool.c ${QRX_OPENSSL_APPLINK_SRC})
+target_link_libraries(qrxdb_salvage PRIVATE qrxcore ${QRX_OPENSSL_LINK_LIBS})
+
+add_executable(qrxdb_compact src/qrxdb_compact_tool.c ${QRX_OPENSSL_APPLINK_SRC})
+target_link_libraries(qrxdb_compact PRIVATE qrxcore ${QRX_OPENSSL_LINK_LIBS})
+
+add_executable(qrxdb_snapshot src/qrxdb_snapshot_tool.c ${QRX_OPENSSL_APPLINK_SRC})
+target_link_libraries(qrxdb_snapshot PRIVATE qrxcore ${QRX_OPENSSL_LINK_LIBS})
 
 if(WIN32)
     target_link_libraries(qrx PRIVATE ws2_32)
@@ -192,3 +278,50 @@ endforeach()
 
 # Slashing/signature enforcement
 # src/consensus/qrx_slashing.c
+
+# -----------------------------
+# Internal tests (off for normal release builds)
+# -----------------------------
+if(QRX_BUILD_TESTS)
+    enable_testing()
+    add_executable(qrx_velocity_engine_test tests/velocity_phase4_engine.c)
+    target_include_directories(qrx_velocity_engine_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(qrx_velocity_engine_test PRIVATE qrxcore Threads::Threads ${QRX_OPENSSL_LINK_LIBS})
+    add_test(NAME velocity_phase4_engine COMMAND qrx_velocity_engine_test)
+
+    add_executable(qrx_velocity_mvcc_test tests/velocity_phase4b_mvcc.c)
+    target_include_directories(qrx_velocity_mvcc_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(qrx_velocity_mvcc_test PRIVATE qrxcore Threads::Threads ${QRX_OPENSSL_LINK_LIBS})
+    add_test(NAME velocity_phase4b_mvcc COMMAND qrx_velocity_mvcc_test)
+
+    add_executable(qrx_velocity_stateful_mvcc_test tests/velocity_phase4c_stateful.c)
+    target_include_directories(qrx_velocity_stateful_mvcc_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(qrx_velocity_stateful_mvcc_test PRIVATE qrxcore Threads::Threads ${QRX_OPENSSL_LINK_LIBS})
+    add_test(NAME velocity_phase4c_stateful_mvcc COMMAND qrx_velocity_stateful_mvcc_test)
+
+    add_executable(qrx_velocity_dynamic_mvcc_test tests/velocity_phase4d_dynamic.c)
+    target_include_directories(qrx_velocity_dynamic_mvcc_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(qrx_velocity_dynamic_mvcc_test PRIVATE qrxcore Threads::Threads ${QRX_OPENSSL_LINK_LIBS})
+    add_test(NAME velocity_phase4d_dynamic_mvcc COMMAND qrx_velocity_dynamic_mvcc_test)
+
+    add_executable(qrx_velocity_speculative_mvcc_test tests/velocity_phase4e_speculative.c)
+    target_include_directories(qrx_velocity_speculative_mvcc_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(qrx_velocity_speculative_mvcc_test PRIVATE qrxcore Threads::Threads ${QRX_OPENSSL_LINK_LIBS})
+    add_test(NAME velocity_phase4e_speculative_mvcc COMMAND qrx_velocity_speculative_mvcc_test)
+
+    add_executable(qrx_velocity_block_scheduler_test tests/velocity_phase4f_scheduler.c)
+    target_include_directories(qrx_velocity_block_scheduler_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(qrx_velocity_block_scheduler_test PRIVATE qrxcore Threads::Threads ${QRX_OPENSSL_LINK_LIBS})
+    add_test(NAME velocity_phase4f_block_scheduler COMMAND qrx_velocity_block_scheduler_test)
+
+    if(NOT MSVC)
+        foreach(test_tgt qrx_velocity_engine_test qrx_velocity_mvcc_test qrx_velocity_stateful_mvcc_test qrx_velocity_dynamic_mvcc_test qrx_velocity_speculative_mvcc_test qrx_velocity_block_scheduler_test)
+            if(QRX_ENABLE_ASAN)
+                target_link_options(${test_tgt} PRIVATE -fsanitize=address)
+            endif()
+            if(QRX_ENABLE_UBSAN)
+                target_link_options(${test_tgt} PRIVATE -fsanitize=undefined)
+            endif()
+        endforeach()
+    endif()
+endif()

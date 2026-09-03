@@ -1,0 +1,84 @@
+QRX Core 0.0.7 VELOCITY Phase 4F validation
+==============================================
+
+Release scope:
+- deterministic parallel block dependency graph
+- canonical fee-desc / txid-asc graph input
+- static access-key dependency edges
+- real full-fence barrier semantics
+- deterministic graph levels as execution waves
+- SHA3-512 schedule hash (schedule version 1)
+- critical-path and max-parallel-width metrics
+- Phase 4E speculative MVCC/OCC retained inside graph waves
+- one QRXDB WAL batch / atomic commit / state root retained
+- qrxdb_scan_prefix_at zero-result UBSan hardening
+
+Normal test build:
+  velocity_phase4_engine                 PASS
+  velocity_phase4b_mvcc                  PASS
+  velocity_phase4c_stateful_mvcc         PASS
+  velocity_phase4d_dynamic_mvcc          PASS
+  velocity_phase4e_speculative_mvcc      PASS
+  velocity_phase4f_block_scheduler       PASS
+
+ASan + UBSan test build:
+  velocity_phase4_engine                 PASS
+  velocity_phase4b_mvcc                  PASS
+  velocity_phase4c_stateful_mvcc         PASS
+  velocity_phase4d_dynamic_mvcc          PASS
+  velocity_phase4e_speculative_mvcc      PASS
+  velocity_phase4f_block_scheduler       PASS
+
+Phase 4F scheduler determinism case:
+  same candidates, forward insertion     PASS
+  same candidates, reverse insertion     PASS
+  canonical tx order identical           PASS
+  graph waves identical                  PASS
+  schedule hash identical                PASS
+  independent prefix parallel            PASS
+  static dependency chain                PASS
+  barrier full-prefix fence              PASS
+  post-barrier leapfrog prohibited       PASS
+  independent post-barrier work parallel PASS
+  critical_path_nodes                    5
+  max_parallel_width                     2
+  barrier_nodes                          1
+  barrier_fences                         1
+  dependency_edges                       8
+  schedule_hash                          f13ac8ddcb2a43dbc0b017d5bf64ddad90dc4b6de6a84232a0963f2592f379f869585f96e004dbf4c173aec0f7809b970326d097194fa13f6bb027fbff4e471b
+
+Regression smoke tests:
+  velocity_phase3a_trading.sh            PASS
+  velocity_phase3b_matching.sh           PASS
+  velocity_phase3c_gateway.sh            PASS
+  velocity_phase3d_crosschain.sh         PASS
+  velocity_phase3d1_bitcoin_spv.sh       PASS
+
+Legacy feature audit:
+  scripts/audit-0.0.6-regression.sh       PASS
+  59 audited 0.0.6 CLI commands retained
+  dashboard RPC surface retained
+  mobile-wallet raw-TX RPC pipeline retained
+  QRXDB/release/PQC build surfaces retained
+
+QRXDB crash atomicity:
+  scripts/test-qrxdb-atomic-batch.sh      PASS
+  multi-key WAL batch recovered atomically
+
+Barrier contract retained and strengthened as graph fences:
+  EXTERNAL_ORDER                         SERIAL BARRIER
+  EXECUTION_REPORT                       SERIAL BARRIER
+  CROSSCHAIN_ORDER                       SERIAL BARRIER
+  CROSSCHAIN_REDEEM                      SERIAL BARRIER
+  CROSSCHAIN_REFUND                      SERIAL BARRIER
+  BTC_SPV_HEADER                         SERIAL BARRIER
+  BTC_SPV_FUNDING_PROOF                  SERIAL BARRIER
+
+Notes:
+- A debug/PQC cross-chain regression invocation exceeded its shell execution
+  window. The same Phase 4F source was rebuilt in Release mode and the complete
+  cross-chain test then finished with PASS. It was not counted as successful
+  until that complete run finished.
+- The first sanitizer run exposed the pre-existing qsort(NULL, 0) edge case in
+  qrxdb_scan_prefix_at(). After guarding sorting with count > 1, all six
+  VELOCITY tests pass under ASan + UBSan.

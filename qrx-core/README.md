@@ -2,6 +2,12 @@
 
 This repository is the cleaned, unified QRX working tree for a **public alpha / hobby network**.
 
+## VELOCITY Phase 4F.2
+
+The enclosing release adds cross-venue BTC/QUB → Kraken BTC/EUR opportunity analysis, paper trading, an explicit-confirmation `LIMIT IOC` hedge route and a complete CSV ledger. Live execution requires prefunded Kraken BTC and the separate `ARBITRAGE_CROSS_VENUE` agent permission.
+
+The parity correction includes `tools/qrx-wallet-cli.py`, a safe full `qrx-cli` bridge in Tauri, the shared `qrx-btc-wallet-service`, unbounded local enumeration and the atomic State-Root-verified `QRX_COMPLETE_LEDGER_V3` export. The exporter supports all-time, year, quarter and explicit UTC from/to periods and fails instead of publishing partial results.
+
 ## What this repo is
 
 - **native C layout** with a shared core library

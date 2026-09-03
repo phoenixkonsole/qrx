@@ -1,0 +1,49 @@
+QRX Core 0.0.7 VELOCITY Phase 4D validation
+==============================================
+
+Release scope:
+- Dynamic Write-Set Expansion
+- snapshot-bound QRXDB prefix discovery
+- dynamic ORDER_CREATE / ORDER_CANCEL / ORDER_REPLACE MVCC adapters
+- deterministic native matching + settlement in the same MVCC WAL batch
+- dynamic expired-order discovery and reserve release
+- stale snapshot generation retry
+- remaining external/crosschain/SPV barriers preserved
+
+Normal test build:
+  velocity_phase4_engine             PASS
+  velocity_phase4b_mvcc              PASS
+  velocity_phase4c_stateful_mvcc     PASS
+  velocity_phase4d_dynamic_mvcc      PASS
+
+ASan + UBSan test build:
+  velocity_phase4_engine             PASS
+  velocity_phase4b_mvcc              PASS
+  velocity_phase4c_stateful_mvcc     PASS
+  velocity_phase4d_dynamic_mvcc      PASS
+
+Regression smoke tests:
+  velocity_phase3b_matching.sh       PASS
+  velocity_phase3c_gateway.sh        PASS
+  velocity_phase3d_crosschain.sh     PASS
+  velocity_phase3d1_bitcoin_spv.sh   PASS
+
+Legacy feature audit:
+  scripts/audit-0.0.6-regression.sh  PASS
+  59 audited 0.0.6 CLI commands retained
+  dashboard RPC surface retained
+  mobile-wallet raw-TX RPC pipeline retained
+  QRXDB/release/PQC build surfaces retained
+
+QRXDB crash atomicity:
+  scripts/test-qrxdb-atomic-batch.sh PASS
+  multi-key WAL batch recovered atomically
+
+Notes:
+- The first combined SPV regression run reached the shell execution timeout
+  while generating synthetic regtest PoW. Re-running the SPV test separately
+  completed successfully and returned its normal PASS result.
+- The sanitizer configuration exposed an existing test-link wiring issue: the
+  static qrxcore library was instrumented but sanitizer runtimes were not linked
+  into test executables. CMake now links the requested sanitizer runtime into
+  all VELOCITY internal test targets.
