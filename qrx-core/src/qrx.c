@@ -404,7 +404,9 @@ static unsigned char *base64_decode(const char *s, size_t *out_len) {
 
 static int get_passphrase(char *buf, size_t bufsz, const char *prompt) {
     const char *env = getenv("QRX_PASSPHRASE");
-    if (env && *env) { snprintf(buf, bufsz, "%s", env); return 0; }
+    /* Presence of QRX_PASSPHRASE is authoritative even when it is empty.
+       Legacy 0.0.6 PKCS#8 wallets legitimately use an empty passphrase. */
+    if (env) { snprintf(buf, bufsz, "%s", env); return 0; }
 #if defined(__unix__) || defined(__APPLE__)
     char *p = getpass(prompt);
     if (!p) return -1;
@@ -701,6 +703,26 @@ static int wallet_seed_new(const char *dir) {
     OPENSSL_cleanse(entropy, sizeof(entropy));
     free(mn); free(addr); EVP_PKEY_free(ed); EVP_PKEY_free(ml); return 0;
 }
+static int wallet_recovery_refresh_cmd(const char *dir) {
+    char pass[256], path[1024];
+    if (get_passphrase(pass, sizeof(pass), "Wallet passphrase: ") != 0) die("passphrase failed");
+    snprintf(path, sizeof(path), "%s/ed25519_priv.pem", dir); EVP_PKEY *ed = load_priv_pem(path, pass); if (!ed) die("wallet passphrase incorrect or Ed25519 key unreadable");
+    snprintf(path, sizeof(path), "%s/mldsa65_priv.pem", dir); EVP_PKEY *ml = load_priv_pem(path, pass); if (!ml) { EVP_PKEY_free(ed); die("wallet passphrase incorrect or ML-DSA65 key unreadable"); }
+    char *addr = wallet_address(dir); if (!addr) { EVP_PKEY_free(ed); EVP_PKEY_free(ml); die("missing wallet address"); }
+    addr[strcspn(addr,"\r\n")]=0;
+    if (address_matches_pub(ed, addr) != 0) { free(addr); EVP_PKEY_free(ed); EVP_PKEY_free(ml); die("wallet address does not match Ed25519 key"); }
+    unsigned char entropy[16]; if (RAND_bytes(entropy, sizeof(entropy)) != 1) die("entropy failed");
+    char *mn = mnemonic_from_entropy(entropy, sizeof(entropy)); if (!mn) die("mnemonic failed");
+    if (write_recovery_blob(dir, addr, mn, ed, ml) != 0) die("recovery blob failed");
+    if (write_wallet_manifest(dir, addr, 1) != 0) die("wallet manifest update failed");
+    printf("address=%s\n", addr);
+    printf("recovery_phrase=%s\n", mn);
+    printf("recovery_file=%s/recovery.qrxseed\n", dir);
+    puts("IMPORTANT: This is a newly generated recovery phrase for the same wallet keys. Store it together with the new recovery.qrxseed. Older valid recovery pairs may remain usable if retained.");
+    OPENSSL_cleanse(pass, sizeof(pass)); OPENSSL_cleanse(entropy, sizeof(entropy));
+    free(mn); free(addr); EVP_PKEY_free(ed); EVP_PKEY_free(ml); return 0;
+}
+
 static int wallet_info_cmd(const char *dir) {
     char path[1024]; snprintf(path, sizeof(path), "%s/wallet.json", dir); char *manifest = read_file(path, NULL); if (!manifest) die("missing wallet.json");
     char *addr = wallet_address(dir); if (!addr) die("missing address");
@@ -5598,6 +5620,7 @@ int qrx_backend_main(int argc, char **argv) {
     if (!strcmp(argv[1], "keygen") && argc == 3) return wallet_keygen(argv[2]);
     if (!strcmp(argv[1], "seed-new") && argc == 3) return wallet_seed_new(argv[2]);
     if (!strcmp(argv[1], "wallet-info") && argc == 3) return wallet_info_cmd(argv[2]);
+    if (!strcmp(argv[1], "wallet-recovery-refresh") && argc == 3) return wallet_recovery_refresh_cmd(argv[2]);
     if (!strcmp(argv[1], "wallet-new-address") && argc == 3) return wallet_new_address_cmd(argv[2]);
     if (!strcmp(argv[1], "listaddresses") && argc == 3) return wallet_list_addresses_cmd(argv[2]);
     if (!strcmp(argv[1], "hybrid-status") && argc == 3) return hybrid_status_cmd(argv[2]);

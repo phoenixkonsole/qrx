@@ -177,9 +177,59 @@ static int ensure_chain(const char *base, const QrxProfile *p, char *out_chain, 
     snprintf(out_chain,out_chain_sz,"%s",cdir);
     return 0;
 }
-static int ensure_wallet(const char *base, const char *wallet, char *out_wallet, size_t out_wallet_sz){ char wdir[PATH_MAX], apath[PATH_MAX]; char *argv_new[3]; snprintf(wdir,sizeof(wdir),"%s/wallets/%s",base,wallet); if(mkdir_p(wdir)!=0) return -1; snprintf(apath,sizeof(apath),"%s/address.txt",wdir); if(!path_exists(apath)){ if(!getenv("QRX_PASSPHRASE")) setenv_qrx("QRX_PASSPHRASE","change-me",1); argv_new[0]="qrx"; argv_new[1]="seed-new"; argv_new[2]=wdir; if(qrx_backend_call(3,argv_new)!=0) return -1; } snprintf(out_wallet,out_wallet_sz,"%s",wdir); return 0; }
+static int shared_wallet_dir_from_network_base(const char *base, const char *wallet, char *out, size_t out_sz){
+    char root[PATH_MAX];
+    snprintf(root,sizeof(root),"%s",base);
+    char *slash1=strrchr(root,'/');
+#ifdef _WIN32
+    char *slash2=strrchr(root,'\\'); if(!slash1 || (slash2 && slash2>slash1)) slash1=slash2;
+#endif
+    if(!slash1) return -1;
+    *slash1=0;
+    snprintf(out,out_sz,"%s/wallets/%s",root,wallet);
+    return 0;
+}
+static int ensure_wallet(const char *base, const char *wallet, char *out_wallet, size_t out_wallet_sz){
+    char wdir[PATH_MAX], apath[PATH_MAX], root[PATH_MAX], alpha_legacy[PATH_MAX]; char *argv_new[3];
+    if(shared_wallet_dir_from_network_base(base,wallet,wdir,sizeof(wdir))!=0) return -1;
+    snprintf(root,sizeof(root),"%s",base); char *slash1=strrchr(root,'/');
+#ifdef _WIN32
+    char *slash2=strrchr(root,'\\'); if(!slash1 || (slash2 && slash2>slash1)) slash1=slash2;
+#endif
+    if(!slash1) return -1;
+    *slash1=0;
+    snprintf(alpha_legacy,sizeof(alpha_legacy),"%s/alpha/wallets/%s",root,wallet);
+    /* Compatibility: until the GUI performs its copy-only migration to
+       ~/.qrx/wallets/<name>, all networks may safely use the existing Alpha
+       wallet identity in place. This prevents accidental per-network keys. */
+    snprintf(apath,sizeof(apath),"%s/address.txt",wdir);
+    if(!path_exists(apath)){
+        char legacy_address[PATH_MAX]; snprintf(legacy_address,sizeof(legacy_address),"%s/address.txt",alpha_legacy);
+        if(path_exists(legacy_address)){ snprintf(out_wallet,out_wallet_sz,"%s",alpha_legacy); return 0; }
+    }
+    if(mkdir_p(wdir)!=0) return -1;
+    snprintf(apath,sizeof(apath),"%s/address.txt",wdir);
+    if(!path_exists(apath)){ if(!getenv("QRX_PASSPHRASE")) setenv_qrx("QRX_PASSPHRASE","change-me",1); argv_new[0]="qrx"; argv_new[1]="seed-new"; argv_new[2]=wdir; if(qrx_backend_call(3,argv_new)!=0) return -1; }
+    snprintf(out_wallet,out_wallet_sz,"%s",wdir); return 0;
+}
 int qrx_get_wallet_address(const char *wallet_dir, char *out, size_t out_sz){ char apath[PATH_MAX]; char *txt; snprintf(apath,sizeof(apath),"%s/address.txt",wallet_dir); txt=read_file_simple(apath); if(!txt) return -1; txt[strcspn(txt,"\r\n")]=0; snprintf(out,out_sz,"%s",txt); free(txt); return 0; }
+static int refresh_node_wallet_binding(const char *nconf, const char *wallet_dir){
+    char *txt=read_file_simple(nconf); if(!txt) return -1;
+    char addr[512]; if(qrx_get_wallet_address(wallet_dir,addr,sizeof(addr))!=0){ free(txt); return -1; }
+    size_t cap=strlen(txt)+strlen(wallet_dir)+strlen(addr)+1024; char *out=calloc(cap,1); if(!out){free(txt);return -1;}
+    const char *p=txt; int saw_wallet=0,saw_addr=0;
+    while(p&&*p){ const char *e=strchr(p,'\n'); size_t len=e?(size_t)(e-p):strlen(p);
+        if(len>=11 && !strncmp(p,"wallet_dir=",11)){ snprintf(out+strlen(out),cap-strlen(out),"wallet_dir=%s\n",wallet_dir); saw_wallet=1; }
+        else if(len>=8 && !strncmp(p,"address=",8)){ snprintf(out+strlen(out),cap-strlen(out),"address=%s\n",addr); saw_addr=1; }
+        else { strncat(out,p,len); strncat(out,"\n",1); }
+        p=e?e+1:NULL;
+    }
+    if(!saw_wallet) snprintf(out+strlen(out),cap-strlen(out),"wallet_dir=%s\n",wallet_dir);
+    if(!saw_addr) snprintf(out+strlen(out),cap-strlen(out),"address=%s\n",addr);
+    FILE *f=fopen(nconf,"wb"); if(!f){free(txt);free(out);return -1;} fwrite(out,1,strlen(out),f); fclose(f); free(txt); free(out); return 0;
+}
 static int ensure_node_conf(const char *base, const QrxProfile *p, const char *wallet, const char *listen, const char **addnodes, int addnode_count, char *out_node, size_t out_node_sz, const char *chain_dir, const char *wallet_dir){ char ndir[PATH_MAX], nconf[PATH_MAX], peers[PATH_MAX], seedf[PATH_MAX], host[128]="0.0.0.0", port[32], ep[256], self[256]; char *argv_node[7]; snprintf(port,sizeof(port),"%d",p->default_port); if(listen&&*listen && qrx_parse_hostport(listen,host,sizeof(host),port,sizeof(port))!=0) return -1; snprintf(ndir,sizeof(ndir),"%s/nodes/%s",base,wallet); if(mkdir_p(ndir)!=0) return -1; snprintf(nconf,sizeof(nconf),"%s/node.conf",ndir); if(!path_exists(nconf)){ argv_node[0]="qrx"; argv_node[1]="node-init"; argv_node[2]=ndir; argv_node[3]=(char*)chain_dir; argv_node[4]=(char*)wallet_dir; argv_node[5]=host; argv_node[6]=port; if(qrx_backend_call(7,argv_node)!=0) return -1; }
+ if(refresh_node_wallet_binding(nconf,wallet_dir)!=0) return -1;
  snprintf(peers,sizeof(peers),"%s/peers.txt",ndir); snprintf(seedf,sizeof(seedf),"%s/seednodes.txt",ndir); snprintf(self,sizeof(self),"%s:%s",host,port); for(int i=0;p->seednodes[i];++i){ snprintf(ep,sizeof(ep),"%s",p->seednodes[i]); if(strcmp(ep,self)!=0){ append_unique_line(peers,ep); append_unique_line(seedf,ep);} }
  for(int i=0;i<addnode_count;++i){ char h[128], prt[32]; char *argv_add[5]; if(qrx_parse_hostport(addnodes[i],h,sizeof(h),prt,sizeof(prt))!=0) continue; argv_add[0]="qrx"; argv_add[1]="add-peer"; argv_add[2]=ndir; argv_add[3]=h; argv_add[4]=prt; qrx_backend_call(5,argv_add);} snprintf(out_node,out_node_sz,"%s",ndir); return 0; }
 int qrx_ensure_node(const char *network, const char *datadir, const char *wallet, const char *listen, const char **addnodes, int addnode_count, char *out_base, size_t out_base_sz, char *out_chain, size_t out_chain_sz, char *out_wallet, size_t out_wallet_sz, char *out_node, size_t out_node_sz){ const QrxProfile *p=qrx_profile_by_name(network); if(!p) return -1; qrx_default_datadir(network,datadir,out_base,out_base_sz); if(mkdir_p(out_base)!=0) return -1; if(ensure_chain(out_base,p,out_chain,out_chain_sz)!=0) return -1; if(ensure_wallet(out_base,wallet,out_wallet,out_wallet_sz)!=0) return -1; if(ensure_node_conf(out_base,p,wallet,listen,addnodes,addnode_count,out_node,out_node_sz,out_chain,out_wallet)!=0) return -1; return 0; }
