@@ -20,6 +20,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
+#include <io.h>
 #define mkdir_local(p) _mkdir(p)
 #define SEP "\\"
 #else
@@ -63,8 +64,16 @@ typedef struct {
     char *value;
     uint32_t key_len;
     uint32_t value_len;
+    uint64_t offset;
+} QrxDBWalPut;
+
+typedef struct {
+    QrxDBWalPut *puts;
+    size_t count;
+    size_t cap;
     uint64_t generation;
-    int has_put;
+    uint64_t begin_offset;
+    uint64_t commit_offset;
     int committed;
 } QrxDBWalTxn;
 
@@ -280,6 +289,12 @@ static int wal_open_current(QrxDB *db){
 }
 static int wal_rotate_if_needed(QrxDB *db, uint64_t add){ if(db->wal_segment_offset + add <= QRXDB_WAL_SEGMENT_SIZE) return 0; db->wal_segment_id++; db->wal_segment_offset = 0; return wal_open_current(db); }
 
+static uint64_t wal_record_size(uint32_t klen, uint32_t vlen){ return sizeof(QrxDBWalHeader) + (uint64_t)klen + (uint64_t)vlen; }
+static int wal_reserve_transaction(QrxDB *db, uint64_t bytes){
+    if(bytes > QRXDB_WAL_SEGMENT_SIZE) return -1;
+    return wal_rotate_if_needed(db, bytes);
+}
+
 static int wal_write_record(QrxDB *db, uint32_t type, uint64_t gen, uint64_t off, const char *key, uint32_t klen, const char *val, uint32_t vlen){
     uint64_t sz = sizeof(QrxDBWalHeader) + klen + vlen;
     if(wal_rotate_if_needed(db, sz) != 0) return -1;
@@ -291,8 +306,12 @@ static int wal_write_record(QrxDB *db, uint32_t type, uint64_t gen, uint64_t off
     if(ok && klen) ok = fwrite(key,1,klen,f)==klen;
     if(ok && vlen) ok = fwrite(val,1,vlen,f)==vlen;
     fflush(f);
-#ifndef _WIN32
-    fsync(fileno(f));
+#ifdef _WIN32
+    /* A committed WAL record must reach the OS file handle before we cross the
+       atomicity boundary. _commit is the CRT equivalent of fsync here. */
+    if(_commit(_fileno(f)) != 0) ok = 0;
+#else
+    if(fsync(fileno(f)) != 0) ok = 0;
 #endif
     fclose(f);
     if(!ok) return -1;
@@ -408,14 +427,70 @@ int qrxdb_rebuild_index(QrxDB *db){
     return qrxdb_recompute_merkle(db);
 }
 
+static int wal_txn_add_put(QrxDBWalTxn *tx, const char *key, uint32_t klen, const char *value, uint32_t vlen, uint64_t offset){
+    if(!tx || !key || !klen) return -1;
+    if(tx->count == tx->cap){
+        size_t nc = tx->cap ? tx->cap * 2 : 8;
+        QrxDBWalPut *np = (QrxDBWalPut*)realloc(tx->puts, nc * sizeof(*np));
+        if(!np) return -1;
+        tx->puts = np; tx->cap = nc;
+    }
+    QrxDBWalPut *p = &tx->puts[tx->count];
+    memset(p,0,sizeof(*p));
+    p->key=(char*)malloc((size_t)klen+1);
+    p->value=(char*)malloc((size_t)vlen+1);
+    if(!p->key || !p->value){ free(p->key); free(p->value); memset(p,0,sizeof(*p)); return -1; }
+    memcpy(p->key,key,klen); p->key[klen]=0;
+    if(vlen) memcpy(p->value,value,vlen); p->value[vlen]=0;
+    p->key_len=klen; p->value_len=vlen; p->offset=offset;
+    tx->count++;
+    return 0;
+}
+
+static int wal_put_matches(QrxDB *db, const QrxDBWalPut *p, uint64_t generation){
+    if(!db || !p || p->offset==0 || p->offset >= db->write_offset) return 0;
+    QrxDBRecordHeader hdr; const char *k=NULL,*v=NULL;
+    if(read_record_at(db,p->offset,&hdr,&k,&v,db->write_offset)!=0) return 0;
+    return hdr.timestamp==generation && hdr.key_len==p->key_len && hdr.value_len==p->value_len &&
+           memcmp(k,p->key,p->key_len)==0 && memcmp(v,p->value,p->value_len)==0;
+}
+
+static int wal_txn_fully_applied(QrxDB *db, const QrxDBWalTxn *tx){
+    if(!db || !tx || !tx->committed || tx->count==0) return 0;
+    if(tx->begin_offset==0) return tx->generation <= db->generation; /* legacy WAL */
+    if(tx->commit_offset && db->write_offset < tx->commit_offset) return 0;
+    for(size_t i=0;i<tx->count;i++) if(!wal_put_matches(db,&tx->puts[i],tx->generation)) return 0;
+    return 1;
+}
+
 static int wal_apply_txn_if_needed(QrxDB *db, QrxDBWalTxn *tx){
-    if(!tx || !tx->committed || !tx->has_put || tx->generation <= db->generation) return 0;
-    uint64_t off=0; if(write_data_record(db, tx->key, tx->key_len, tx->value, tx->value_len, tx->generation, &off)!=0) return -1;
+    if(!tx || !tx->committed || tx->count==0) return 0;
+    if(wal_txn_fully_applied(db,tx)) return 0;
+
+    if(tx->begin_offset>0){
+        if(tx->begin_offset < align8(sizeof(QrxDBFileHeader)) || tx->begin_offset > db->write_offset) return -1;
+        db->write_offset = tx->begin_offset;
+        db->generation = tx->generation ? tx->generation - 1 : 0;
+        if(qrxdb_rebuild_index(db)!=0) return -1;
+    } else if(tx->generation <= db->generation) {
+        return 0;
+    }
+
+    for(size_t i=0;i<tx->count;i++){
+        uint64_t off=0;
+        if(write_data_record(db,tx->puts[i].key,tx->puts[i].key_len,tx->puts[i].value,tx->puts[i].value_len,tx->generation,&off)!=0) return -1;
+        if(tx->puts[i].offset && off != tx->puts[i].offset) return -1;
+    }
     db->recovered_transactions++;
     return 0;
 }
 
-static void wal_txn_free(QrxDBWalTxn *tx){ if(tx){ free(tx->key); free(tx->value); memset(tx,0,sizeof(*tx)); } }
+static void wal_txn_free(QrxDBWalTxn *tx){
+    if(!tx) return;
+    for(size_t i=0;i<tx->count;i++){ free(tx->puts[i].key); free(tx->puts[i].value); }
+    free(tx->puts);
+    memset(tx,0,sizeof(*tx));
+}
 
 static int wal_replay_file(QrxDB *db, const char *path){
     FILE *f=fopen(path,"rb"); if(!f) return -1;
@@ -424,14 +499,20 @@ static int wal_replay_file(QrxDB *db, const char *path){
         QrxDBWalHeader wh; size_t n=fread(&wh,1,sizeof(wh),f); if(n==0) break; if(n!=sizeof(wh)) break;
         if(wh.magic!=QRXDB_WAL_MAGIC || wh.key_len>QRXDB_MAX_KEY_SIZE || wh.value_len>QRXDB_MAX_VALUE_SIZE) break;
         char *k=NULL,*v=NULL;
-        if(wh.key_len){ k=(char*)malloc(wh.key_len); if(!k) break; if(fread(k,1,wh.key_len,f)!=wh.key_len){ free(k); break; } }
-        if(wh.value_len){ v=(char*)malloc(wh.value_len); if(!v){ free(k); break; } if(fread(v,1,wh.value_len,f)!=wh.value_len){ free(k); free(v); break; } }
+        if(wh.key_len){ k=(char*)malloc((size_t)wh.key_len+1); if(!k) break; if(fread(k,1,wh.key_len,f)!=wh.key_len){ free(k); break; } k[wh.key_len]=0; }
+        if(wh.value_len){ v=(char*)malloc((size_t)wh.value_len+1); if(!v){ free(k); break; } if(fread(v,1,wh.value_len,f)!=wh.value_len){ free(k); free(v); break; } v[wh.value_len]=0; }
         uint32_t got=wh.crc32; wh.crc32=0;
         uint32_t want = record_crc(k?k:"", wh.key_len, v?v:"", wh.value_len) ^ qrxdb_crc32(&wh, offsetof(QrxDBWalHeader, crc32));
         if(got!=want){ free(k); free(v); break; }
-        if(wh.type==QRXDB_WAL_BEGIN){ wal_txn_free(&tx); tx.generation=wh.generation; }
-        else if(wh.type==QRXDB_WAL_PUT && tx.generation==wh.generation){ free(tx.key); free(tx.value); tx.key=k; tx.value=v; tx.key_len=wh.key_len; tx.value_len=wh.value_len; tx.has_put=1; k=NULL; v=NULL; }
-        else if(wh.type==QRXDB_WAL_COMMIT && tx.generation==wh.generation){ tx.committed=1; if(wal_apply_txn_if_needed(db,&tx)!=0){ free(k); free(v); wal_txn_free(&tx); fclose(f); return -1; } wal_txn_free(&tx); }
+        if(wh.type==QRXDB_WAL_BEGIN){
+            wal_txn_free(&tx); tx.generation=wh.generation; tx.begin_offset=wh.offset;
+        } else if(wh.type==QRXDB_WAL_PUT && tx.generation==wh.generation){
+            if(wal_txn_add_put(&tx,k?k:"",wh.key_len,v?v:"",wh.value_len,wh.offset)!=0){ free(k); free(v); wal_txn_free(&tx); fclose(f); return -1; }
+        } else if(wh.type==QRXDB_WAL_COMMIT && tx.generation==wh.generation){
+            tx.committed=1; tx.commit_offset=wh.offset;
+            if(wal_apply_txn_if_needed(db,&tx)!=0){ free(k); free(v); wal_txn_free(&tx); fclose(f); return -1; }
+            wal_txn_free(&tx);
+        }
         free(k); free(v);
     }
     wal_txn_free(&tx); fclose(f); return 0;
@@ -460,6 +541,10 @@ int qrxdb_recover(QrxDB *db){
     if(qrxdb_rebuild_index(db)!=0) return -1;
     if(wal_replay_all(db)!=0) return -1;
     if(qrxdb_rebuild_index(db)!=0) return -1;
+    /* WAL replay may have completed a previously interrupted multi-key batch.
+       The persisted state root must therefore be recomputed from the recovered
+       canonical key/value state before the header is synced. */
+    if(qrxdb_recompute_merkle(db)!=0) return -1;
     return qrxdb_sync(db);
 }
 
@@ -483,22 +568,113 @@ int qrxdb_init(QrxDB *db, const char *chain_dir){
     DIR *d=opendir(db->wal_dir); if(d){ struct dirent *e; while((e=readdir(d))!=NULL){ unsigned long long id=0; if(sscanf(e->d_name,"state-%llu.qwal",&id)==1 && id>db->wal_segment_id) db->wal_segment_id=(uint64_t)id; } closedir(d); }
 #endif
     if(qrxdb_read_header(db)!=0){ db->write_offset=align8(sizeof(QrxDBFileHeader)); db->generation=0; qrxdb_zero_root(db->merkle_root); qrxdb_write_header(db); qrxdb_sync(db); }
-    qrxdb_recover(db);
+    if(qrxdb_recover(db)!=0) return -1;
     if(wal_open_current(db)!=0) return -1;
     db->initialized=1; return 0;
 }
 
-int qrxdb_put(QrxDB *db, const char *key, const char *value){
-    if(!db || !db->initialized || !key || !value) return -1;
-    uint32_t klen=(uint32_t)strlen(key), vlen=(uint32_t)strlen(value);
+static uint64_t qrxdb_record_storage_size(uint32_t klen, uint32_t vlen){
+    return align8(sizeof(QrxDBRecordHeader) + (uint64_t)klen + (uint64_t)vlen);
+}
+
+void qrxdb_batch_abort(QrxDBBatch *batch){
+    if(!batch) return;
+    for(size_t i=0;i<batch->count;i++){ free(batch->entries[i].key); free(batch->entries[i].value); }
+    free(batch->entries);
+    memset(batch,0,sizeof(*batch));
+}
+
+int qrxdb_batch_begin(QrxDB *db, QrxDBBatch *batch){
+    if(!db || !db->initialized || !batch) return -1;
+    memset(batch,0,sizeof(*batch));
+    batch->db=db; batch->generation=db->generation+1; batch->start_offset=db->write_offset; batch->planned_end_offset=db->write_offset; batch->active=1;
+    return 0;
+}
+
+int qrxdb_batch_put(QrxDBBatch *batch, const char *key, const char *value){
+    if(!batch || !batch->active || !batch->db || !key || !value) return -1;
+    uint32_t klen=(uint32_t)strlen(key),vlen=(uint32_t)strlen(value);
     if(klen==0 || klen>QRXDB_MAX_KEY_SIZE || vlen>QRXDB_MAX_VALUE_SIZE) return -1;
-    uint64_t gen=db->generation+1;
-    if(wal_write_record(db,QRXDB_WAL_BEGIN,gen,0,NULL,0,NULL,0)!=0) return -1;
-    if(wal_write_record(db,QRXDB_WAL_PUT,gen,db->write_offset,key,klen,value,vlen)!=0) return -1;
-    if(wal_write_record(db,QRXDB_WAL_COMMIT,gen,0,NULL,0,NULL,0)!=0) return -1;
-    uint64_t off=0; if(write_data_record(db,key,klen,value,vlen,gen,&off)!=0) return -1;
-    if(qrxdb_recompute_merkle(db)!=0) return -1;
-    return qrxdb_sync(db);
+    if(batch->count==batch->cap){
+        size_t nc=batch->cap?batch->cap*2:16;
+        QrxDBBatchEntry *ne=(QrxDBBatchEntry*)realloc(batch->entries,nc*sizeof(*ne));
+        if(!ne) return -1;
+        batch->entries=ne; batch->cap=nc;
+    }
+    QrxDBBatchEntry *e=&batch->entries[batch->count]; memset(e,0,sizeof(*e));
+    e->key=(char*)malloc((size_t)klen+1); e->value=(char*)malloc((size_t)vlen+1);
+    if(!e->key||!e->value){ free(e->key); free(e->value); memset(e,0,sizeof(*e)); return -1; }
+    memcpy(e->key,key,klen+1); memcpy(e->value,value,vlen+1); e->key_len=klen; e->value_len=vlen; e->offset=batch->planned_end_offset;
+    batch->planned_end_offset += qrxdb_record_storage_size(klen,vlen);
+    batch->count++;
+    return 0;
+}
+
+int qrxdb_batch_commit(QrxDBBatch *batch){
+    if(!batch || !batch->active || !batch->db || batch->count==0) return -1;
+    QrxDB *db=batch->db;
+    uint64_t wal_bytes=wal_record_size(0,0)+wal_record_size(0,0);
+    for(size_t i=0;i<batch->count;i++) wal_bytes += wal_record_size(batch->entries[i].key_len,batch->entries[i].value_len);
+    if(wal_reserve_transaction(db,wal_bytes)!=0) return -1;
+
+    /* Reserve/extend the data map before the durable COMMIT marker. This keeps
+       allocation errors on the pre-commit side of the atomicity boundary. */
+    uint64_t total_need=batch->planned_end_offset-batch->start_offset;
+    if(qrxdb_ensure_space(db,total_need)!=0) return -1;
+
+    if(wal_write_record(db,QRXDB_WAL_BEGIN,batch->generation,batch->start_offset,NULL,0,NULL,0)!=0) return -1;
+    for(size_t i=0;i<batch->count;i++){
+        QrxDBBatchEntry *e=&batch->entries[i];
+        if(wal_write_record(db,QRXDB_WAL_PUT,batch->generation,e->offset,e->key,e->key_len,e->value,e->value_len)!=0) return -1;
+    }
+    if(wal_write_record(db,QRXDB_WAL_COMMIT,batch->generation,batch->planned_end_offset,NULL,0,NULL,0)!=0) return -1;
+
+    /* Test-only fault injection. It deliberately terminates the process after
+       the WAL COMMIT is durable and before a single canonical data record of
+       this generation is materialized. Recovery must reconstruct the entire
+       batch on the next open. Never enabled unless the environment variable is
+       explicitly set by a crash-recovery test. */
+    {
+        const char *crash_after_commit = getenv("QRXDB_TEST_CRASH_AFTER_WAL_COMMIT");
+        if(crash_after_commit && !strcmp(crash_after_commit,"1")){
+#ifdef _WIN32
+            ExitProcess(86);
+#else
+            _exit(86);
+#endif
+        }
+    }
+
+    /* From this point the batch is durably committed in WAL. If materializing
+       the data records is interrupted/fails, recovery must finish the same
+       generation rather than expose a partial settlement. */
+    for(size_t i=0;i<batch->count;i++){
+        QrxDBBatchEntry *e=&batch->entries[i]; uint64_t off=0;
+        if(db->write_offset!=e->offset || write_data_record(db,e->key,e->key_len,e->value,e->value_len,batch->generation,&off)!=0 || off!=e->offset){
+            if(qrxdb_recover(db)==0){ qrxdb_batch_abort(batch); return 0; }
+            return -1;
+        }
+    }
+    if(qrxdb_recompute_merkle(db)!=0 || qrxdb_sync(db)!=0){
+        if(qrxdb_recover(db)==0){ qrxdb_batch_abort(batch); return 0; }
+        return -1;
+    }
+    qrxdb_batch_abort(batch);
+    return 0;
+}
+
+int qrxdb_put(QrxDB *db, const char *key, const char *value){
+    QrxDBBatch b;
+    if(qrxdb_batch_begin(db,&b)!=0) return -1;
+    if(qrxdb_batch_put(&b,key,value)!=0){ qrxdb_batch_abort(&b); return -1; }
+    if(qrxdb_batch_commit(&b)!=0){ qrxdb_batch_abort(&b); return -1; }
+    return 0;
+}
+
+int qrxdb_merkle_root_hex(QrxDB *db, char out[129]){
+    if(!db || !out) return -1;
+    qrxdb_hex64(db->merkle_root,out);
+    return 0;
 }
 
 int qrxdb_get_view_at(QrxDB *db, const QrxDBReadTxn *txn, const char *key, QrxDBView *view){
@@ -510,6 +686,73 @@ int qrxdb_get_view_at(QrxDB *db, const QrxDBReadTxn *txn, const char *key, QrxDB
 }
 int qrxdb_get_view(QrxDB *db, const char *key, QrxDBView *view){ return qrxdb_get_view_at(db,NULL,key,view); }
 int qrxdb_get(QrxDB *db, const char *key, char *out, size_t out_sz){ if(!out||out_sz==0) return -1; QrxDBView v; if(qrxdb_get_view(db,key,&v)!=0) return -1; size_t n=v.value_len<out_sz-1?v.value_len:out_sz-1; memcpy(out,v.value,n); out[n]=0; return 0; }
+
+int qrxdb_scan_prefix(QrxDB *db, const char *prefix, QrxDBScanCallback callback, void *ctx){
+    if(!db || !db->map || !prefix || !callback) return -1;
+    size_t plen=strlen(prefix);
+    for(size_t i=0;i<db->index_count;i++){
+        QrxDBIndexEntry *ie=&db->index[i];
+        if(ie->key_len < plen || memcmp(ie->key,prefix,plen)!=0) continue;
+        QrxDBRecordHeader hdr; const char *k=NULL,*v=NULL;
+        if(read_record_at(db,ie->offset,&hdr,&k,&v,db->write_offset)!=0) return -1;
+        char *ks=(char*)malloc((size_t)hdr.key_len+1), *vs=(char*)malloc((size_t)hdr.value_len+1);
+        if(!ks || !vs){ free(ks); free(vs); return -1; }
+        memcpy(ks,k,hdr.key_len); ks[hdr.key_len]=0;
+        if(hdr.value_len) memcpy(vs,v,hdr.value_len); vs[hdr.value_len]=0;
+        int rc=callback(ks,vs,hdr.value_len,ctx);
+        free(ks); free(vs);
+        if(rc!=0) return rc;
+    }
+    return 0;
+}
+
+
+typedef struct {
+    char *key;
+    char *value;
+    uint32_t value_len;
+} QrxDBSnapshotScanEntry;
+
+static int qrxdb_snapshot_scan_cmp(const void *aa,const void *bb){
+    const QrxDBSnapshotScanEntry *a=(const QrxDBSnapshotScanEntry*)aa;
+    const QrxDBSnapshotScanEntry *b=(const QrxDBSnapshotScanEntry*)bb;
+    return strcmp(a->key,b->key);
+}
+
+/* Deterministic snapshot-prefix scan for MVCC dynamic access discovery.
+   qrxdb_scan_prefix() uses the live latest-value index, which is intentionally
+   unsuitable for an older read transaction if a concurrent generation has
+   already superseded a key. This routine walks only records visible to txn,
+   keeps the latest visible value per key, then invokes callbacks in lexical
+   key order. The lexical ordering is consensus-friendly and independent of
+   hash/index insertion order. */
+int qrxdb_scan_prefix_at(QrxDB *db,const QrxDBReadTxn *txn,const char *prefix,QrxDBScanCallback callback,void *ctx){
+    if(!db||!db->map||!txn||!prefix||!callback)return -1;
+    size_t plen=strlen(prefix),count=0,cap=0;
+    QrxDBSnapshotScanEntry *entries=NULL;
+    uint64_t limit=txn->write_offset<db->write_offset?txn->write_offset:db->write_offset;
+    uint64_t off=align8(sizeof(QrxDBFileHeader));
+    while(off+sizeof(QrxDBRecordHeader)<=limit){
+        QrxDBRecordHeader hdr;const char *k=NULL,*v=NULL;
+        if(read_record_at(db,off,&hdr,&k,&v,limit)!=0)break;
+        if(hdr.timestamp<=txn->generation&&hdr.key_len>=plen&&!memcmp(k,prefix,plen)){
+            size_t idx=count;
+            for(size_t i=0;i<count;i++)if(strlen(entries[i].key)==hdr.key_len&&!memcmp(entries[i].key,k,hdr.key_len)){idx=i;break;}
+            char *ks=(char*)malloc((size_t)hdr.key_len+1),*vs=(char*)malloc((size_t)hdr.value_len+1);
+            if(!ks||!vs){free(ks);free(vs);for(size_t i=0;i<count;i++){free(entries[i].key);free(entries[i].value);}free(entries);return -1;}
+            memcpy(ks,k,hdr.key_len);ks[hdr.key_len]=0;if(hdr.value_len)memcpy(vs,v,hdr.value_len);vs[hdr.value_len]=0;
+            if(idx<count){free(entries[idx].key);free(entries[idx].value);entries[idx].key=ks;entries[idx].value=vs;entries[idx].value_len=hdr.value_len;}
+            else{
+                if(count==cap){size_t nc=cap?cap*2:32;QrxDBSnapshotScanEntry *nn=(QrxDBSnapshotScanEntry*)realloc(entries,nc*sizeof(*nn));if(!nn){free(ks);free(vs);for(size_t i=0;i<count;i++){free(entries[i].key);free(entries[i].value);}free(entries);return -1;}entries=nn;cap=nc;}
+                entries[count].key=ks;entries[count].value=vs;entries[count].value_len=hdr.value_len;count++;
+            }
+        }
+        off=align8(off+sizeof(hdr)+hdr.key_len+hdr.value_len);
+    }
+    if(count>1) qsort(entries,count,sizeof(*entries),qrxdb_snapshot_scan_cmp);
+    int rc=0;for(size_t i=0;i<count;i++){rc=callback(entries[i].key,entries[i].value,entries[i].value_len,ctx);if(rc)break;}
+    for(size_t i=0;i<count;i++){free(entries[i].key);free(entries[i].value);}free(entries);return rc;
+}
 int qrxdb_read_txn_begin(QrxDB *db, QrxDBReadTxn *txn){ if(!db||!txn) return -1; txn->generation=db->generation; txn->write_offset=db->write_offset; memcpy(txn->merkle_root,db->merkle_root,QRXDB_MERKLE_HASH_SIZE); return 0; }
 int qrxdb_parallel_validation_prepare(QrxDB *db, QrxDBReadTxn *snapshot){ return qrxdb_read_txn_begin(db,snapshot); }
 const uint8_t *qrxdb_merkle_root(QrxDB *db){ return db?db->merkle_root:NULL; }

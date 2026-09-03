@@ -47,6 +47,7 @@
   #define open _open
   #define strtok_r strtok_s
   #define strcasecmp _stricmp
+  #define strncasecmp _strnicmp
   #define strdup _strdup
   typedef SSIZE_T ssize_t;
   typedef int socklen_t;
@@ -99,6 +100,8 @@
 #include <openssl/decoder.h>
 #include <openssl/encoder.h>
 #include <openssl/evp.h>
+#include <openssl/ec.h>
+#include <openssl/obj_mac.h>
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -116,11 +119,16 @@
 #include <time.h>
 #include "chain_params.h"
 #include "qrxdb.h"
+#include "mempool/qrx_mempool_limits.h"
+#include "mempool/qrx_velocity_mempool.h"
+#include "mempool/qrx_velocity_mvcc.h"
+#include "bitcoin/qrx_btc_spv.h"
 #include <ctype.h>
 
 #define QRX_PROTOCOL_VERSION 6
 #define QRX_MAGIC "5152583036"
-#define MEMPOOL_MAX_TXS 256
+#define MEMPOOL_MAX_TXS QRX_MAX_MEMPOOL_TX
+#define QRX_VELOCITY_MAX_LANE 65535LL
 #define PEER_REP_MIN -100
 #define MAX_LINE 16384
 #define MAX_TX 65536
@@ -131,6 +139,11 @@
 #define RATE_MAX_MSGS 12
 #define BAN_THRESHOLD 100
 #define SOCKET_IO_TIMEOUT_SECS 5
+
+/* VELOCITY Phase 4: node-run owns the hot in-memory mempool. The append-only
+   WAL is the crash-recovery source for proposer subprocesses and restarts. */
+static QrxVelocityMempool g_velocity_mempool;
+static int g_velocity_mempool_ready = 0;
 
 
 static int connect_to(const char *host, int port);
@@ -155,6 +168,7 @@ static void staking_paths(const char *chain_dir,
                           char *undelegation_eta, size_t ude_sz,
                           char *penalties, size_t psz);
 static int verify_block_cmd(const char *chain_dir, const char *block_file);
+static int velocity_stateless_verify_cb(void *ctx, const char *tx, char *err, size_t err_sz);
 static int htlc_create_cmd(const char *chain_dir, const char *wallet_dir, const char *recipient, long long amount, const char *hashlock_hex, long long timelock_seconds, const char *memo);
 static int htlc_redeem_cmd(const char *chain_dir, const char *swap_id, const char *secret);
 static int htlc_refund_cmd(const char *chain_dir, const char *wallet_dir, const char *swap_id);
@@ -285,7 +299,7 @@ static void usage(void) {
          "  address <wallet-dir>\n  legacy-address <wallet-dir>\n  migrate-address <wallet-dir>\n  state-migrate-address <chain-dir> <old-address> <new-address>\n"
          "  init-chain <chain-dir>\n"
          "  faucet <chain-dir> <address> <amount>\n  getdevaddress <chain-dir>\n"
-         "  balance <chain-dir> <address>\n"
+         "  balance <chain-dir> <address>\n  history <chain-dir> [address] [limit|all] [from-unix] [to-unix-exclusive]\n"
          "  sign <wallet-dir> <chain-dir> <to> <amount> <memo> <tx-file>\n"
          "  verify <chain-dir> <tx-file>\n"
          "  applytx <chain-dir> <tx-file>\n"
@@ -304,7 +318,13 @@ static void usage(void) {
          "  peer-status <node-dir>\n"
          "  mempool-status <node-dir>\n"
          "  mempool-prune <node-dir> [max_txs]\n"
+         "  velocity-mvcc-execute <node-dir> [max_txs] [workers]\n"
+         "  getnonce <chain-dir> <address> [lane]\n"
+         "  getnoncelanes <chain-dir> <address>\n"
+         "  agent-status <chain-dir> <agent-address>\n  list-agents <chain-dir> [owner-address]\n  create-agent-register-raw-tx <chain-dir> <owner> <agent> <agent_ed_pub_hex> <agent_mldsa_pub_b64> <permissions> <max_trade_atoms> <daily_limit_atoms> <market_allowlist> <agent_expires_height> <owner_ed_pub_hex> <owner_mldsa_pub_b64> <lane_id> <tx_expiry_height> [fee] [nonce]\n  create-agent-update-raw-tx <chain-dir> <owner> <agent> <permissions> <max_trade_atoms> <daily_limit_atoms> <market_allowlist> <agent_expires_height> <owner_ed_pub_hex> <owner_mldsa_pub_b64> <lane_id> <tx_expiry_height> [fee] [nonce]\n  create-agent-revoke-raw-tx <chain-dir> <owner> <agent> <owner_ed_pub_hex> <owner_mldsa_pub_b64> <lane_id> <tx_expiry_height> [fee] [nonce]\n  order-status <chain-dir> <order-id>\n  list-orders <chain-dir> [owner-or-agent] [status]\n  trade-status <chain-dir> <trade-id>\n  list-trades <chain-dir> [market] [limit]\n  orderbook <chain-dir> <market> [depth]\n  asset-balance <chain-dir> <asset> <address>\n  list-assets <chain-dir>\n  asset-register <chain-dir> <asset> <name>  (dev/regtest manual-mint networks only)\n  asset-credit <chain-dir> <asset> <address> <amount>  (dev/regtest only)\n  agent-limits <chain-dir> <agent-address>\n  trading-info <chain-dir>\n  create-order-raw-tx <chain-dir> <agent> <owner> <market> <BUY|SELL> <LIMIT|MARKET> <quantity_atoms> <limit_price_atoms> <order_expiry_height> <agent_ed_pub_hex> <agent_mldsa_pub_b64> <lane_id> <tx_expiry_height> [fee] [nonce]\n  create-external-order-raw-tx <chain-dir> <agent> <owner> <venue> <market> <BUY|SELL> <LIMIT|MARKET> <quantity_atoms> <limit_price_atoms> <order_expiry_height> <agent_ed_pub_hex> <agent_mldsa_pub_b64> <lane_id> <tx_expiry_height> [fee] [nonce]\n  create-order-cancel-raw-tx <chain-dir> <agent> <owner> <order_id> <agent_ed_pub_hex> <agent_mldsa_pub_b64> <lane_id> <tx_expiry_height> [fee] [nonce]\n  create-order-replace-raw-tx <chain-dir> <agent> <owner> <order_id> <market> <BUY|SELL> <LIMIT|MARKET> <quantity_atoms> <limit_price_atoms> <order_expiry_height> <agent_ed_pub_hex> <agent_mldsa_pub_b64> <lane_id> <tx_expiry_height> [fee] [nonce]\n  velocity-info <chain-dir>\n"
+         "  create-velocity-raw-tx <chain-dir> <from> <to> <amount> <ed_pub_hex> <mldsa_pub_b64> <tx_type> <lane_id> <expiry_height> <payload> [fee] [nonce]\n"
          "  decay-bans <node-dir> [points]\n  state-check <chain-dir>\n  snapshot-state <chain-dir> [label]\n  reindex-state <chain-dir>\n  stake <chain-dir> <wallet-dir> <amount>\n  unstake <chain-dir> <wallet-dir> <amount> [unbonding-secs]\n  claim-unbonded <chain-dir> <wallet-dir>\n  delegate <chain-dir> <delegator-wallet-dir> <validator-address> <amount>\n  undelegate <chain-dir> <delegator-wallet-dir> <validator-address> <amount> [unbonding-secs]\n  claim-undelegated <chain-dir> <delegator-wallet-dir> <validator-address>\n  staking-status <chain-dir> [address]\n  validator-set <chain-dir>\n  reward-epoch <chain-dir> <reward-amount> [validator-commission-bps]\n  slash <chain-dir> <validator-address> <amount> <reason>\n");
+    puts("Phase 4F.2: create-arbitrage-hedge-raw-tx <chain-dir> <agent> <owner> <matched-crosschain-buy-order> <arbitrage-id> <quantity-sats> <limit-price-atoms> <order-expiry> <agent-ed-pub> <agent-mldsa-pub> <lane> <tx-expiry> [fee] [nonce]");
 }
 
 static int mkdir_p(const char *path) {
@@ -1231,6 +1251,7 @@ static void state_paths(const char *chain_dir, char *balances, size_t bsz, char 
 static void journal_append(const char *chain_dir, const char *fmt, ...) {
     char journal[1024]; state_paths(chain_dir, NULL, 0, NULL, 0, NULL, 0, journal, sizeof(journal));
     FILE *f = fopen(journal, "ab"); if (!f) return;
+    fprintf(f, "journal_timestamp=%lld ", (long long)time(NULL));
     va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
     fputc('\n', f); fclose(f);
 }
@@ -1296,6 +1317,11 @@ static int applied_add_bin(const char *path, const char *key) {
     StateAppliedRecord *tmp = realloc(arr, (n+1) * sizeof(StateAppliedRecord)); if (!tmp) { free(arr); return -1; }
     arr = tmp; memset(&arr[n], 0, sizeof(arr[n])); snprintf(arr[n].key, sizeof(arr[n].key), "%s", key); n++;
     int rc = applied_save(path, arr, n); free(arr); return rc;
+}
+static int applied_has_authoritative(const char *chain_dir,const char *legacy_path,const char *key){
+    QrxDB db;
+    if(qrxdb_init(&db,chain_dir)==0){ int found=qrxdb_chain_is_applied(&db,key); qrxdb_close(&db); if(found) return 1; }
+    return applied_has_bin(legacy_path,key);
 }
 static int state_check_cmd(const char *chain_dir) {
     char bal[1024], nonce[1024], appl[1024], journal[1024];
@@ -1462,25 +1488,29 @@ static int peer_status_cmd(const char *node_dir) {
     fputs(db, stdout); free(db); return 0;
 }
 static int mempool_status_cmd(const char *node_dir) {
+    QrxVelocityMempool pool; QrxVelocityMempoolStats st;
+    if(qrx_velocity_mempool_open(&pool,node_dir,MEMPOOL_MAX_TXS)==0){
+        qrx_velocity_mempool_stats(&pool,&st);
+        printf("engine=velocity_ram_sharded\n");
+        printf("txs=%llu\nbytes=%llu\nmax_txs=%llu\nshards=%u\nwal_records=%llu\nrecovered_records=%llu\nduplicates=%llu\nrejected_full=%llu\n",
+            (unsigned long long)st.entries,(unsigned long long)st.bytes,(unsigned long long)st.max_entries,st.shards,
+            (unsigned long long)st.wal_records,(unsigned long long)st.recovered_records,(unsigned long long)st.duplicates,(unsigned long long)st.rejected_full);
+        qrx_velocity_mempool_close(&pool); return 0;
+    }
     char cmd[2048]; snprintf(cmd, sizeof(cmd), "find '%s/mempool' -maxdepth 1 -type f 2>/dev/null | wc -l", node_dir);
-    FILE *fp = popen_qrx(cmd, "r"); if (!fp) die("mempool status failed");
-    long long count = 0; fscanf(fp, "%lld", &count); pclose_qrx(fp);
-    snprintf(cmd, sizeof(cmd), "du -sb '%s/mempool' 2>/dev/null | awk '{print $1}'", node_dir);
-    fp = popen_qrx(cmd, "r"); long long bytes = 0; if (fp) { fscanf(fp, "%lld", &bytes); pclose_qrx(fp); }
-    printf("txs=%lld\nbytes=%lld\n", count, bytes);
-    return 0;
+    FILE *fp = popen_qrx(cmd, "r"); if (!fp) die("mempool status failed"); long long count=0;fscanf(fp,"%lld",&count);pclose_qrx(fp);
+    printf("engine=legacy_files\ntxs=%lld\n",count); return 0;
 }
 static int mempool_prune_cmd(const char *node_dir, int max_txs) {
-    if (max_txs < 1) max_txs = MEMPOOL_MAX_TXS;
-    char cmd[4096];
-    snprintf(cmd, sizeof(cmd), "bash -lc \"cd '%s/mempool' 2>/dev/null || exit 0; ls -1tr *.qrxtx 2>/dev/null | head -n -%d\"", node_dir, max_txs);
-    FILE *fp = popen_qrx(cmd, "r"); if (!fp) die("mempool prune failed");
-    char fname[512]; int removed = 0;
-    while (fgets(fname, sizeof(fname), fp)) {
-        fname[strcspn(fname, "\r\n")] = 0; if (!*fname) continue;
-        char path[1024]; snprintf(path, sizeof(path), "%s/mempool/%s", node_dir, fname); if (unlink_qrx(path) == 0) removed++;
+    if(max_txs<1)max_txs=MEMPOOL_MAX_TXS; QrxVelocityMempool pool; QrxVelocityPlan plan; int removed=0;
+    if(qrx_velocity_mempool_open(&pool,node_dir,MEMPOOL_MAX_TXS)==0){
+        if(qrx_velocity_mempool_plan(&pool,0,&plan)==0 && plan.count>(size_t)max_txs){
+            for(size_t i=(size_t)max_txs;i<plan.count;i++) if(qrx_velocity_mempool_remove(&pool,plan.txids[i])==0) removed++;
+            qrx_velocity_plan_free(&plan); qrx_velocity_mempool_checkpoint(&pool);
+        }
+        qrx_velocity_mempool_close(&pool); printf("removed=%d\n",removed); return 0;
     }
-    pclose_qrx(fp); printf("removed=%d\n", removed); return 0;
+    return 1;
 }
 static int decay_bans_cmd(const char *node_dir, long long points) {
     char pth[1024]; snprintf(pth, sizeof(pth), "%s/peer_state.db", node_dir); char *db = read_file(pth, NULL); if (!db) return 0;
@@ -1533,20 +1563,1223 @@ static void fee_pool_path(const char *chain_dir, char *out, size_t out_sz) {
     snprintf(out, out_sz, "%s/state/fee_pool.bin", chain_dir);
 }
 static long long fee_pool_pending(const char *chain_dir) {
+    QrxDB db; char v[128];
+    if(qrxdb_init(&db,chain_dir)==0){
+        if(qrxdb_get(&db,"consensus:fee_pool:pending",v,sizeof(v))==0){ long long n=atoll(v); qrxdb_close(&db); return n; }
+        qrxdb_close(&db);
+    }
     char p[1024]; fee_pool_path(chain_dir, p, sizeof(p));
     return kv_get_ll_bin(p, "pending_fees");
 }
 static int fee_pool_add(const char *chain_dir, long long fee) {
     if (fee <= 0) return 0;
+    long long cur=fee_pool_pending(chain_dir), next=0;
+    checked_add_ll(cur,fee,"fee pool",&next);
+    QrxDB db; if(qrxdb_init(&db,chain_dir)!=0) return -1;
+    char v[64]; snprintf(v,sizeof(v),"%lld",next); int rc=qrxdb_put(&db,"consensus:fee_pool:pending",v); qrxdb_close(&db);
+    if(rc) return -1;
     char p[1024]; fee_pool_path(chain_dir, p, sizeof(p));
-    long long cur = kv_get_ll_bin(p, "pending_fees");
-    return kv_set_ll_bin(p, "pending_fees", cur + fee);
+    return kv_set_ll_bin(p, "pending_fees", next);
 }
 static long long fee_pool_drain(const char *chain_dir) {
+    long long cur=fee_pool_pending(chain_dir);
+    QrxDB db;if(qrxdb_init(&db,chain_dir)==0){qrxdb_put(&db,"consensus:fee_pool:pending","0");qrxdb_close(&db);}
     char p[1024]; fee_pool_path(chain_dir, p, sizeof(p));
-    long long cur = kv_get_ll_bin(p, "pending_fees");
     kv_set_ll_bin(p, "pending_fees", 0);
     return cur;
+}
+
+static int feeinfo_cmd(const char *chain_dir) {
+    long long h = current_height_from_chain(chain_dir);
+    long long fee = qrx_chain_get_ll_at_height_or_default(chain_dir, h + 1, "tx_fee_atoms", 1000LL);
+    if(fee < 0) fee = 0;
+    printf("tx_fee_atoms=%lld\n", fee);
+    printf("next_block_height=%lld\n", h + 1);
+    printf("pending_fee_pool_atoms=%lld\n", fee_pool_pending(chain_dir));
+    return 0;
+}
+
+static long long qrx_balance_get_authoritative(const char *chain_dir,const char *address){
+    QrxDB db; long long v=0;
+    if(qrxdb_init(&db,chain_dir)==0){ if(qrxdb_chain_get_balance(&db,address,&v)==0){qrxdb_close(&db);return v;} qrxdb_close(&db);}
+    char bal[1024];state_paths(chain_dir,bal,sizeof(bal),NULL,0,NULL,0,NULL,0);return kv_get_ll_bin(bal,address);
+}
+
+
+static void velocity_lane_nonce_path(const char *chain_dir, char *out, size_t out_sz) {
+    snprintf(out, out_sz, "%s/state/nonces_lanes.bin", chain_dir);
+}
+
+static int velocity_parse_lane(const char *lane_s, long long *lane_out) {
+    if (!lane_out) return -1;
+    if (!lane_s || !*lane_s) { *lane_out = 0; return 0; }
+    char *end = NULL;
+    errno = 0;
+    long long lane = strtoll(lane_s, &end, 10);
+    if (errno || !end || *end || lane < 0 || lane > QRX_VELOCITY_MAX_LANE) return -1;
+    *lane_out = lane;
+    return 0;
+}
+
+static long long velocity_get_lane_nonce(const char *chain_dir, const char *address, long long lane) {
+    QrxDB db; char qkey[768],buf[128];
+    if(lane==0) snprintf(qkey,sizeof(qkey),"acct:nonce:%s",address);
+    else snprintf(qkey,sizeof(qkey),"velocity:nonce:%s:%lld",address,lane);
+    if(qrxdb_init(&db,chain_dir)==0){
+        if(qrxdb_get(&db,qkey,buf,sizeof(buf))==0){ long long n=atoll(buf); qrxdb_close(&db); return n; }
+        qrxdb_close(&db);
+    }
+    if (lane == 0) {
+        char noncepath[1024];
+        state_paths(chain_dir, NULL, 0, noncepath, sizeof(noncepath), NULL, 0, NULL, 0);
+        return kv_get_ll_bin(noncepath, address);
+    }
+    char path[1024], key[512];
+    velocity_lane_nonce_path(chain_dir, path, sizeof(path));
+    snprintf(key, sizeof(key), "%s|%lld", address, lane);
+    return kv_get_ll_bin(path, key);
+}
+
+static int velocity_set_lane_nonce(const char *chain_dir, const char *address, long long lane, long long nonce) {
+    if (lane == 0) {
+        char noncepath[1024];
+        state_paths(chain_dir, NULL, 0, noncepath, sizeof(noncepath), NULL, 0, NULL, 0);
+        return kv_set_ll_bin(noncepath, address, nonce);
+    }
+    char path[1024], key[512];
+    velocity_lane_nonce_path(chain_dir, path, sizeof(path));
+    snprintf(key, sizeof(key), "%s|%lld", address, lane);
+    return kv_set_ll_bin(path, key, nonce);
+}
+
+static int velocity_tx_type_supported(const char *tx_type) {
+    static const char *types[] = {
+        "TRANSFER_FAST", "AGENT_REGISTER", "AGENT_UPDATE", "AGENT_REVOKE",
+        "ORDER_CREATE", "ORDER_CANCEL", "ORDER_REPLACE", "ATOMIC_BUNDLE",
+        "ORACLE_UPDATE", "EXTERNAL_ORDER", "GATEWAY_REGISTER", "GATEWAY_REVOKE", "EXECUTION_REPORT",
+        "CROSSCHAIN_ORDER", "CROSSCHAIN_REDEEM", "CROSSCHAIN_REFUND",
+        "BTC_SPV_HEADER", "BTC_SPV_FUNDING_PROOF", NULL
+    };
+    if (!tx_type || !*tx_type) return 0;
+    for (size_t i = 0; types[i]; ++i) if (!strcmp(types[i], tx_type)) return 1;
+    return 0;
+}
+
+static char *canonical_velocity_tx_body(const char *network_id, const char *genesis_hash, const char *protocol_version,
+    const char *tx_type, const char *from, const char *to, const char *amount, const char *fee,
+    const char *lane_id, const char *nonce, const char *timestamp, const char *expiry_height, const char *payload,
+    const char *ed_pub_hex, const char *mldsa_pub_b64) {
+    size_t cap = strlen(network_id)+strlen(genesis_hash)+strlen(protocol_version)+strlen(tx_type)+strlen(from)+strlen(to)+
+        strlen(amount)+strlen(fee)+strlen(lane_id)+strlen(nonce)+strlen(timestamp)+strlen(expiry_height)+strlen(payload)+
+        strlen(ed_pub_hex)+strlen(mldsa_pub_b64)+768;
+    char *buf = malloc(cap);
+    if (!buf) die("oom");
+    snprintf(buf, cap,
+        "tx_version=%d\n"
+        "network_id=%s\n"
+        "genesis_hash=%s\n"
+        "protocol_version=%s\n"
+        "tx_type=%s\n"
+        "from=%s\n"
+        "to=%s\n"
+        "amount=%s\n"
+        "fee=%s\n"
+        "lane_id=%s\n"
+        "nonce=%s\n"
+        "timestamp=%s\n"
+        "expiry_height=%s\n"
+        "payload=%s\n"
+        "ed25519_pub_hex=%s\n"
+        "mldsa65_pub_b64=%s\n",
+        QRX_VELOCITY_TX_VERSION, network_id, genesis_hash, protocol_version, tx_type, from, to, amount, fee,
+        lane_id, nonce, timestamp, expiry_height, payload, ed_pub_hex, mldsa_pub_b64);
+    return buf;
+}
+
+static int velocity_info_cmd(const char *chain_dir) {
+    long long height = current_height_from_chain(chain_dir);
+    printf("core_track=0.0.7-VELOCITY\n");
+    printf("feature_level=%d\n", QRX_VELOCITY_FEATURE_LEVEL);
+    printf("legacy_tx_version=%d\n", QRX_TX_VERSION);
+    printf("velocity_tx_version=%d\n", QRX_VELOCITY_TX_VERSION);
+    printf("chain_height=%lld\n", height);
+    printf("legacy_tx_compatible=true\n");
+    printf("nonce_lanes=true\n");
+    printf("deterministic_expiry_height=true\n");
+    printf("transfer_fast_executable=true\n");
+    printf("agent_tx_schema=true\n");
+    printf("trading_tx_schema=true\n");
+    printf("agent_execution=true\n");
+    printf("agent_keys_onchain=true\n");
+    printf("agent_permissions=true\n");
+    printf("agent_limits=true\n");
+    printf("agent_revocation=true\n");
+    printf("agent_signed_trading=true\n");
+    printf("native_order_state=true\n");
+    printf("external_order_intents=true\n");
+    printf("order_cancel_replace=true\n");
+    printf("agent_limit_enforcement=true\n");
+    printf("execution_reports=true\n");
+    printf("external_gateway_registry=true\n");
+    printf("native_matching=true\n");
+    printf("native_settlement=true\n");
+    printf("native_settlement_crash_atomic=true\n");
+    printf("crosschain_trading=true\n");
+    printf("crosschain_market=BTC/QUB\n");
+    printf("crosschain_htlc=SHA256_P2WSH_CSV\n");
+    printf("crosschain_qbtc_required=false\n");
+    printf("crosschain_bitcoin_spv_consensus=true\nbitcoin_spv_phase=3D.1\nbitcoin_spv_headers_on_qrx_consensus=true\nbitcoin_spv_merkle_proofs=true\nbitcoin_spv_reorg_tracking=true\n");
+    printf("settlement_qrxdb_wal=true\n");
+    printf("settlement_state_root=true\n");
+    printf("outer_apply_wal_atomic=true\n");
+    printf("fee_nonce_applied_atomic=true\n");
+    printf("qrxdb_authoritative_apply_state=true\n");
+    printf("legacy_state_mirrors_non_authoritative=true\n");
+    printf("pending_native_match_recovery=true\n");
+    printf("native_asset_ledger=true\n");
+    printf("native_stablecoins=false\n");
+    printf("velocity_phase=4\n");
+    printf("ram_mempool=true\n");
+    printf("mempool_wal=true\n");
+    printf("mempool_shards=%u\n", QRX_VELOCITY_MEMPOOL_SHARDS);
+    printf("mempool_max_txs=%d\n", QRX_MAX_MEMPOOL_TX);
+    printf("parallel_signature_verification=true\n");
+    printf("conflict_detection=true\n");
+    printf("conflict_aware_execution_waves=true\n");
+    printf("deterministic_mempool_order=fee_desc_txid_asc\n");
+    printf("deterministic_commit=true\n");
+    printf("qrxdb_wal_commit=true\n");
+    printf("parallel_execution=true\n");
+    printf("parallel_state_mutation=false\n");
+    printf("parallel_execution_model=parallel_prevalidation_conflict_waves_serial_atomic_state_commit\n");
+    return 0;
+}
+
+static int getnoncelanes_cmd(const char *chain_dir, const char *addr) {
+    if (!addr || !*addr) die("missing address");
+    printf("lane=0 nonce=%lld\n", velocity_get_lane_nonce(chain_dir, addr, 0));
+    char path[1024];
+    velocity_lane_nonce_path(chain_dir, path, sizeof(path));
+    StateKVRecord *arr = NULL; size_t count = 0;
+    if (kv_load(path, &arr, &count) != 0) return 0;
+    size_t prefix_len = strlen(addr);
+    for (size_t i = 0; i < count; ++i) {
+        if (!strncmp(arr[i].key, addr, prefix_len) && arr[i].key[prefix_len] == '|') {
+            const char *lane = arr[i].key + prefix_len + 1;
+            printf("lane=%s nonce=%lld\n", lane, arr[i].value);
+        }
+    }
+    free(arr);
+    return 0;
+}
+
+
+static int create_velocity_raw_tx_cmd(const char *chain_dir, const char *from, const char *to, const char *amount,
+    const char *ed_pub_hex, const char *mldsa_pub_b64, const char *tx_type, const char *lane_s,
+    const char *expiry_height_s, const char *payload, const char *fee, const char *nonce);
+
+static char *velocity_qrxdb_get_alloc(const char *chain_dir, const char *key);
+static int velocity_qrxdb_put(const char *chain_dir, const char *key, const char *value);
+static int velocity_batch_put_ll(QrxDBBatch *b,const char *key,long long value);
+static int atomic_batch_put_balance(QrxDBBatch *b,const char *address,long long value);
+static int atomic_stage_order_payload(QrxDBBatch *b,const char *order_id,const char *agent,const char *owner,const char *kind,const char *status,const char *payload,const char *body_hash,const char *replaces,long long h);
+static int atomic_stage_agent_usage(QrxDBBatch *b,const char *chain_dir,const char *agent,long long qty);
+static int atomic_stage_asset_value(QrxDBBatch *b,const char *asset,const char *owner,long long value);
+static int mirror_order_from_authoritative(const char *chain_dir,const char *oid);
+
+static void agent_registry_path(const char *chain_dir, char *out, size_t out_sz) {
+    snprintf(out, out_sz, "%s/state/agents.db", chain_dir);
+}
+
+static int text_db_set(const char *path, const char *key, const char *value) {
+    char *txt = read_file(path, NULL);
+    FILE *f = fopen(path, "wb");
+    if (!f) { if (txt) free(txt); return -1; }
+    size_t klen = strlen(key);
+    int wrote = 0;
+    if (txt) {
+        const char *cur = txt;
+        while (cur && *cur) {
+            const char *e = strchr(cur, '\n');
+            size_t len = e ? (size_t)(e - cur) : strlen(cur);
+            if (len > klen && !strncmp(cur, key, klen) && cur[klen] == '=') {
+                fprintf(f, "%s=%s\n", key, value ? value : "");
+                wrote = 1;
+            } else if (len) {
+                fwrite(cur, 1, len, f);
+                fputc('\n', f);
+            }
+            cur = e ? e + 1 : NULL;
+        }
+        free(txt);
+    }
+    if (!wrote) fprintf(f, "%s=%s\n", key, value ? value : "");
+    fclose(f);
+    return 0;
+}
+
+static char *text_db_get(const char *path, const char *key) {
+    char *txt = read_file(path, NULL);
+    if (!txt) return NULL;
+    char *v = cfg_get(txt, key);
+    free(txt);
+    return v;
+}
+
+static int agent_make_key(char *out, size_t out_sz, const char *agent, const char *field) {
+    if (!agent || !*agent || strchr(agent, '\n') || strchr(agent, '=') || strchr(agent, '|')) return -1;
+    snprintf(out, out_sz, "agent.%s.%s", agent, field);
+    return 0;
+}
+
+static void velocity_agent_key(char *out,size_t out_sz,const char *agent,const char *field){
+    snprintf(out,out_sz,"velocity:agent:%s:%s",agent,field);
+}
+
+static char *agent_db_get_field(const char *chain_dir, const char *agent, const char *field) {
+    char qkey[1024]; velocity_agent_key(qkey,sizeof(qkey),agent,field);
+    char *qv=velocity_qrxdb_get_alloc(chain_dir,qkey);
+    if(qv) return qv;
+    char path[1024], key[768];
+    agent_registry_path(chain_dir, path, sizeof(path));
+    if (agent_make_key(key, sizeof(key), agent, field) != 0) return NULL;
+    return text_db_get(path, key);
+}
+
+static int agent_db_set_field(const char *chain_dir, const char *agent, const char *field, const char *value) {
+    char path[1024], key[768];
+    agent_registry_path(chain_dir, path, sizeof(path));
+    if (agent_make_key(key, sizeof(key), agent, field) != 0) return -1;
+    return text_db_set(path, key, value ? value : "");
+}
+
+static char *payload_get_field(const char *payload, const char *key) {
+    if (!payload || !key || !*key) return NULL;
+    size_t klen = strlen(key);
+    const char *cur = payload;
+    while (cur && *cur) {
+        while (*cur == ';') cur++;
+        const char *e = strchr(cur, ';');
+        size_t len = e ? (size_t)(e - cur) : strlen(cur);
+        if (len > klen && !strncmp(cur, key, klen) && cur[klen] == '=') {
+            size_t vlen = len - klen - 1;
+            char *v = malloc(vlen + 1);
+            if (!v) die("oom");
+            memcpy(v, cur + klen + 1, vlen);
+            v[vlen] = 0;
+            return v;
+        }
+        cur = e ? e + 1 : NULL;
+    }
+    return NULL;
+}
+
+static void validate_payload_clean(const char *payload, const char *field) {
+    if (!payload || !*payload) die("missing %s", field);
+    if (strchr(payload, '\n') || strchr(payload, '\r')) die("invalid %s", field);
+}
+
+static void validate_agent_pubkeys_match_address(const char *agent_address, const char *ed_pub_hex, const char *ml_pub_b64) {
+    if (!agent_address || !*agent_address) die("missing agent address");
+    if (!ed_pub_hex || !*ed_pub_hex) die("missing agent ed25519 pubkey");
+    if (!ml_pub_b64 || !*ml_pub_b64) die("missing agent mldsa pubkey");
+    unsigned char edraw[32]; size_t edlen = 0;
+    if (hex_to_bytes(ed_pub_hex, edraw, sizeof(edraw), &edlen) != 0 || edlen != 32) die("invalid agent ed25519 pubkey");
+    EVP_PKEY *ed_pub = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, NULL, edraw, edlen);
+    if (!ed_pub) die("agent ed25519 pubkey construct failed");
+    if (address_matches_pub(ed_pub, agent_address) != 0) die("agent address does not match agent ed25519 pubkey");
+    EVP_PKEY_free(ed_pub);
+    size_t mlpemlen = 0; unsigned char *mlpem = base64_decode(ml_pub_b64, &mlpemlen);
+    if (!mlpem) die("invalid agent mldsa pubkey b64");
+    char *mlpemstr = malloc(mlpemlen + 1); if (!mlpemstr) die("oom");
+    memcpy(mlpemstr, mlpem, mlpemlen); mlpemstr[mlpemlen] = 0;
+    EVP_PKEY *ml_pub = pubkey_from_pem_string(mlpemstr);
+    if (!ml_pub) die("agent mldsa pubkey parse failed");
+    EVP_PKEY_free(ml_pub);
+    free(mlpem); free(mlpemstr);
+}
+
+static void validate_agent_fields_common(const char *chain_dir, const char *owner, const char *agent, const char *tx_type, const char *payload) {
+    validate_payload_clean(payload, "agent payload");
+    long long h = current_height_from_chain(chain_dir);
+    char *existing_owner = agent_db_get_field(chain_dir, agent, "owner");
+    char *existing_status = agent_db_get_field(chain_dir, agent, "status");
+    int exists = existing_owner && *existing_owner;
+    int active = exists && (!existing_status || strcmp(existing_status, "revoked") != 0);
+    if (!strcmp(tx_type, "AGENT_REGISTER")) {
+        if (active) die("agent already registered and active");
+        char *ed = payload_get_field(payload, "agent_ed25519_pub_hex");
+        char *ml = payload_get_field(payload, "agent_mldsa65_pub_b64");
+        char *perm = payload_get_field(payload, "permissions");
+        char *max_trade = payload_get_field(payload, "max_trade_atoms");
+        char *daily = payload_get_field(payload, "daily_limit_atoms");
+        char *markets = payload_get_field(payload, "market_allowlist");
+        char *exp = payload_get_field(payload, "expires_height");
+        if (!perm || !*perm || !markets || !*markets) die("agent payload missing permissions or market_allowlist");
+        parse_nonnegative_ll_strict(max_trade, "max_trade_atoms");
+        parse_nonnegative_ll_strict(daily, "daily_limit_atoms");
+        long long eh = parse_positive_ll_strict(exp, "agent expires_height");
+        if (eh <= h) die("agent expires_height must be greater than current chain height");
+        validate_agent_pubkeys_match_address(agent, ed, ml);
+        free(ed); free(ml); free(perm); free(max_trade); free(daily); free(markets); free(exp);
+    } else if (!strcmp(tx_type, "AGENT_UPDATE")) {
+        if (!active) die("agent not active");
+        if (!existing_owner || strcmp(existing_owner, owner) != 0) die("agent owner mismatch");
+        char *perm = payload_get_field(payload, "permissions");
+        char *max_trade = payload_get_field(payload, "max_trade_atoms");
+        char *daily = payload_get_field(payload, "daily_limit_atoms");
+        char *markets = payload_get_field(payload, "market_allowlist");
+        char *exp = payload_get_field(payload, "expires_height");
+        if (!perm || !*perm || !markets || !*markets) die("agent update missing permissions or market_allowlist");
+        parse_nonnegative_ll_strict(max_trade, "max_trade_atoms");
+        parse_nonnegative_ll_strict(daily, "daily_limit_atoms");
+        long long eh = parse_positive_ll_strict(exp, "agent expires_height");
+        if (eh <= h) die("agent expires_height must be greater than current chain height");
+        free(perm); free(max_trade); free(daily); free(markets); free(exp);
+    } else if (!strcmp(tx_type, "AGENT_REVOKE")) {
+        if (!active) die("agent not active");
+        if (!existing_owner || strcmp(existing_owner, owner) != 0) die("agent owner mismatch");
+    }
+    if (existing_owner) free(existing_owner);
+    if (existing_status) free(existing_status);
+}
+
+static int agent_apply_tx(const char *chain_dir, const char *owner, const char *agent, const char *tx_type, const char *payload, const char *body_hash) {
+    long long h = current_height_from_chain(chain_dir);
+    char hbuf[32]; snprintf(hbuf, sizeof(hbuf), "%lld", h);
+    if (!strcmp(tx_type, "AGENT_REGISTER") || !strcmp(tx_type, "AGENT_UPDATE")) {
+        char *ed = payload_get_field(payload, "agent_ed25519_pub_hex");
+        char *ml = payload_get_field(payload, "agent_mldsa65_pub_b64");
+        char *perm = payload_get_field(payload, "permissions");
+        char *max_trade = payload_get_field(payload, "max_trade_atoms");
+        char *daily = payload_get_field(payload, "daily_limit_atoms");
+        char *markets = payload_get_field(payload, "market_allowlist");
+        char *exp = payload_get_field(payload, "expires_height");
+        if (agent_db_set_field(chain_dir, agent, "owner", owner) != 0) return -1;
+        if (agent_db_set_field(chain_dir, agent, "status", "active") != 0) return -1;
+        if (ed && agent_db_set_field(chain_dir, agent, "ed25519_pub_hex", ed) != 0) return -1;
+        if (ml && agent_db_set_field(chain_dir, agent, "mldsa65_pub_b64", ml) != 0) return -1;
+        if (agent_db_set_field(chain_dir, agent, "permissions", perm) != 0) return -1;
+        if (agent_db_set_field(chain_dir, agent, "max_trade_atoms", max_trade) != 0) return -1;
+        if (agent_db_set_field(chain_dir, agent, "daily_limit_atoms", daily) != 0) return -1;
+        if (agent_db_set_field(chain_dir, agent, "market_allowlist", markets) != 0) return -1;
+        if (agent_db_set_field(chain_dir, agent, "expires_height", exp) != 0) return -1;
+        if (agent_db_set_field(chain_dir, agent, "updated_height", hbuf) != 0) return -1;
+        if (agent_db_set_field(chain_dir, agent, "last_tx", body_hash ? body_hash : "") != 0) return -1;
+        if (ed) free(ed); if (ml) free(ml); free(perm); free(max_trade); free(daily); free(markets); free(exp);
+        return 0;
+    }
+    if (!strcmp(tx_type, "AGENT_REVOKE")) {
+        if (agent_db_set_field(chain_dir, agent, "status", "revoked") != 0) return -1;
+        if (agent_db_set_field(chain_dir, agent, "revoked_height", hbuf) != 0) return -1;
+        if (agent_db_set_field(chain_dir, agent, "last_tx", body_hash ? body_hash : "") != 0) return -1;
+        return 0;
+    }
+    return -1;
+}
+
+static int agent_status_cmd(const char *chain_dir, const char *agent) {
+    if (!agent || !*agent) die("missing agent address");
+    const char *fields[] = {"owner","status","permissions","max_trade_atoms","daily_limit_atoms","market_allowlist","expires_height","updated_height","revoked_height","last_tx","ed25519_pub_hex","mldsa65_pub_b64",NULL};
+    for (int i = 0; fields[i]; ++i) {
+        char *v = agent_db_get_field(chain_dir, agent, fields[i]);
+        if (v) { printf("%s=%s\n", fields[i], v); free(v); }
+    }
+    return 0;
+}
+
+static int list_agents_cmd(const char *chain_dir, const char *owner_filter) {
+    char path[1024]; agent_registry_path(chain_dir, path, sizeof(path));
+    char *txt = read_file(path, NULL); if (!txt) return 0;
+    const char *cur = txt;
+    while (cur && *cur) {
+        const char *e = strchr(cur, '\n'); size_t len = e ? (size_t)(e - cur) : strlen(cur);
+        const char suffix[] = ".owner=";
+        const char *suf = NULL;
+        if (len > 6 && !strncmp(cur, "agent.", 6)) {
+            for (size_t i = 6; i + strlen(suffix) < len; ++i) {
+                if (!strncmp(cur + i, suffix, strlen(suffix))) { suf = cur + i; break; }
+            }
+        }
+        if (suf) {
+            size_t agent_len = (size_t)(suf - (cur + 6));
+            size_t owner_len = len - ((suf + strlen(suffix)) - cur);
+            char agent[512], owner[512];
+            if (agent_len >= sizeof(agent)) agent_len = sizeof(agent) - 1;
+            if (owner_len >= sizeof(owner)) owner_len = sizeof(owner) - 1;
+            memcpy(agent, cur + 6, agent_len); agent[agent_len] = 0;
+            memcpy(owner, suf + strlen(suffix), owner_len); owner[owner_len] = 0;
+            if (!owner_filter || !*owner_filter || !strcmp(owner_filter, owner)) printf("agent=%s owner=%s\n", agent, owner);
+        }
+        cur = e ? e + 1 : NULL;
+    }
+    free(txt); return 0;
+}
+
+static int create_agent_register_raw_tx_cmd(const char *chain_dir, const char *owner, const char *agent, const char *agent_ed, const char *agent_ml,
+    const char *permissions, const char *max_trade, const char *daily_limit, const char *markets, const char *agent_exp,
+    const char *owner_ed, const char *owner_ml, const char *lane, const char *tx_exp, const char *fee, const char *nonce) {
+    char payload[8192];
+    snprintf(payload, sizeof(payload), "agent_ed25519_pub_hex=%s;agent_mldsa65_pub_b64=%s;permissions=%s;max_trade_atoms=%s;daily_limit_atoms=%s;market_allowlist=%s;expires_height=%s",
+        agent_ed, agent_ml, permissions, max_trade, daily_limit, markets, agent_exp);
+    return create_velocity_raw_tx_cmd(chain_dir, owner, agent, "0", owner_ed, owner_ml, "AGENT_REGISTER", lane, tx_exp, payload, fee, nonce);
+}
+
+static int create_agent_update_raw_tx_cmd(const char *chain_dir, const char *owner, const char *agent,
+    const char *permissions, const char *max_trade, const char *daily_limit, const char *markets, const char *agent_exp,
+    const char *owner_ed, const char *owner_ml, const char *lane, const char *tx_exp, const char *fee, const char *nonce) {
+    char payload[4096];
+    snprintf(payload, sizeof(payload), "permissions=%s;max_trade_atoms=%s;daily_limit_atoms=%s;market_allowlist=%s;expires_height=%s",
+        permissions, max_trade, daily_limit, markets, agent_exp);
+    return create_velocity_raw_tx_cmd(chain_dir, owner, agent, "0", owner_ed, owner_ml, "AGENT_UPDATE", lane, tx_exp, payload, fee, nonce);
+}
+
+static int create_agent_revoke_raw_tx_cmd(const char *chain_dir, const char *owner, const char *agent,
+    const char *owner_ed, const char *owner_ml, const char *lane, const char *tx_exp, const char *fee, const char *nonce) {
+    return create_velocity_raw_tx_cmd(chain_dir, owner, agent, "0", owner_ed, owner_ml, "AGENT_REVOKE", lane, tx_exp, "reason=owner_revoked", fee, nonce);
+}
+
+/* === VELOCITY 0.0.7 Phase 3B: deterministic native matching + settlement === */
+#define QRX_TRADE_PRICE_SCALE 100000000LL
+
+static void validate_simple_payload_value(const char *value, const char *field);
+
+typedef struct {
+    char id[160];
+    char owner[512];
+    char side[16];
+    long long price;
+    long long remaining;
+    long long created_height;
+} QrxMatchOrder;
+
+
+static char *velocity_qrxdb_get_alloc(const char *chain_dir, const char *key) {
+    QrxDB db; char buf[8192];
+    if (qrxdb_init(&db, chain_dir) != 0) return NULL;
+    int rc = qrxdb_get(&db, key, buf, sizeof(buf));
+    qrxdb_close(&db);
+    return rc == 0 ? strdup(buf) : NULL;
+}
+
+static int velocity_qrxdb_put(const char *chain_dir, const char *key, const char *value) {
+    QrxDB db;
+    if (qrxdb_init(&db, chain_dir) != 0) return -1;
+    int rc = qrxdb_put(&db, key, value ? value : "");
+    qrxdb_close(&db);
+    return rc;
+}
+
+static void velocity_order_key(char *out,size_t out_sz,const char *order_id,const char *field){
+    snprintf(out,out_sz,"velocity:order:%s:%s",order_id,field);
+}
+static void velocity_trade_key(char *out,size_t out_sz,const char *trade_id,const char *field){
+    snprintf(out,out_sz,"velocity:trade:%s:%s",trade_id,field);
+}
+static void velocity_asset_balance_key(char *out,size_t out_sz,const char *asset,const char *address){
+    snprintf(out,out_sz,"velocity:asset:balance:%s:%s",asset,address);
+}
+
+static void order_registry_path(const char *chain_dir, char *out, size_t out_sz) {
+    snprintf(out, out_sz, "%s/state/orders.db", chain_dir);
+}
+
+static void trade_registry_path(const char *chain_dir, char *out, size_t out_sz) {
+    snprintf(out, out_sz, "%s/state/trades.db", chain_dir);
+}
+
+static void asset_registry_path(const char *chain_dir, char *out, size_t out_sz) {
+    snprintf(out, out_sz, "%s/state/assets.db", chain_dir);
+}
+
+static void asset_balance_path(const char *chain_dir, char *out, size_t out_sz) {
+    snprintf(out, out_sz, "%s/state/asset_balances.bin", chain_dir);
+}
+
+static void agent_usage_path(const char *chain_dir, char *out, size_t out_sz) {
+    snprintf(out, out_sz, "%s/state/agent_usage.bin", chain_dir);
+}
+
+static void trade_sequence_path(const char *chain_dir, char *out, size_t out_sz) {
+    snprintf(out, out_sz, "%s/state/trade_sequence.bin", chain_dir);
+}
+
+static int token_list_contains_ci(const char *list, const char *needle) {
+    if (!list || !needle || !*needle) return 0;
+    const char *cur = list;
+    while (*cur) {
+        while (*cur == ',' || *cur == '|' || isspace((unsigned char)*cur)) cur++;
+        const char *end = cur;
+        while (*end && *end != ',' && *end != '|') end++;
+        const char *trim_end = end;
+        while (trim_end > cur && isspace((unsigned char)trim_end[-1])) trim_end--;
+        size_t n = (size_t)(trim_end - cur);
+        if ((n == 1 && cur[0] == '*') || (n == strlen(needle) && !strncasecmp(cur, needle, n))) return 1;
+        cur = *end ? end + 1 : end;
+    }
+    return 0;
+}
+
+static int order_make_key(char *out, size_t out_sz, const char *order_id, const char *field) {
+    if (!order_id || !*order_id || !field || !*field || strchr(order_id, '\n') || strchr(order_id, '=') || strchr(order_id, '|')) return -1;
+    snprintf(out, out_sz, "order.%s.%s", order_id, field);
+    return 0;
+}
+
+static char *order_db_get_field(const char *chain_dir, const char *order_id, const char *field) {
+    char qkey[1024]; velocity_order_key(qkey,sizeof(qkey),order_id,field);
+    char *v=velocity_qrxdb_get_alloc(chain_dir,qkey);
+    if(v) return v;
+    char path[1024], key[768];
+    order_registry_path(chain_dir, path, sizeof(path));
+    if (order_make_key(key, sizeof(key), order_id, field) != 0) return NULL;
+    return text_db_get(path, key);
+}
+
+static int order_db_set_field(const char *chain_dir, const char *order_id, const char *field, const char *value) {
+    char path[1024], key[768], qkey[1024];
+    order_registry_path(chain_dir, path, sizeof(path));
+    if (order_make_key(key, sizeof(key), order_id, field) != 0) return -1;
+    velocity_order_key(qkey,sizeof(qkey),order_id,field);
+    if(velocity_qrxdb_put(chain_dir,qkey,value?value:"")!=0) return -1;
+    return text_db_set(path, key, value ? value : "");
+}
+
+static int order_db_set_ll(const char *chain_dir, const char *order_id, const char *field, long long value) {
+    char buf[64]; snprintf(buf, sizeof(buf), "%lld", value);
+    return order_db_set_field(chain_dir, order_id, field, buf);
+}
+
+static long long order_db_get_ll(const char *chain_dir, const char *order_id, const char *field, long long fallback) {
+    char *v = order_db_get_field(chain_dir, order_id, field);
+    if (!v || !*v) { if (v) free(v); return fallback; }
+    char *end = NULL; errno = 0; long long n = strtoll(v, &end, 10);
+    int ok = !errno && end && !*end; free(v); return ok ? n : fallback;
+}
+
+static int trade_make_key(char *out, size_t out_sz, const char *trade_id, const char *field) {
+    if (!trade_id || !*trade_id || !field || !*field || strchr(trade_id, '\n') || strchr(trade_id, '=') || strchr(trade_id, '|')) return -1;
+    snprintf(out, out_sz, "trade.%s.%s", trade_id, field);
+    return 0;
+}
+
+static char *trade_db_get_field(const char *chain_dir, const char *trade_id, const char *field) {
+    char qkey[1024]; velocity_trade_key(qkey,sizeof(qkey),trade_id,field);
+    char *v=velocity_qrxdb_get_alloc(chain_dir,qkey);
+    if(v) return v;
+    char path[1024], key[768]; trade_registry_path(chain_dir, path, sizeof(path));
+    if (trade_make_key(key, sizeof(key), trade_id, field) != 0) return NULL;
+    return text_db_get(path, key);
+}
+
+static int trade_db_set_field(const char *chain_dir, const char *trade_id, const char *field, const char *value) {
+    char path[1024], key[768], qkey[1024]; trade_registry_path(chain_dir, path, sizeof(path));
+    if (trade_make_key(key, sizeof(key), trade_id, field) != 0) return -1;
+    velocity_trade_key(qkey,sizeof(qkey),trade_id,field);
+    if(velocity_qrxdb_put(chain_dir,qkey,value?value:"")!=0) return -1;
+    return text_db_set(path, key, value ? value : "");
+}
+
+static int asset_id_valid(const char *asset) {
+    if (!asset) return 0; size_t n = strlen(asset); if (n < 2 || n > 24) return 0;
+    for (size_t i=0;i<n;++i) if (!(isalnum((unsigned char)asset[i]) || asset[i]=='_' || asset[i]=='-')) return 0;
+    return 1;
+}
+
+static void asset_id_normalize(const char *asset, char *out, size_t out_sz) {
+    size_t i=0; if (!out_sz) return;
+    for (; asset && asset[i] && i+1<out_sz; ++i) out[i]=(char)toupper((unsigned char)asset[i]);
+    out[i]=0;
+}
+
+static int asset_exists(const char *chain_dir, const char *asset) {
+    char a[32]; asset_id_normalize(asset,a,sizeof(a));
+    if (!strcmp(a,"QUB")) return 1;
+    if (!asset_id_valid(a)) return 0;
+    char path[1024], key[128]; asset_registry_path(chain_dir,path,sizeof(path)); snprintf(key,sizeof(key),"asset.%s.status",a);
+    char *v=text_db_get(path,key); int ok=v && !strcmp(v,"active"); if(v)free(v); return ok;
+}
+
+static int asset_register_cmd(const char *chain_dir, const char *asset, const char *name) {
+    require_manual_mint_allowed(chain_dir, "asset-register");
+    char a[32]; asset_id_normalize(asset,a,sizeof(a)); if(!asset_id_valid(a)) die("invalid asset id");
+    if(!strcmp(a,"QUB")) die("QUB is built in"); validate_simple_payload_value(name,"asset name");
+    char path[1024], key[128]; asset_registry_path(chain_dir,path,sizeof(path));
+    snprintf(key,sizeof(key),"asset.%s.status",a); if(text_db_set(path,key,"active")) die("asset registry write failed");
+    snprintf(key,sizeof(key),"asset.%s.name",a); if(text_db_set(path,key,name)) die("asset registry write failed");
+    snprintf(key,sizeof(key),"asset.%s.decimals",a); if(text_db_set(path,key,"8")) die("asset registry write failed");
+    printf("asset=%s\nstatus=active\ndecimals=8\n",a); return 0;
+}
+
+static long long asset_balance_get(const char *chain_dir, const char *asset, const char *address) {
+    char a[32]; asset_id_normalize(asset,a,sizeof(a));
+    QrxDB db; long long qv=0;
+    if(qrxdb_init(&db,chain_dir)==0){
+        if(!strcmp(a,"QUB")){
+            if(qrxdb_chain_get_balance(&db,address,&qv)==0){ qrxdb_close(&db); return qv; }
+        } else {
+            char qkey[1024],buf[128]; velocity_asset_balance_key(qkey,sizeof(qkey),a,address);
+            if(qrxdb_get(&db,qkey,buf,sizeof(buf))==0){ qrxdb_close(&db); return atoll(buf); }
+        }
+        qrxdb_close(&db);
+    }
+    if(!strcmp(a,"QUB")){ char bal[1024]; state_paths(chain_dir,bal,sizeof(bal),NULL,0,NULL,0,NULL,0); return kv_get_ll_bin(bal,address); }
+    char path[1024], key[768]; asset_balance_path(chain_dir,path,sizeof(path)); snprintf(key,sizeof(key),"%s|%s",a,address); return kv_get_ll_bin(path,key);
+}
+
+static int asset_balance_set(const char *chain_dir, const char *asset, const char *address, long long value) {
+    if(value<0) return -1; char a[32]; asset_id_normalize(asset,a,sizeof(a));
+    QrxDB db; if(qrxdb_init(&db,chain_dir)!=0) return -1;
+    int qrc=0;
+    if(!strcmp(a,"QUB")) qrc=qrxdb_chain_set_balance(&db,address,value);
+    else { char qkey[1024],buf[64]; velocity_asset_balance_key(qkey,sizeof(qkey),a,address); snprintf(buf,sizeof(buf),"%lld",value); qrc=qrxdb_put(&db,qkey,buf); }
+    qrxdb_close(&db); if(qrc) return -1;
+    if(!strcmp(a,"QUB")){ char bal[1024]; state_paths(chain_dir,bal,sizeof(bal),NULL,0,NULL,0,NULL,0); return kv_set_ll_bin(bal,address,value); }
+    char path[1024],key[768]; asset_balance_path(chain_dir,path,sizeof(path)); snprintf(key,sizeof(key),"%s|%s",a,address); return kv_set_ll_bin(path,key,value);
+}
+
+static int asset_balance_adjust(const char *chain_dir,const char *asset,const char *address,long long delta){
+    long long cur=asset_balance_get(chain_dir,asset,address),next=0; checked_add_ll(cur,delta,"asset balance",&next); if(next<0)return -1; return asset_balance_set(chain_dir,asset,address,next);
+}
+
+static int asset_credit_cmd(const char *chain_dir,const char *asset,const char *address,long long amount){
+    require_manual_mint_allowed(chain_dir,"asset-credit"); if(amount<=0)die("asset credit amount must be > 0");
+    char a[32];asset_id_normalize(asset,a,sizeof(a));if(!strcmp(a,"QUB"))die("use faucet for QUB");if(!asset_exists(chain_dir,a))die("asset is not registered");
+    if(asset_balance_adjust(chain_dir,a,address,amount))die("asset credit failed"); printf("%lld\n",asset_balance_get(chain_dir,a,address)); return 0;
+}
+
+static int asset_balance_cmd(const char *chain_dir,const char *asset,const char *address){
+    if(!asset_exists(chain_dir,asset))die("asset is not registered"); printf("%lld\n",asset_balance_get(chain_dir,asset,address)); return 0;
+}
+
+static int list_assets_cmd(const char *chain_dir){
+    puts("asset=QUB name=QUBITCOIN decimals=8 status=active native=true");
+    char path[1024];asset_registry_path(chain_dir,path,sizeof(path));char *txt=read_file(path,NULL);if(!txt)return 0;const char *cur=txt;const char suffix[]=".status=";
+    while(cur&&*cur){const char *e=strchr(cur,'\n');size_t len=e?(size_t)(e-cur):strlen(cur);if(len>6&&!strncmp(cur,"asset.",6)){
+        const char *suf=NULL;for(size_t i=6;i+strlen(suffix)<len;++i)if(!strncmp(cur+i,suffix,strlen(suffix))){suf=cur+i;break;}
+        if(suf){size_t alen=(size_t)(suf-(cur+6));char a[32];if(alen<sizeof(a)){memcpy(a,cur+6,alen);a[alen]=0;if(strncmp(suf+strlen(suffix),"active",6)==0){char key[128];snprintf(key,sizeof(key),"asset.%s.name",a);char *name=text_db_get(path,key);printf("asset=%s name=%s decimals=8 status=active native=true\n",a,name?name:"");if(name)free(name);}}}}
+        cur=e?e+1:NULL;
+    }free(txt);return 0;
+}
+
+static int parse_native_market(const char *chain_dir,const char *market,char *base,size_t bsz,char *quote,size_t qsz){
+    if(!market||!*market)return -1;const char *slash=strchr(market,'/');if(!slash||strchr(slash+1,'/'))return -1;size_t bl=(size_t)(slash-market),ql=strlen(slash+1);if(!bl||!ql||bl>=bsz||ql>=qsz)return -1;
+    char rb[32],rq[32];if(bl>=sizeof(rb)||ql>=sizeof(rq))return -1;memcpy(rb,market,bl);rb[bl]=0;memcpy(rq,slash+1,ql+1);asset_id_normalize(rb,base,bsz);asset_id_normalize(rq,quote,qsz);
+    if(!asset_id_valid(base)||!asset_id_valid(quote)||!strcmp(base,quote))return -1;if(!asset_exists(chain_dir,base)||!asset_exists(chain_dir,quote))return -2;return 0;
+}
+
+/* Exact, overflow-safe floor(a*b/d) for non-negative signed-64 values, without __int128 (MSVC-safe). */
+static int mul_div_floor_nonneg(long long a,long long b,long long d,long long *out){
+    if(a<0||b<0||d<=0||!out)return -1; unsigned long long q=0,rem=0,ub=(unsigned long long)b,ud=(unsigned long long)d,base_q=ub/ud,base_r=ub%ud,ua=(unsigned long long)a;
+    for(int i=62;i>=0;--i){
+        if(q>(unsigned long long)LLONG_MAX/2ULL)return -1;q*=2ULL;rem*=2ULL;if(rem>=ud){rem-=ud;if(q>=(unsigned long long)LLONG_MAX)return -1;q++;}
+        if((ua>>i)&1ULL){if(q>(unsigned long long)LLONG_MAX-base_q)return -1;q+=base_q;rem+=base_r;if(rem>=ud){rem-=ud;if(q>=(unsigned long long)LLONG_MAX)return -1;q++;}}
+    }*out=(long long)q;return 0;
+}
+
+static long long quote_for_quantity(long long qty,long long price){long long q=0;if(qty<=0||price<=0||mul_div_floor_nonneg(qty,price,QRX_TRADE_PRICE_SCALE,&q)||q<=0)die("native trade quote amount is zero or overflows");return q;}
+
+static long long agent_usage_epoch_blocks(const char *chain_dir) {
+    long long h = current_height_from_chain(chain_dir);
+    long long block_time = qrx_chain_get_ll_at_height_or_default(chain_dir, h, "block_time_seconds", 10LL);
+    if (block_time <= 0) block_time = 10;
+    long long blocks = (86400LL + block_time - 1LL) / block_time;
+    return blocks > 0 ? blocks : 1;
+}
+
+static long long agent_usage_current(const char *chain_dir, const char *agent, long long *bucket_out, long long *epoch_blocks_out) {
+    long long h = current_height_from_chain(chain_dir);
+    long long epoch_blocks = agent_usage_epoch_blocks(chain_dir);
+    long long bucket = h / epoch_blocks;
+    char qkey[768],buf[128]; snprintf(qkey,sizeof(qkey),"velocity:agent_usage:%s:%lld",agent,bucket);
+    QrxDB db;if(qrxdb_init(&db,chain_dir)==0){if(qrxdb_get(&db,qkey,buf,sizeof(buf))==0){long long n=atoll(buf);qrxdb_close(&db);if(bucket_out)*bucket_out=bucket;if(epoch_blocks_out)*epoch_blocks_out=epoch_blocks;return n;}qrxdb_close(&db);}
+    char path[1024], key[512]; agent_usage_path(chain_dir, path, sizeof(path)); snprintf(key, sizeof(key), "%s|%lld", agent, bucket);
+    if (bucket_out) *bucket_out = bucket; if (epoch_blocks_out) *epoch_blocks_out = epoch_blocks; return kv_get_ll_bin(path, key);
+}
+
+static int agent_usage_add(const char *chain_dir, const char *agent, long long quantity_atoms) {
+    if (quantity_atoms <= 0) return 0; long long bucket = 0; long long cur = agent_usage_current(chain_dir, agent, &bucket, NULL), next = 0;
+    checked_add_ll(cur, quantity_atoms, "agent usage", &next); char path[1024], key[512]; agent_usage_path(chain_dir, path, sizeof(path)); snprintf(key, sizeof(key), "%s|%lld", agent, bucket); return kv_set_ll_bin(path, key, next);
+}
+
+static int order_status_is_live(const char *status) { return status && (!strcmp(status,"open") || !strcmp(status,"partially_filled") || !strcmp(status,"pending_execution") || !strcmp(status,"submitted")); }
+static int native_order_status_is_live(const char *status) { return status && (!strcmp(status,"open") || !strcmp(status,"partially_filled")); }
+
+static void validate_simple_payload_value(const char *value, const char *field) {
+    if (!value || !*value) die("missing %s", field);
+    if (strchr(value, '\n') || strchr(value, '\r') || strchr(value, ';') || strchr(value, '=')) die("invalid %s", field);
+}
+
+static void agent_assert_trade_authorized(const char *chain_dir, const char *agent, const char *owner,
+    const char *market, const char *permission, long long quantity_atoms, int enforce_limits,
+    const char *tx_ed_pub_hex, const char *tx_ml_pub_b64) {
+    char *stored_owner = agent_db_get_field(chain_dir, agent, "owner"); char *status = agent_db_get_field(chain_dir, agent, "status");
+    char *permissions = agent_db_get_field(chain_dir, agent, "permissions"); char *markets = agent_db_get_field(chain_dir, agent, "market_allowlist");
+    char *max_trade_s = agent_db_get_field(chain_dir, agent, "max_trade_atoms"); char *daily_s = agent_db_get_field(chain_dir, agent, "daily_limit_atoms");
+    char *expires_s = agent_db_get_field(chain_dir, agent, "expires_height"); char *stored_ed = agent_db_get_field(chain_dir, agent, "ed25519_pub_hex"); char *stored_ml = agent_db_get_field(chain_dir, agent, "mldsa65_pub_b64");
+    if (!stored_owner || !*stored_owner) die("trading agent is not registered"); if (!owner || strcmp(owner, stored_owner) != 0) die("trading agent owner mismatch");
+    if (!status || strcmp(status, "active") != 0) die("trading agent is not active"); long long expires = parse_positive_ll_strict(expires_s, "agent expires_height"); if (current_height_from_chain(chain_dir) >= expires) die("trading agent authorization expired");
+    int explicit_only = !strcmp(permission, "ARBITRAGE_CROSS_VENUE");
+    if (!permissions || !(token_list_contains_ci(permissions, permission) || token_list_contains_ci(permissions, "*") || (!explicit_only && token_list_contains_ci(permissions, "TRADE")))) die("agent lacks trading permission");
+    if (!markets || !(token_list_contains_ci(markets, market) || token_list_contains_ci(markets, "*"))) die("market is not in agent allowlist");
+    if (!stored_ed || !tx_ed_pub_hex || strcmp(stored_ed, tx_ed_pub_hex) != 0) die("agent ed25519 key differs from owner-authorized key"); if (!stored_ml || !tx_ml_pub_b64 || strcmp(stored_ml, tx_ml_pub_b64) != 0) die("agent ML-DSA key differs from owner-authorized key");
+    if (enforce_limits) { long long max_trade=parse_nonnegative_ll_strict(max_trade_s,"max_trade_atoms"),daily_limit=parse_nonnegative_ll_strict(daily_s,"daily_limit_atoms"); if(quantity_atoms<=0)die("trade quantity must be > 0");if(quantity_atoms>max_trade)die("agent max_trade_atoms exceeded");long long used=agent_usage_current(chain_dir,agent,NULL,NULL),next=0;checked_add_ll(used,quantity_atoms,"daily agent usage",&next);if(next>daily_limit)die("agent daily_limit_atoms exceeded"); }
+    free(stored_owner);if(status)free(status);if(permissions)free(permissions);if(markets)free(markets);if(max_trade_s)free(max_trade_s);if(daily_s)free(daily_s);if(expires_s)free(expires_s);if(stored_ed)free(stored_ed);if(stored_ml)free(stored_ml);
+}
+
+static int native_order_lock_requirements(const char *chain_dir,const char *owner,const char *market,const char *side,long long qty,long long price,char *asset,size_t asz,long long *atoms){
+    char base[32],quote[32];int rc=parse_native_market(chain_dir,market,base,sizeof(base),quote,sizeof(quote));if(rc==-2)die("native market contains an unregistered QRX asset");if(rc)die("invalid native market; expected BASE/QUOTE");
+    if(!strcasecmp(side,"SELL")){snprintf(asset,asz,"%s",base);*atoms=qty;}else{snprintf(asset,asz,"%s",quote);*atoms=quote_for_quantity(qty,price);} long long bal=asset_balance_get(chain_dir,asset,owner);return bal>=*atoms?0:-1;
+}
+
+static void validate_trade_fields_common(const char *chain_dir, const char *agent, const char *owner,
+    const char *tx_type, const char *payload, const char *tx_expiry_height,
+    const char *tx_ed_pub_hex, const char *tx_ml_pub_b64) {
+    validate_payload_clean(payload, "trading payload"); long long tx_exp=parse_positive_ll_strict(tx_expiry_height,"expiry_height"),h=current_height_from_chain(chain_dir);
+    if (!strcmp(tx_type,"ORDER_CREATE") || !strcmp(tx_type,"EXTERNAL_ORDER") || !strcmp(tx_type,"ORDER_REPLACE")) {
+        char *market=payload_get_field(payload,"market"),*side=payload_get_field(payload,"side"),*otype=payload_get_field(payload,"order_type"),*qty_s=payload_get_field(payload,"quantity_atoms"),*price_s=payload_get_field(payload,"limit_price_atoms"),*order_exp_s=payload_get_field(payload,"order_expires_height");
+        if(!market||!side||!otype||!qty_s||!price_s||!order_exp_s)die("trading payload missing order fields");validate_simple_payload_value(market,"market");validate_simple_payload_value(side,"side");validate_simple_payload_value(otype,"order_type");if(strcasecmp(side,"BUY")&&strcasecmp(side,"SELL"))die("side must be BUY or SELL");if(strcasecmp(otype,"LIMIT")&&strcasecmp(otype,"MARKET"))die("order_type must be LIMIT or MARKET");
+        long long qty=parse_positive_ll_strict(qty_s,"quantity_atoms"),price=parse_nonnegative_ll_strict(price_s,"limit_price_atoms");if(!strcasecmp(otype,"LIMIT")&&price<=0)die("LIMIT order requires limit_price_atoms > 0");long long order_exp=parse_positive_ll_strict(order_exp_s,"order_expires_height");if(order_exp<=h)die("order_expires_height must be greater than current chain height");if(order_exp>tx_exp)die("order_expires_height cannot exceed transaction expiry_height");
+        if(!strcmp(tx_type,"EXTERNAL_ORDER")){char *venue=payload_get_field(payload,"venue"),*arb=payload_get_field(payload,"arbitrage_id"),*source=payload_get_field(payload,"source_order_id"),*tif=payload_get_field(payload,"time_in_force");validate_simple_payload_value(venue,"venue");agent_assert_trade_authorized(chain_dir,agent,owner,market,"TRADE_EXTERNAL",qty,1,tx_ed_pub_hex,tx_ml_pub_b64);if(arb||source||tif){if(!arb||!source||!tif)die("arbitrage hedge metadata incomplete");validate_simple_payload_value(arb,"arbitrage_id");validate_simple_payload_value(source,"source_order_id");if(strlen(arb)>80||strcasecmp(tif,"IOC"))die("arbitrage hedge requires bounded id and IOC time-in-force");agent_assert_trade_authorized(chain_dir,agent,owner,market,"ARBITRAGE_CROSS_VENUE",0,0,tx_ed_pub_hex,tx_ml_pub_b64);char *sk=order_db_get_field(chain_dir,source,"kind"),*sm=order_db_get_field(chain_dir,source,"market"),*ss=order_db_get_field(chain_dir,source,"side"),*st=order_db_get_field(chain_dir,source,"status"),*so=order_db_get_field(chain_dir,source,"owner");if(!sk||strcmp(sk,"crosschain")||!sm||strcasecmp(sm,"BTC/QUB")||!ss||strcasecmp(ss,"BUY")||!st||strcmp(st,"matched")||!so||strcmp(so,owner))die("arbitrage source must be owner's matched BTC/QUB cross-chain BUY order");free(sk);free(sm);free(ss);free(st);free(so);}free(arb);free(source);free(tif);free(venue);}else{
+            if(price<=0)die("native LIMIT/MARKET order requires a positive protection price for deterministic settlement");
+            agent_assert_trade_authorized(chain_dir,agent,owner,market,"TRADE_NATIVE",qty,1,tx_ed_pub_hex,tx_ml_pub_b64);
+            char lock_asset[32];long long lock_atoms=0,available=0;if(native_order_lock_requirements(chain_dir,owner,market,side,qty,price,lock_asset,sizeof(lock_asset),&lock_atoms)!=0)available=asset_balance_get(chain_dir,lock_asset,owner);else available=asset_balance_get(chain_dir,lock_asset,owner);
+            if(!strcmp(tx_type,"ORDER_REPLACE")){char *target=payload_get_field(payload,"order_id");if(!target||!*target)die("ORDER_REPLACE missing order_id");char *old_agent=order_db_get_field(chain_dir,target,"agent"),*old_owner=order_db_get_field(chain_dir,target,"owner"),*old_status=order_db_get_field(chain_dir,target,"status"),*old_kind=order_db_get_field(chain_dir,target,"kind"),*old_locked_asset=order_db_get_field(chain_dir,target,"locked_asset");long long old_locked=order_db_get_ll(chain_dir,target,"locked_atoms",0);if(!old_agent||strcmp(old_agent,agent)||!old_owner||strcmp(old_owner,owner))die("cannot replace order owned by another agent");if(!native_order_status_is_live(old_status))die("order is not replaceable");if(!old_kind||strcmp(old_kind,"native"))die("external orders must be canceled and recreated");if(old_locked_asset&&!strcasecmp(old_locked_asset,lock_asset))checked_add_ll(available,old_locked,"replacement available balance",&available);if(available<lock_atoms)die("insufficient owner asset balance for replacement settlement reserve");free(target);if(old_agent)free(old_agent);if(old_owner)free(old_owner);if(old_status)free(old_status);if(old_kind)free(old_kind);if(old_locked_asset)free(old_locked_asset);
+            } else if(available<lock_atoms) die("insufficient owner asset balance for native settlement reserve");
+        }
+        free(market);free(side);free(otype);free(qty_s);free(price_s);free(order_exp_s);return;
+    }
+    if(!strcmp(tx_type,"ORDER_CANCEL")){char *target=payload_get_field(payload,"order_id");if(!target||!*target)die("ORDER_CANCEL missing order_id");char *old_agent=order_db_get_field(chain_dir,target,"agent"),*old_owner=order_db_get_field(chain_dir,target,"owner"),*old_status=order_db_get_field(chain_dir,target,"status"),*market=order_db_get_field(chain_dir,target,"market"),*kind=order_db_get_field(chain_dir,target,"kind");if(!old_agent||strcmp(old_agent,agent)||!old_owner||strcmp(old_owner,owner))die("cannot cancel order owned by another agent");if(!order_status_is_live(old_status))die("order is not cancelable");if(!market||!kind)die("order state incomplete");agent_assert_trade_authorized(chain_dir,agent,owner,market,!strcmp(kind,"external")?"TRADE_EXTERNAL":(!strcmp(kind,"crosschain")?"TRADE_CROSSCHAIN":"TRADE_NATIVE"),0,0,tx_ed_pub_hex,tx_ml_pub_b64);free(target);if(old_agent)free(old_agent);if(old_owner)free(old_owner);if(old_status)free(old_status);free(market);free(kind);return;} die("unsupported trading tx_type");
+}
+
+static int order_write_from_payload(const char *chain_dir, const char *order_id, const char *agent, const char *owner,
+    const char *kind, const char *status, const char *payload, const char *body_hash, const char *replaces) {
+    const char *fields[]={"market","side","order_type","quantity_atoms","limit_price_atoms","order_expires_height","venue","client_order_id","time_in_force","arbitrage_id","source_order_id",NULL};long long h=current_height_from_chain(chain_dir);char hbuf[32];snprintf(hbuf,sizeof(hbuf),"%lld",h);
+    if(order_db_set_field(chain_dir,order_id,"owner",owner)||order_db_set_field(chain_dir,order_id,"agent",agent)||order_db_set_field(chain_dir,order_id,"kind",kind)||order_db_set_field(chain_dir,order_id,"status",status)||order_db_set_field(chain_dir,order_id,"created_height",hbuf)||order_db_set_field(chain_dir,order_id,"updated_height",hbuf)||order_db_set_field(chain_dir,order_id,"last_tx",body_hash?body_hash:order_id))return -1;if(replaces&&*replaces&&order_db_set_field(chain_dir,order_id,"replaces",replaces))return -1;
+    for(int i=0;fields[i];++i){char *v=payload_get_field(payload,fields[i]);if(v){int rc=order_db_set_field(chain_dir,order_id,fields[i],v);free(v);if(rc)return -1;}}
+    char *q=payload_get_field(payload,"quantity_atoms");if(q){long long qty=parse_positive_ll_strict(q,"quantity_atoms");free(q);if(order_db_set_ll(chain_dir,order_id,"filled_atoms",0)||order_db_set_ll(chain_dir,order_id,"remaining_atoms",qty))return -1;}return 0;
+}
+
+static int native_order_reserve(const char *chain_dir,const char *order_id){
+    char *owner=order_db_get_field(chain_dir,order_id,"owner"),*market=order_db_get_field(chain_dir,order_id,"market"),*side=order_db_get_field(chain_dir,order_id,"side");long long qty=order_db_get_ll(chain_dir,order_id,"remaining_atoms",0),price=order_db_get_ll(chain_dir,order_id,"limit_price_atoms",0);if(!owner||!market||!side||qty<=0||price<=0){if(owner)free(owner);if(market)free(market);if(side)free(side);return -1;}char asset[32];long long atoms=0;if(native_order_lock_requirements(chain_dir,owner,market,side,qty,price,asset,sizeof(asset),&atoms)!=0){free(owner);free(market);free(side);return -1;}if(asset_balance_adjust(chain_dir,asset,owner,-atoms)){free(owner);free(market);free(side);return -1;}int rc=order_db_set_field(chain_dir,order_id,"locked_asset",asset)||order_db_set_ll(chain_dir,order_id,"locked_atoms",atoms)||order_db_set_field(chain_dir,order_id,"settlement_version","1");free(owner);free(market);free(side);return rc?-1:0;
+}
+
+static int native_order_release_locked(const char *chain_dir,const char *order_id){
+    char *asset=order_db_get_field(chain_dir,order_id,"locked_asset"),*owner=order_db_get_field(chain_dir,order_id,"owner");long long atoms=order_db_get_ll(chain_dir,order_id,"locked_atoms",0);if(!asset||!owner){if(asset)free(asset);if(owner)free(owner);return 0;}if(atoms>0&&asset_balance_adjust(chain_dir,asset,owner,atoms)){free(asset);free(owner);return -1;}int rc=order_db_set_ll(chain_dir,order_id,"locked_atoms",0);free(asset);free(owner);return rc;
+}
+
+static long long trade_sequence_current(const char *chain_dir){
+    char *v=velocity_qrxdb_get_alloc(chain_dir,"velocity:trade_sequence:global");
+    if(v){ long long n=atoll(v); free(v); return n; }
+    char path[1024];trade_sequence_path(chain_dir,path,sizeof(path));return kv_get_ll_bin(path,"global");
+}
+static long long next_trade_sequence(const char *chain_dir){
+    long long cur=trade_sequence_current(chain_dir);if(cur==LLONG_MAX)die("trade sequence overflow");
+    char buf[64];snprintf(buf,sizeof(buf),"%lld",cur+1);
+    if(velocity_qrxdb_put(chain_dir,"velocity:trade_sequence:global",buf))die("trade sequence qrxdb write failed");
+    char path[1024];trade_sequence_path(chain_dir,path,sizeof(path));if(kv_set_ll_bin(path,"global",cur+1))die("trade sequence mirror write failed");
+    return cur+1;
+}
+
+static int velocity_batch_put_ll(QrxDBBatch *b,const char *key,long long value){char v[64];snprintf(v,sizeof(v),"%lld",value);return qrxdb_batch_put(b,key,v);}
+static int velocity_batch_put_order(QrxDBBatch *b,const char *order_id,const char *field,const char *value){char k[1024];velocity_order_key(k,sizeof(k),order_id,field);return qrxdb_batch_put(b,k,value?value:"");}
+static int velocity_batch_put_order_ll(QrxDBBatch *b,const char *order_id,const char *field,long long value){char k[1024];velocity_order_key(k,sizeof(k),order_id,field);return velocity_batch_put_ll(b,k,value);}
+static int velocity_batch_put_trade(QrxDBBatch *b,const char *trade_id,const char *field,const char *value){char k[1024];velocity_trade_key(k,sizeof(k),trade_id,field);return qrxdb_batch_put(b,k,value?value:"");}
+static int velocity_batch_put_trade_ll(QrxDBBatch *b,const char *trade_id,const char *field,long long value){char k[1024];velocity_trade_key(k,sizeof(k),trade_id,field);return velocity_batch_put_ll(b,k,value);}
+static int velocity_batch_put_asset_balance(QrxDBBatch *b,const char *asset,const char *address,long long value){
+    char a[32],k[1024];asset_id_normalize(asset,a,sizeof(a));
+    if(!strcmp(a,"QUB"))snprintf(k,sizeof(k),"acct:balance:%s",address);else velocity_asset_balance_key(k,sizeof(k),a,address);
+    return velocity_batch_put_ll(b,k,value);
+}
+static int mirror_asset_balance_only(const char *chain_dir,const char *asset,const char *address,long long value){
+    char a[32];asset_id_normalize(asset,a,sizeof(a));
+    if(!strcmp(a,"QUB")){char bal[1024];state_paths(chain_dir,bal,sizeof(bal),NULL,0,NULL,0,NULL,0);return kv_set_ll_bin(bal,address,value);}
+    char path[1024],key[768];asset_balance_path(chain_dir,path,sizeof(path));snprintf(key,sizeof(key),"%s|%s",a,address);return kv_set_ll_bin(path,key,value);
+}
+static int mirror_order_field_only(const char *chain_dir,const char *order_id,const char *field,const char *value){
+    char path[1024],key[768];order_registry_path(chain_dir,path,sizeof(path));if(order_make_key(key,sizeof(key),order_id,field))return -1;return text_db_set(path,key,value?value:"");
+}
+static int mirror_order_ll_only(const char *chain_dir,const char *order_id,const char *field,long long value){char v[64];snprintf(v,sizeof(v),"%lld",value);return mirror_order_field_only(chain_dir,order_id,field,v);}
+static int mirror_trade_field_only(const char *chain_dir,const char *trade_id,const char *field,const char *value){
+    char path[1024],key[768];trade_registry_path(chain_dir,path,sizeof(path));if(trade_make_key(key,sizeof(key),trade_id,field))return -1;return text_db_set(path,key,value?value:"");
+}
+static int mirror_trade_ll_only(const char *chain_dir,const char *trade_id,const char *field,long long value){char v[64];snprintf(v,sizeof(v),"%lld",value);return mirror_trade_field_only(chain_dir,trade_id,field,v);}
+
+static int record_trade(const char *chain_dir,const char *market,const char *maker,const char *taker,const char *buyer,const char *seller,long long qty,long long price,long long quote,long long seq,char *trade_id,size_t trade_id_sz){
+    char material[2048],hash[129],buf[64];snprintf(material,sizeof(material),"QRX-TRADE-V1|%s|%s|%s|%lld|%lld|%lld",market,maker,taker,seq,qty,price);hash_primary_hex((unsigned char*)material,strlen(material),hash);snprintf(trade_id,trade_id_sz,"%s",hash);long long h=current_height_from_chain(chain_dir);snprintf(buf,sizeof(buf),"%lld",h);if(trade_db_set_field(chain_dir,hash,"market",market)||trade_db_set_field(chain_dir,hash,"maker_order_id",maker)||trade_db_set_field(chain_dir,hash,"taker_order_id",taker)||trade_db_set_field(chain_dir,hash,"buyer",buyer)||trade_db_set_field(chain_dir,hash,"seller",seller))return -1;snprintf(buf,sizeof(buf),"%lld",qty);if(trade_db_set_field(chain_dir,hash,"quantity_atoms",buf))return -1;snprintf(buf,sizeof(buf),"%lld",price);if(trade_db_set_field(chain_dir,hash,"price_atoms",buf))return -1;snprintf(buf,sizeof(buf),"%lld",quote);if(trade_db_set_field(chain_dir,hash,"quote_atoms",buf))return -1;snprintf(buf,sizeof(buf),"%lld",h);if(trade_db_set_field(chain_dir,hash,"height",buf))return -1;snprintf(buf,sizeof(buf),"%lld",seq);if(trade_db_set_field(chain_dir,hash,"sequence",buf))return -1;return 0;
+}
+
+static int update_order_after_fill(const char *chain_dir,const char *order_id,long long fill_qty,long long new_locked){long long rem=order_db_get_ll(chain_dir,order_id,"remaining_atoms",0),filled=order_db_get_ll(chain_dir,order_id,"filled_atoms",0);if(fill_qty<=0||fill_qty>rem)return -1;long long nf=0;checked_add_ll(filled,fill_qty,"filled quantity",&nf);long long nr=rem-fill_qty;long long h=current_height_from_chain(chain_dir);if(order_db_set_ll(chain_dir,order_id,"filled_atoms",nf)||order_db_set_ll(chain_dir,order_id,"remaining_atoms",nr)||order_db_set_ll(chain_dir,order_id,"locked_atoms",new_locked)||order_db_set_ll(chain_dir,order_id,"updated_height",h)||order_db_set_field(chain_dir,order_id,"status",nr==0?"filled":"partially_filled"))return -1;return 0;}
+
+static int settle_match(const char *chain_dir,const char *market,const char *maker_id,const char *taker_id,long long qty,long long price){
+    char *maker_side=order_db_get_field(chain_dir,maker_id,"side");if(!maker_side)return -1;
+    const char *buyer_id=!strcasecmp(maker_side,"BUY")?maker_id:taker_id,*seller_id=!strcasecmp(maker_side,"SELL")?maker_id:taker_id;free(maker_side);
+    char *buyer=order_db_get_field(chain_dir,buyer_id,"owner"),*seller=order_db_get_field(chain_dir,seller_id,"owner");
+    if(!buyer||!seller){if(buyer)free(buyer);if(seller)free(seller);return -1;}
+    if(!strcmp(buyer,seller)){free(buyer);free(seller);return -1;} /* deterministic self-match prevention */
+
+    char base[32],quote_asset[32];
+    if(parse_native_market(chain_dir,market,base,sizeof(base),quote_asset,sizeof(quote_asset))!=0){free(buyer);free(seller);return -1;}
+
+    long long quote_amt=quote_for_quantity(qty,price);
+    long long buyer_lock=order_db_get_ll(chain_dir,buyer_id,"locked_atoms",0),seller_lock=order_db_get_ll(chain_dir,seller_id,"locked_atoms",0);
+    long long buyer_rem_before=order_db_get_ll(chain_dir,buyer_id,"remaining_atoms",0),seller_rem_before=order_db_get_ll(chain_dir,seller_id,"remaining_atoms",0);
+    long long buyer_filled_before=order_db_get_ll(chain_dir,buyer_id,"filled_atoms",0),seller_filled_before=order_db_get_ll(chain_dir,seller_id,"filled_atoms",0);
+    if(qty<=0||qty>buyer_rem_before||qty>seller_rem_before||buyer_lock<quote_amt||seller_lock<qty){free(buyer);free(seller);return -1;}
+
+    long long buyer_rem=buyer_rem_before-qty,seller_rem=seller_rem_before-qty;
+    long long buyer_filled=0,seller_filled=0;
+    checked_add_ll(buyer_filled_before,qty,"buyer filled",&buyer_filled);
+    checked_add_ll(seller_filled_before,qty,"seller filled",&seller_filled);
+
+    long long buyer_new_lock=buyer_lock-quote_amt,seller_new_lock=seller_lock-qty;
+    long long buyer_limit=order_db_get_ll(chain_dir,buyer_id,"limit_price_atoms",0);
+    long long buyer_needed=buyer_rem>0?quote_for_quantity(buyer_rem,buyer_limit):0;
+    if(buyer_new_lock<buyer_needed||seller_new_lock<seller_rem){free(buyer);free(seller);return -1;}
+    long long buyer_refund=buyer_new_lock-buyer_needed,seller_refund=seller_new_lock-seller_rem;
+    buyer_new_lock=buyer_needed;seller_new_lock=seller_rem;
+
+    long long buyer_base=asset_balance_get(chain_dir,base,buyer),seller_quote=asset_balance_get(chain_dir,quote_asset,seller);
+    long long buyer_quote=asset_balance_get(chain_dir,quote_asset,buyer),seller_base=asset_balance_get(chain_dir,base,seller);
+    long long buyer_base_new=0,seller_quote_new=0,buyer_quote_new=0,seller_base_new=0;
+    checked_add_ll(buyer_base,qty,"buyer base balance",&buyer_base_new);
+    checked_add_ll(seller_quote,quote_amt,"seller quote balance",&seller_quote_new);
+    checked_add_ll(buyer_quote,buyer_refund,"buyer price-improvement refund",&buyer_quote_new);
+    checked_add_ll(seller_base,seller_refund,"seller reserve refund",&seller_base_new);
+
+    long long seq=trade_sequence_current(chain_dir);if(seq==LLONG_MAX){free(buyer);free(seller);return -1;}seq++;
+    char material[2048],trade_id[160];
+    snprintf(material,sizeof(material),"QRX-TRADE-V1|%s|%s|%s|%lld|%lld|%lld",market,maker_id,taker_id,seq,qty,price);
+    hash_primary_hex((unsigned char*)material,strlen(material),trade_id);
+    long long h=current_height_from_chain(chain_dir);
+
+    QrxDB db;QrxDBBatch batch;char pre_root[129]={0},post_root[129]={0},settle_key[1024],settle_val[1024];
+    if(qrxdb_init(&db,chain_dir)!=0){free(buyer);free(seller);return -1;}
+    qrxdb_merkle_root_hex(&db,pre_root);
+    if(qrxdb_batch_begin(&db,&batch)!=0){qrxdb_close(&db);free(buyer);free(seller);return -1;}
+
+    int brc=0;
+    brc|=velocity_batch_put_asset_balance(&batch,base,buyer,buyer_base_new);
+    brc|=velocity_batch_put_asset_balance(&batch,quote_asset,seller,seller_quote_new);
+    brc|=velocity_batch_put_asset_balance(&batch,quote_asset,buyer,buyer_quote_new);
+    brc|=velocity_batch_put_asset_balance(&batch,base,seller,seller_base_new);
+
+    brc|=velocity_batch_put_order_ll(&batch,buyer_id,"filled_atoms",buyer_filled);
+    brc|=velocity_batch_put_order_ll(&batch,buyer_id,"remaining_atoms",buyer_rem);
+    brc|=velocity_batch_put_order_ll(&batch,buyer_id,"locked_atoms",buyer_new_lock);
+    brc|=velocity_batch_put_order_ll(&batch,buyer_id,"updated_height",h);
+    brc|=velocity_batch_put_order(&batch,buyer_id,"status",buyer_rem==0?"filled":"partially_filled");
+    brc|=velocity_batch_put_order(&batch,buyer_id,"last_trade_id",trade_id);
+
+    brc|=velocity_batch_put_order_ll(&batch,seller_id,"filled_atoms",seller_filled);
+    brc|=velocity_batch_put_order_ll(&batch,seller_id,"remaining_atoms",seller_rem);
+    brc|=velocity_batch_put_order_ll(&batch,seller_id,"locked_atoms",seller_new_lock);
+    brc|=velocity_batch_put_order_ll(&batch,seller_id,"updated_height",h);
+    brc|=velocity_batch_put_order(&batch,seller_id,"status",seller_rem==0?"filled":"partially_filled");
+    brc|=velocity_batch_put_order(&batch,seller_id,"last_trade_id",trade_id);
+
+    brc|=velocity_batch_put_trade(&batch,trade_id,"market",market);
+    brc|=velocity_batch_put_trade(&batch,trade_id,"maker_order_id",maker_id);
+    brc|=velocity_batch_put_trade(&batch,trade_id,"taker_order_id",taker_id);
+    brc|=velocity_batch_put_trade(&batch,trade_id,"buyer",buyer);
+    brc|=velocity_batch_put_trade(&batch,trade_id,"seller",seller);
+    brc|=velocity_batch_put_trade_ll(&batch,trade_id,"quantity_atoms",qty);
+    brc|=velocity_batch_put_trade_ll(&batch,trade_id,"price_atoms",price);
+    brc|=velocity_batch_put_trade_ll(&batch,trade_id,"quote_atoms",quote_amt);
+    brc|=velocity_batch_put_trade_ll(&batch,trade_id,"height",h);
+    brc|=velocity_batch_put_trade_ll(&batch,trade_id,"sequence",seq);
+    brc|=velocity_batch_put_ll(&batch,"velocity:trade_sequence:global",seq);
+
+    snprintf(settle_key,sizeof(settle_key),"velocity:settlement:%s",trade_id);
+    snprintf(settle_val,sizeof(settle_val),
+        "version=1\nmarket=%s\nmaker=%s\ntaker=%s\nquantity_atoms=%lld\nprice_atoms=%lld\nquote_atoms=%lld\nheight=%lld\nsequence=%lld\npre_state_root=%s\n",
+        market,maker_id,taker_id,qty,price,quote_amt,h,seq,pre_root);
+    brc|=qrxdb_batch_put(&batch,settle_key,settle_val);
+
+    if(brc||qrxdb_batch_commit(&batch)!=0){qrxdb_batch_abort(&batch);qrxdb_close(&db);free(buyer);free(seller);return -1;}
+    qrxdb_merkle_root_hex(&db,post_root);
+    qrxdb_close(&db);
+
+    /* Compatibility/read-model mirrors are written only after the canonical
+       QRXDB WAL transaction committed. A crash here cannot roll back the
+       canonical settlement; getters prefer QRXDB and mirrors can be rebuilt. */
+    mirror_asset_balance_only(chain_dir,base,buyer,buyer_base_new);
+    mirror_asset_balance_only(chain_dir,quote_asset,seller,seller_quote_new);
+    mirror_asset_balance_only(chain_dir,quote_asset,buyer,buyer_quote_new);
+    mirror_asset_balance_only(chain_dir,base,seller,seller_base_new);
+    mirror_order_ll_only(chain_dir,buyer_id,"filled_atoms",buyer_filled);mirror_order_ll_only(chain_dir,buyer_id,"remaining_atoms",buyer_rem);mirror_order_ll_only(chain_dir,buyer_id,"locked_atoms",buyer_new_lock);mirror_order_ll_only(chain_dir,buyer_id,"updated_height",h);mirror_order_field_only(chain_dir,buyer_id,"status",buyer_rem==0?"filled":"partially_filled");mirror_order_field_only(chain_dir,buyer_id,"last_trade_id",trade_id);
+    mirror_order_ll_only(chain_dir,seller_id,"filled_atoms",seller_filled);mirror_order_ll_only(chain_dir,seller_id,"remaining_atoms",seller_rem);mirror_order_ll_only(chain_dir,seller_id,"locked_atoms",seller_new_lock);mirror_order_ll_only(chain_dir,seller_id,"updated_height",h);mirror_order_field_only(chain_dir,seller_id,"status",seller_rem==0?"filled":"partially_filled");mirror_order_field_only(chain_dir,seller_id,"last_trade_id",trade_id);
+    mirror_trade_field_only(chain_dir,trade_id,"market",market);mirror_trade_field_only(chain_dir,trade_id,"maker_order_id",maker_id);mirror_trade_field_only(chain_dir,trade_id,"taker_order_id",taker_id);mirror_trade_field_only(chain_dir,trade_id,"buyer",buyer);mirror_trade_field_only(chain_dir,trade_id,"seller",seller);mirror_trade_ll_only(chain_dir,trade_id,"quantity_atoms",qty);mirror_trade_ll_only(chain_dir,trade_id,"price_atoms",price);mirror_trade_ll_only(chain_dir,trade_id,"quote_atoms",quote_amt);mirror_trade_ll_only(chain_dir,trade_id,"height",h);mirror_trade_ll_only(chain_dir,trade_id,"sequence",seq);
+    {char sp[1024];trade_sequence_path(chain_dir,sp,sizeof(sp));kv_set_ll_bin(sp,"global",seq);}
+    journal_append(chain_dir,"velocity_atomic_settlement trade=%s maker=%s taker=%s qty=%lld price=%lld state_root=%s",trade_id,maker_id,taker_id,qty,price,post_root);
+    free(buyer);free(seller);return 0;
+}
+
+static int order_candidate_better(const QrxMatchOrder *a,const QrxMatchOrder *b,int want_sells){if(a->price!=b->price)return want_sells?a->price<b->price:a->price>b->price;if(a->created_height!=b->created_height)return a->created_height<b->created_height;return strcmp(a->id,b->id)<0;}
+
+static int collect_match_candidates(const char *chain_dir,const char *taker_id,const char *market,const char *taker_side,QrxMatchOrder **out,size_t *count){
+    *out=NULL;*count=0;
+    char *taker_owner=order_db_get_field(chain_dir,taker_id,"owner");
+    if(!taker_owner) return -1;
+    char path[1024];order_registry_path(chain_dir,path,sizeof(path));
+    char *txt=read_file(path,NULL);if(!txt){free(taker_owner);return 0;}
+    const char *cur=txt,suffix[]=".owner=";long long h=current_height_from_chain(chain_dir);
+    while(cur&&*cur){
+        const char *e=strchr(cur,'\n');size_t len=e?(size_t)(e-cur):strlen(cur),idlen=0;const char *suf=NULL;
+        if(len>6&&!strncmp(cur,"order.",6)){
+            for(size_t i=6;i+strlen(suffix)<len;++i) if(!strncmp(cur+i,suffix,strlen(suffix))){suf=cur+i;break;}
+        }
+        if(suf){
+            idlen=(size_t)(suf-(cur+6));
+            if(idlen>0&&idlen<160){
+                char oid[160];memcpy(oid,cur+6,idlen);oid[idlen]=0;
+                if(strcmp(oid,taker_id)){
+                    char *kind=order_db_get_field(chain_dir,oid,"kind"),*status=order_db_get_field(chain_dir,oid,"status"),*omarket=order_db_get_field(chain_dir,oid,"market"),*side=order_db_get_field(chain_dir,oid,"side"),*sv=order_db_get_field(chain_dir,oid,"settlement_version");
+                    long long exp=order_db_get_ll(chain_dir,oid,"order_expires_height",0);
+                    if(kind&&!strcmp(kind,"native")&&status&&native_order_status_is_live(status)&&exp>0&&exp<=h&&sv&&!strcmp(sv,"1")){
+                        native_order_release_locked(chain_dir,oid);order_db_set_field(chain_dir,oid,"status","expired");order_db_set_ll(chain_dir,oid,"updated_height",h);
+                    } else if(kind&&!strcmp(kind,"native")&&status&&native_order_status_is_live(status)&&omarket&&!strcasecmp(omarket,market)&&side&&strcasecmp(side,taker_side)&&sv&&!strcmp(sv,"1")){
+                        char *own=order_db_get_field(chain_dir,oid,"owner");
+                        /* Self-trades are skipped at candidate selection time so
+                           they cannot block a valid later counterparty order. */
+                        if(own && strcmp(own,taker_owner)!=0){
+                            QrxMatchOrder *n=realloc(*out,(*count+1)*sizeof(**out));if(!n)die("oom");*out=n;
+                            QrxMatchOrder *m=&n[*count];memset(m,0,sizeof(*m));snprintf(m->id,sizeof(m->id),"%s",oid);snprintf(m->owner,sizeof(m->owner),"%s",own);snprintf(m->side,sizeof(m->side),"%s",side);
+                            m->price=order_db_get_ll(chain_dir,oid,"limit_price_atoms",0);m->remaining=order_db_get_ll(chain_dir,oid,"remaining_atoms",0);m->created_height=order_db_get_ll(chain_dir,oid,"created_height",0);(*count)++;
+                        }
+                        if(own)free(own);
+                    }
+                    if(kind)free(kind);if(status)free(status);if(omarket)free(omarket);if(side)free(side);if(sv)free(sv);
+                }
+            }
+        }
+        cur=e?e+1:NULL;
+    }
+    free(txt);free(taker_owner);
+    int want_sells=!strcasecmp(taker_side,"BUY");
+    for(size_t i=1;i<*count;++i){QrxMatchOrder key=(*out)[i];size_t j=i;while(j>0&&order_candidate_better(&key,&(*out)[j-1],want_sells)){(*out)[j]=(*out)[j-1];--j;}(*out)[j]=key;}
+    return 0;
+}
+
+static int match_native_order(const char *chain_dir,const char *taker_id){
+    char *market=order_db_get_field(chain_dir,taker_id,"market"),*side=order_db_get_field(chain_dir,taker_id,"side");if(!market||!side){if(market)free(market);if(side)free(side);return -1;}QrxMatchOrder *arr=NULL;size_t count=0;if(collect_match_candidates(chain_dir,taker_id,market,side,&arr,&count)){free(market);free(side);return -1;}long long taker_price=order_db_get_ll(chain_dir,taker_id,"limit_price_atoms",0);
+    for(size_t i=0;i<count;++i){long long trem=order_db_get_ll(chain_dir,taker_id,"remaining_atoms",0);if(trem<=0)break;long long mrem=order_db_get_ll(chain_dir,arr[i].id,"remaining_atoms",0);if(mrem<=0)continue;int crosses=!strcasecmp(side,"BUY")?(arr[i].price<=taker_price):(arr[i].price>=taker_price);if(!crosses)break;long long qty=trem<mrem?trem:mrem;if(settle_match(chain_dir,market,arr[i].id,taker_id,qty,arr[i].price)){free(arr);free(market);free(side);return -1;}}
+    free(arr);free(market);free(side);return 0;
+}
+
+static int trade_apply_tx(const char *chain_dir, const char *agent, const char *owner, const char *tx_type, const char *payload, const char *body_hash) {
+    if(!body_hash||!*body_hash)return -1;long long h=current_height_from_chain(chain_dir);
+    if(!strcmp(tx_type,"ORDER_CREATE")||!strcmp(tx_type,"EXTERNAL_ORDER")){const int external=!strcmp(tx_type,"EXTERNAL_ORDER");if(order_write_from_payload(chain_dir,body_hash,agent,owner,external?"external":"native",external?"pending_execution":"open",payload,body_hash,NULL))return -1;char *q=payload_get_field(payload,"quantity_atoms");long long qty=parse_positive_ll_strict(q,"quantity_atoms");free(q);if(agent_usage_add(chain_dir,agent,qty))return -1;if(!external){if(native_order_reserve(chain_dir,body_hash))return -1;if(match_native_order(chain_dir,body_hash))return -1;}return 0;}
+    if(!strcmp(tx_type,"ORDER_CANCEL")){char *target=payload_get_field(payload,"order_id");if(!target)return -1;char *kind=order_db_get_field(chain_dir,target,"kind");if(kind&&!strcmp(kind,"native")&&native_order_release_locked(chain_dir,target)){free(kind);free(target);return -1;}const char *next_status=(kind&&!strcmp(kind,"external"))?"cancel_pending":"canceled";int rc=order_db_set_field(chain_dir,target,"status",next_status)||order_db_set_ll(chain_dir,target,"updated_height",h)||order_db_set_field(chain_dir,target,"last_tx",body_hash);if(kind)free(kind);free(target);return rc?-1:0;}
+    if(!strcmp(tx_type,"ORDER_REPLACE")){char *target=payload_get_field(payload,"order_id");if(!target)return -1;if(native_order_release_locked(chain_dir,target)){free(target);return -1;}if(order_db_set_field(chain_dir,target,"status","replaced")||order_db_set_ll(chain_dir,target,"updated_height",h)||order_db_set_field(chain_dir,target,"replacement_order_id",body_hash)||order_db_set_field(chain_dir,target,"last_tx",body_hash)){free(target);return -1;}if(order_write_from_payload(chain_dir,body_hash,agent,owner,"native","open",payload,body_hash,target)){free(target);return -1;}if(native_order_reserve(chain_dir,body_hash)){free(target);return -1;}char *q=payload_get_field(payload,"quantity_atoms");long long qty=parse_positive_ll_strict(q,"quantity_atoms");free(q);if(agent_usage_add(chain_dir,agent,qty)){free(target);return -1;}int rc=match_native_order(chain_dir,body_hash);free(target);return rc;}
+    return -1;
+}
+
+static int order_status_cmd(const char *chain_dir, const char *order_id) {
+    if(!order_id||!*order_id)die("missing order id");const char *fields[]={"owner","agent","kind","venue","market","side","order_type","quantity_atoms","filled_atoms","remaining_atoms","limit_price_atoms","status","created_height","updated_height","order_expires_height","client_order_id","time_in_force","arbitrage_id","source_order_id","replaces","replacement_order_id","settlement_version","locked_asset","locked_atoms","external_filled_atoms","external_avg_price_atoms","external_venue_fee_atoms","venue_order_id","execution_gateway","execution_report_sequence","last_execution_report","last_trade_id","crosschain_session_id","hashlock_hex","btc_redeem_pubkey_hex","btc_refund_pubkey_hex","btc_refund_csv_blocks","qrx_refund_height","last_tx",NULL};int found=0;printf("order_id=%s\n",order_id);for(int i=0;fields[i];++i){char *v=order_db_get_field(chain_dir,order_id,fields[i]);if(v){printf("%s=%s\n",fields[i],v);found=1;free(v);}}if(!found)die("order not found");return 0;
+}
+
+static int list_orders_cmd(const char *chain_dir, const char *filter, const char *status_filter) {
+    char path[1024];order_registry_path(chain_dir,path,sizeof(path));char *txt=read_file(path,NULL);if(!txt)return 0;const char *cur=txt;const char suffix[]=".owner=";while(cur&&*cur){const char *e=strchr(cur,'\n');size_t len=e?(size_t)(e-cur):strlen(cur);const char *suf=NULL;if(len>6&&!strncmp(cur,"order.",6)){for(size_t i=6;i+strlen(suffix)<len;++i)if(!strncmp(cur+i,suffix,strlen(suffix))){suf=cur+i;break;}}if(suf){size_t idlen=(size_t)(suf-(cur+6));char oid[256];if(idlen>=sizeof(oid))idlen=sizeof(oid)-1;memcpy(oid,cur+6,idlen);oid[idlen]=0;char *owner=order_db_get_field(chain_dir,oid,"owner"),*agent=order_db_get_field(chain_dir,oid,"agent"),*status=order_db_get_field(chain_dir,oid,"status"),*market=order_db_get_field(chain_dir,oid,"market"),*kind=order_db_get_field(chain_dir,oid,"kind");int fok=!filter||!*filter||(owner&&!strcmp(filter,owner))||(agent&&!strcmp(filter,agent)),sok=!status_filter||!*status_filter||(status&&!strcasecmp(status_filter,status));if(fok&&sok)printf("order_id=%s owner=%s agent=%s kind=%s market=%s status=%s remaining_atoms=%lld\n",oid,owner?owner:"",agent?agent:"",kind?kind:"",market?market:"",status?status:"",order_db_get_ll(chain_dir,oid,"remaining_atoms",0));if(owner)free(owner);if(agent)free(agent);if(status)free(status);if(market)free(market);if(kind)free(kind);}cur=e?e+1:NULL;}free(txt);return 0;
+}
+
+static int trade_status_cmd(const char *chain_dir,const char *trade_id){if(!trade_id||!*trade_id)die("missing trade id");const char *fields[]={"market","maker_order_id","taker_order_id","buyer","seller","quantity_atoms","price_atoms","quote_atoms","height","sequence",NULL};int found=0;printf("trade_id=%s\n",trade_id);for(int i=0;fields[i];++i){char *v=trade_db_get_field(chain_dir,trade_id,fields[i]);if(v){printf("%s=%s\n",fields[i],v);found=1;free(v);}}if(!found)die("trade not found");return 0;}
+
+static int list_trades_cmd(const char *chain_dir,const char *market_filter,long long limit,long long min_height,long long max_height){
+    if(limit<0)limit=50;
+    char path[1024];trade_registry_path(chain_dir,path,sizeof(path));char *txt=read_file(path,NULL);if(!txt)return 0;
+    const char *cur=txt,suffix[]=".market=";long long shown=0;
+    while(cur&&*cur&&(limit==0||shown<limit)){
+        const char *e=strchr(cur,'\n');size_t len=e?(size_t)(e-cur):strlen(cur);const char *suf=NULL;
+        if(len>6&&!strncmp(cur,"trade.",6)){for(size_t i=6;i+strlen(suffix)<len;++i)if(!strncmp(cur+i,suffix,strlen(suffix))){suf=cur+i;break;}}
+        if(suf){
+            size_t idlen=(size_t)(suf-(cur+6)),mlen=len-(size_t)((suf+strlen(suffix))-cur);
+            if(idlen<160&&mlen<64){
+                char tid[160],m[64];memcpy(tid,cur+6,idlen);tid[idlen]=0;memcpy(m,suf+strlen(suffix),mlen);m[mlen]=0;
+                if(!market_filter||!*market_filter||!strcmp(market_filter,"*")||!strcasecmp(market_filter,m)){
+                    char *height=trade_db_get_field(chain_dir,tid,"height");long long h=height?atoll(height):0;
+                    if((min_height<=0||h>=min_height)&&(max_height<=0||h<=max_height)){
+                        char *q=trade_db_get_field(chain_dir,tid,"quantity_atoms"),*p=trade_db_get_field(chain_dir,tid,"price_atoms"),*qa=trade_db_get_field(chain_dir,tid,"quote_atoms"),*sq=trade_db_get_field(chain_dir,tid,"sequence"),*maker=trade_db_get_field(chain_dir,tid,"maker_order_id"),*taker=trade_db_get_field(chain_dir,tid,"taker_order_id"),*buyer=trade_db_get_field(chain_dir,tid,"buyer"),*seller=trade_db_get_field(chain_dir,tid,"seller");
+                        printf("trade_id=%s market=%s maker_order_id=%s taker_order_id=%s buyer=%s seller=%s quantity_atoms=%s price_atoms=%s quote_atoms=%s height=%s sequence=%s\n",tid,m,maker?maker:"",taker?taker:"",buyer?buyer:"",seller?seller:"",q?q:"0",p?p:"0",qa?qa:"0",height?height:"0",sq?sq:"0");
+                        if(q)free(q);if(p)free(p);if(qa)free(qa);if(sq)free(sq);if(maker)free(maker);if(taker)free(taker);if(buyer)free(buyer);if(seller)free(seller);shown++;
+                    }
+                    if(height)free(height);
+                }
+            }
+        }
+        cur=e?e+1:NULL;
+    }
+    free(txt);return 0;
+}
+
+static int orderbook_cmd(const char *chain_dir,const char *market,int depth){if(depth<=0)depth=20;if(depth>200)depth=200;char base[32],quote[32];int pr=parse_native_market(chain_dir,market,base,sizeof(base),quote,sizeof(quote));if(pr)die(pr==-2?"native market contains an unregistered QRX asset":"invalid native market");QrxMatchOrder *bids=NULL,*asks=NULL;size_t nb=0,na=0;char path[1024];order_registry_path(chain_dir,path,sizeof(path));char *txt=read_file(path,NULL);if(txt){const char *cur=txt,suffix[]=".owner=";while(cur&&*cur){const char *e=strchr(cur,'\n');size_t len=e?(size_t)(e-cur):strlen(cur);const char *suf=NULL;if(len>6&&!strncmp(cur,"order.",6)){for(size_t i=6;i+strlen(suffix)<len;++i)if(!strncmp(cur+i,suffix,strlen(suffix))){suf=cur+i;break;}}if(suf){size_t idlen=(size_t)(suf-(cur+6));if(idlen>0&&idlen<160){char oid[160];memcpy(oid,cur+6,idlen);oid[idlen]=0;char *kind=order_db_get_field(chain_dir,oid,"kind"),*status=order_db_get_field(chain_dir,oid,"status"),*m=order_db_get_field(chain_dir,oid,"market"),*side=order_db_get_field(chain_dir,oid,"side"),*sv=order_db_get_field(chain_dir,oid,"settlement_version");if(kind&&!strcmp(kind,"native")&&status&&native_order_status_is_live(status)&&m&&!strcasecmp(m,market)&&side&&sv&&!strcmp(sv,"1")){QrxMatchOrder **arr=!strcasecmp(side,"BUY")?&bids:&asks;size_t *n=!strcasecmp(side,"BUY")?&nb:&na;QrxMatchOrder *nn=realloc(*arr,(*n+1)*sizeof(**arr));if(!nn)die("oom");*arr=nn;QrxMatchOrder *o=&nn[*n];memset(o,0,sizeof(*o));snprintf(o->id,sizeof(o->id),"%s",oid);snprintf(o->side,sizeof(o->side),"%s",side);o->price=order_db_get_ll(chain_dir,oid,"limit_price_atoms",0);o->remaining=order_db_get_ll(chain_dir,oid,"remaining_atoms",0);o->created_height=order_db_get_ll(chain_dir,oid,"created_height",0);(*n)++;}if(kind)free(kind);if(status)free(status);if(m)free(m);if(side)free(side);if(sv)free(sv);}}cur=e?e+1:NULL;}free(txt);}for(size_t i=1;i<nb;++i){QrxMatchOrder k=bids[i];size_t j=i;while(j>0&&order_candidate_better(&k,&bids[j-1],0)){bids[j]=bids[j-1];--j;}bids[j]=k;}for(size_t i=1;i<na;++i){QrxMatchOrder k=asks[i];size_t j=i;while(j>0&&order_candidate_better(&k,&asks[j-1],1)){asks[j]=asks[j-1];--j;}asks[j]=k;}printf("market=%s base=%s quote=%s price_scale=%lld\n",market,base,quote,(long long)QRX_TRADE_PRICE_SCALE);for(size_t i=0;i<nb&&(int)i<depth;++i)printf("side=BUY price_atoms=%lld remaining_atoms=%lld order_id=%s\n",bids[i].price,bids[i].remaining,bids[i].id);for(size_t i=0;i<na&&(int)i<depth;++i)printf("side=SELL price_atoms=%lld remaining_atoms=%lld order_id=%s\n",asks[i].price,asks[i].remaining,asks[i].id);free(bids);free(asks);return 0;}
+
+static int agent_limits_cmd(const char *chain_dir, const char *agent) {if(!agent||!*agent)die("missing agent address");char *owner=agent_db_get_field(chain_dir,agent,"owner"),*status=agent_db_get_field(chain_dir,agent,"status"),*max_trade=agent_db_get_field(chain_dir,agent,"max_trade_atoms"),*daily=agent_db_get_field(chain_dir,agent,"daily_limit_atoms"),*expires=agent_db_get_field(chain_dir,agent,"expires_height"),*permissions=agent_db_get_field(chain_dir,agent,"permissions"),*markets=agent_db_get_field(chain_dir,agent,"market_allowlist");if(!owner)die("agent not found");long long bucket=0,epoch_blocks=0,used=agent_usage_current(chain_dir,agent,&bucket,&epoch_blocks);printf("agent=%s\nowner=%s\nstatus=%s\npermissions=%s\nmarket_allowlist=%s\nmax_trade_atoms=%s\ndaily_limit_atoms=%s\nusage_atoms=%lld\nusage_bucket=%lld\nusage_epoch_blocks=%lld\nexpires_height=%s\n",agent,owner,status?status:"",permissions?permissions:"",markets?markets:"",max_trade?max_trade:"0",daily?daily:"0",used,bucket,epoch_blocks,expires?expires:"0");free(owner);if(status)free(status);if(max_trade)free(max_trade);if(daily)free(daily);if(expires)free(expires);if(permissions)free(permissions);if(markets)free(markets);return 0;}
+
+
+/* === VELOCITY 0.0.7 Phase 3C: external execution gateways + reports === */
+static void gateway_registry_path(const char *chain_dir,char *out,size_t out_sz){snprintf(out,out_sz,"%s/state/gateways.db",chain_dir);}
+static int gateway_make_key(char *out,size_t out_sz,const char *gateway,const char *field){
+    if(!gateway||!*gateway||!field||!*field||strchr(gateway,'\n')||strchr(gateway,'=')||strchr(gateway,'|'))return -1;
+    snprintf(out,out_sz,"gateway.%s.%s",gateway,field);return 0;
+}
+static void velocity_gateway_key(char *out,size_t out_sz,const char *gateway,const char *field){snprintf(out,out_sz,"velocity:gateway:%s:%s",gateway,field);}
+static char *gateway_db_get_field(const char *chain_dir,const char *gateway,const char *field){
+    char qkey[1024];velocity_gateway_key(qkey,sizeof(qkey),gateway,field);char *v=velocity_qrxdb_get_alloc(chain_dir,qkey);if(v)return v;
+    char path[1024],key[768];gateway_registry_path(chain_dir,path,sizeof(path));if(gateway_make_key(key,sizeof(key),gateway,field))return NULL;return text_db_get(path,key);
+}
+static int gateway_db_set_field(const char *chain_dir,const char *gateway,const char *field,const char *value){
+    char qkey[1024],path[1024],key[768];velocity_gateway_key(qkey,sizeof(qkey),gateway,field);
+    if(velocity_qrxdb_put(chain_dir,qkey,value?value:""))return -1;gateway_registry_path(chain_dir,path,sizeof(path));if(gateway_make_key(key,sizeof(key),gateway,field))return -1;return text_db_set(path,key,value?value:"");
+}
+static int gateway_db_set_ll(const char *chain_dir,const char *gateway,const char *field,long long value){char v[64];snprintf(v,sizeof(v),"%lld",value);return gateway_db_set_field(chain_dir,gateway,field,v);}
+static long long gateway_db_get_ll(const char *chain_dir,const char *gateway,const char *field,long long fallback){char *v=gateway_db_get_field(chain_dir,gateway,field);if(!v)return fallback;char *e=NULL;errno=0;long long n=strtoll(v,&e,10);int ok=!errno&&e&&!*e;free(v);return ok?n:fallback;}
+
+static void validate_gateway_public_keys_for_address(const char *gateway,const char *ed_hex,const char *ml_b64){
+    unsigned char edraw[32];size_t edlen=0;if(hex_to_bytes(ed_hex,edraw,sizeof(edraw),&edlen)||edlen!=32)die("invalid gateway ed25519 public key");
+    EVP_PKEY *ed=EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519,NULL,edraw,edlen);if(!ed)die("gateway ed25519 key parse failed");
+    if(address_matches_pub(ed,gateway)!=0){EVP_PKEY_free(ed);die("gateway address does not match gateway ed25519 key");}EVP_PKEY_free(ed);
+    size_t n=0;unsigned char *pem=base64_decode(ml_b64,&n);if(!pem)die("invalid gateway ML-DSA public key");char *s=malloc(n+1);if(!s)die("oom");memcpy(s,pem,n);s[n]=0;EVP_PKEY *ml=pubkey_from_pem_string(s);free(pem);free(s);if(!ml)die("gateway ML-DSA key parse failed");EVP_PKEY_free(ml);
+}
+static void validate_gateway_management_tx(const char *chain_dir,const char *authority,const char *gateway,const char *tx_type,const char *payload){
+    char *dev=chain_cfg_value(chain_dir,"dev_address");if(!dev||!*dev||strcmp(dev,authority)){if(dev)free(dev);die("gateway registry transaction must be signed by configured dev_address authority");}free(dev);
+    if(!gateway||!*gateway)die("missing gateway address");
+    if(!strcmp(tx_type,"GATEWAY_REGISTER")){
+        char *venue=payload_get_field(payload,"venue"),*name=payload_get_field(payload,"name"),*ed=payload_get_field(payload,"gateway_ed25519_pub_hex"),*ml=payload_get_field(payload,"gateway_mldsa65_pub_b64"),*exp=payload_get_field(payload,"expires_height");
+        validate_simple_payload_value(venue,"venue");validate_simple_payload_value(name,"gateway name");if(!ed||!ml||!exp)die("gateway registration payload incomplete");
+        long long eh=parse_positive_ll_strict(exp,"gateway expires_height");if(eh<=current_height_from_chain(chain_dir))die("gateway expires_height must be in the future");
+        validate_gateway_public_keys_for_address(gateway,ed,ml);free(venue);free(name);free(ed);free(ml);free(exp);return;
+    }
+    if(!strcmp(tx_type,"GATEWAY_REVOKE")){char *status=gateway_db_get_field(chain_dir,gateway,"status");if(!status||strcmp(status,"active"))die("gateway is not active");free(status);return;}
+    die("unsupported gateway management transaction");
+}
+static int mirror_gateway_field_only(const char *chain_dir,const char *gateway,const char *field,const char *value){
+    char path[1024],key[768];gateway_registry_path(chain_dir,path,sizeof(path));if(gateway_make_key(key,sizeof(key),gateway,field))return -1;return text_db_set(path,key,value?value:"");
+}
+static int mirror_gateway_ll_only(const char *chain_dir,const char *gateway,const char *field,long long value){char v[64];snprintf(v,sizeof(v),"%lld",value);return mirror_gateway_field_only(chain_dir,gateway,field,v);}
+static int velocity_batch_put_gateway(QrxDBBatch *b,const char *gateway,const char *field,const char *value){char k[1024];velocity_gateway_key(k,sizeof(k),gateway,field);return qrxdb_batch_put(b,k,value?value:"");}
+static int velocity_batch_put_gateway_ll(QrxDBBatch *b,const char *gateway,const char *field,long long value){char k[1024];velocity_gateway_key(k,sizeof(k),gateway,field);return velocity_batch_put_ll(b,k,value);}
+static int gateway_apply_tx(const char *chain_dir,const char *authority,const char *gateway,const char *tx_type,const char *payload,const char *body_hash){
+    long long h=current_height_from_chain(chain_dir);QrxDB db;QrxDBBatch b;char root[129]={0};
+    if(qrxdb_init(&db,chain_dir)!=0)return -1;if(qrxdb_batch_begin(&db,&b)!=0){qrxdb_close(&db);return -1;}
+    int rc=0;
+    if(!strcmp(tx_type,"GATEWAY_REGISTER")){
+        char *venue=payload_get_field(payload,"venue"),*name=payload_get_field(payload,"name"),*ed=payload_get_field(payload,"gateway_ed25519_pub_hex"),*ml=payload_get_field(payload,"gateway_mldsa65_pub_b64"),*exp=payload_get_field(payload,"expires_height");
+        rc|=velocity_batch_put_gateway(&b,gateway,"authority",authority);rc|=velocity_batch_put_gateway(&b,gateway,"status","active");rc|=velocity_batch_put_gateway(&b,gateway,"venue",venue);rc|=velocity_batch_put_gateway(&b,gateway,"name",name);rc|=velocity_batch_put_gateway(&b,gateway,"ed25519_pub_hex",ed);rc|=velocity_batch_put_gateway(&b,gateway,"mldsa65_pub_b64",ml);rc|=velocity_batch_put_gateway(&b,gateway,"expires_height",exp);rc|=velocity_batch_put_gateway_ll(&b,gateway,"updated_height",h);rc|=velocity_batch_put_gateway(&b,gateway,"last_tx",body_hash);
+        if(rc||qrxdb_batch_commit(&b)!=0){qrxdb_batch_abort(&b);qrxdb_close(&db);free(venue);free(name);free(ed);free(ml);free(exp);return -1;}qrxdb_merkle_root_hex(&db,root);qrxdb_close(&db);
+        mirror_gateway_field_only(chain_dir,gateway,"authority",authority);mirror_gateway_field_only(chain_dir,gateway,"status","active");mirror_gateway_field_only(chain_dir,gateway,"venue",venue);mirror_gateway_field_only(chain_dir,gateway,"name",name);mirror_gateway_field_only(chain_dir,gateway,"ed25519_pub_hex",ed);mirror_gateway_field_only(chain_dir,gateway,"mldsa65_pub_b64",ml);mirror_gateway_field_only(chain_dir,gateway,"expires_height",exp);mirror_gateway_ll_only(chain_dir,gateway,"updated_height",h);mirror_gateway_field_only(chain_dir,gateway,"last_tx",body_hash);
+        journal_append(chain_dir,"velocity_gateway_register gateway=%s venue=%s authority=%s state_root=%s",gateway,venue,authority,root);
+        free(venue);free(name);free(ed);free(ml);free(exp);return 0;
+    }
+    if(!strcmp(tx_type,"GATEWAY_REVOKE")){
+        rc|=velocity_batch_put_gateway(&b,gateway,"status","revoked");rc|=velocity_batch_put_gateway_ll(&b,gateway,"revoked_height",h);rc|=velocity_batch_put_gateway_ll(&b,gateway,"updated_height",h);rc|=velocity_batch_put_gateway(&b,gateway,"last_tx",body_hash);
+        if(rc||qrxdb_batch_commit(&b)!=0){qrxdb_batch_abort(&b);qrxdb_close(&db);return -1;}qrxdb_merkle_root_hex(&db,root);qrxdb_close(&db);
+        mirror_gateway_field_only(chain_dir,gateway,"status","revoked");mirror_gateway_ll_only(chain_dir,gateway,"revoked_height",h);mirror_gateway_ll_only(chain_dir,gateway,"updated_height",h);mirror_gateway_field_only(chain_dir,gateway,"last_tx",body_hash);
+        journal_append(chain_dir,"velocity_gateway_revoke gateway=%s authority=%s state_root=%s",gateway,authority,root);return 0;
+    }
+    qrxdb_batch_abort(&b);qrxdb_close(&db);return -1;
+}
+static int gateway_status_cmd(const char *chain_dir,const char *gateway){
+    const char *fields[]={"authority","status","venue","name","ed25519_pub_hex","mldsa65_pub_b64","expires_height","updated_height","revoked_height","last_tx",NULL};int found=0;printf("gateway=%s\n",gateway);
+    for(int i=0;fields[i];i++){char *v=gateway_db_get_field(chain_dir,gateway,fields[i]);if(v){printf("%s=%s\n",fields[i],v);found=1;free(v);}}if(!found)die("gateway not found");return 0;
+}
+static int list_gateways_cmd(const char *chain_dir,const char *venue_filter){
+    char path[1024];gateway_registry_path(chain_dir,path,sizeof(path));char *txt=read_file(path,NULL);if(!txt)return 0;const char *cur=txt,suffix[]=".status=";
+    while(cur&&*cur){const char *e=strchr(cur,'\n');size_t len=e?(size_t)(e-cur):strlen(cur);const char *suf=NULL;if(len>8&&!strncmp(cur,"gateway.",8)){for(size_t i=8;i+strlen(suffix)<len;i++)if(!strncmp(cur+i,suffix,strlen(suffix))){suf=cur+i;break;}}
+        if(suf){size_t glen=(size_t)(suf-(cur+8));if(glen>0&&glen<512){char gw[512];memcpy(gw,cur+8,glen);gw[glen]=0;char *venue=gateway_db_get_field(chain_dir,gw,"venue"),*status=gateway_db_get_field(chain_dir,gw,"status");if((!venue_filter||!*venue_filter||(venue&&!strcasecmp(venue_filter,venue)))&&status)printf("gateway=%s venue=%s status=%s\n",gw,venue?venue:"",status);if(venue)free(venue);if(status)free(status);}}
+        cur=e?e+1:NULL;}free(txt);return 0;
+}
+static void validate_execution_report_tx(const char *chain_dir,const char *gateway,const char *owner,const char *payload,const char *tx_ed,const char *tx_ml){
+    char *order_id=payload_get_field(payload,"order_id"),*status=payload_get_field(payload,"status"),*filled_s=payload_get_field(payload,"filled_quantity_atoms"),*price_s=payload_get_field(payload,"avg_price_atoms"),*fee_s=payload_get_field(payload,"venue_fee_atoms"),*venue_order_id=payload_get_field(payload,"venue_order_id"),*seq_s=payload_get_field(payload,"report_sequence");
+    if(!order_id||!status||!filled_s||!price_s||!fee_s||!venue_order_id||!seq_s)die("execution report payload incomplete");
+    validate_simple_payload_value(order_id,"order_id");validate_simple_payload_value(status,"report status");validate_simple_payload_value(venue_order_id,"venue_order_id");
+    if(strcasecmp(status,"SUBMITTED")&&strcasecmp(status,"PARTIALLY_FILLED")&&strcasecmp(status,"FILLED")&&strcasecmp(status,"REJECTED")&&strcasecmp(status,"CANCELED"))die("invalid execution report status");
+    char *gw_status=gateway_db_get_field(chain_dir,gateway,"status"),*gw_venue=gateway_db_get_field(chain_dir,gateway,"venue"),*gw_ed=gateway_db_get_field(chain_dir,gateway,"ed25519_pub_hex"),*gw_ml=gateway_db_get_field(chain_dir,gateway,"mldsa65_pub_b64");
+    long long gw_exp=gateway_db_get_ll(chain_dir,gateway,"expires_height",0);if(!gw_status||strcmp(gw_status,"active")||gw_exp<=current_height_from_chain(chain_dir))die("execution gateway is not active");if(!gw_ed||strcmp(gw_ed,tx_ed)||!gw_ml||strcmp(gw_ml,tx_ml))die("execution gateway key mismatch");
+    char *kind=order_db_get_field(chain_dir,order_id,"kind"),*order_owner=order_db_get_field(chain_dir,order_id,"owner"),*order_venue=order_db_get_field(chain_dir,order_id,"venue"),*order_status=order_db_get_field(chain_dir,order_id,"status");
+    if(!kind||strcmp(kind,"external"))die("execution report target is not an external order");if(!order_owner||strcmp(order_owner,owner))die("execution report owner mismatch");if(!order_venue||!gw_venue||strcasecmp(order_venue,gw_venue))die("gateway venue does not match external order venue");
+    if(!order_status||(!strcmp(order_status,"filled")||!strcmp(order_status,"rejected")||!strcmp(order_status,"canceled")))die("external order is already terminal");
+    long long qty=order_db_get_ll(chain_dir,order_id,"quantity_atoms",0),prev_filled=order_db_get_ll(chain_dir,order_id,"external_filled_atoms",0),prev_seq=order_db_get_ll(chain_dir,order_id,"execution_report_sequence",0);
+    long long filled=parse_nonnegative_ll_strict(filled_s,"filled_quantity_atoms"),price=parse_nonnegative_ll_strict(price_s,"avg_price_atoms"),vfee=parse_nonnegative_ll_strict(fee_s,"venue_fee_atoms"),seq=parse_positive_ll_strict(seq_s,"report_sequence");(void)vfee;
+    if(seq!=prev_seq+1)die("execution report sequence mismatch");if(filled<prev_filled||filled>qty)die("invalid cumulative external fill quantity");if(filled>0&&price<=0)die("filled execution report requires avg_price_atoms > 0");
+    if(!strcasecmp(status,"PARTIALLY_FILLED")&&(filled<=0||filled>=qty))die("PARTIALLY_FILLED requires 0 < filled < quantity");if(!strcasecmp(status,"FILLED")&&filled!=qty)die("FILLED requires filled_quantity_atoms == order quantity");
+    free(order_id);free(status);free(filled_s);free(price_s);free(fee_s);free(venue_order_id);free(seq_s);if(gw_status)free(gw_status);if(gw_venue)free(gw_venue);if(gw_ed)free(gw_ed);if(gw_ml)free(gw_ml);if(kind)free(kind);if(order_owner)free(order_owner);if(order_venue)free(order_venue);if(order_status)free(order_status);
+}
+static int execution_report_apply_tx(const char *chain_dir,const char *gateway,const char *owner,const char *payload,const char *body_hash){
+    char *order_id=payload_get_field(payload,"order_id"),*status=payload_get_field(payload,"status"),*filled_s=payload_get_field(payload,"filled_quantity_atoms"),*price_s=payload_get_field(payload,"avg_price_atoms"),*fee_s=payload_get_field(payload,"venue_fee_atoms"),*venue_order_id=payload_get_field(payload,"venue_order_id"),*seq_s=payload_get_field(payload,"report_sequence");
+    long long filled=atoll(filled_s),price=atoll(price_s),vfee=atoll(fee_s),seq=atoll(seq_s),h=current_height_from_chain(chain_dir);const char *mapped=!strcasecmp(status,"SUBMITTED")?"submitted":!strcasecmp(status,"PARTIALLY_FILLED")?"partially_filled":!strcasecmp(status,"FILLED")?"filled":!strcasecmp(status,"REJECTED")?"rejected":"canceled";
+    QrxDB db;QrxDBBatch b;if(qrxdb_init(&db,chain_dir)!=0)return -1;if(qrxdb_batch_begin(&db,&b)!=0){qrxdb_close(&db);return -1;}char k[1024],report_key[1024],report_val[2048];int rc=0;
+    velocity_order_key(k,sizeof(k),order_id,"status");rc|=qrxdb_batch_put(&b,k,mapped);velocity_order_key(k,sizeof(k),order_id,"external_filled_atoms");rc|=velocity_batch_put_ll(&b,k,filled);velocity_order_key(k,sizeof(k),order_id,"external_avg_price_atoms");rc|=velocity_batch_put_ll(&b,k,price);velocity_order_key(k,sizeof(k),order_id,"external_venue_fee_atoms");rc|=velocity_batch_put_ll(&b,k,vfee);velocity_order_key(k,sizeof(k),order_id,"venue_order_id");rc|=qrxdb_batch_put(&b,k,venue_order_id);velocity_order_key(k,sizeof(k),order_id,"execution_gateway");rc|=qrxdb_batch_put(&b,k,gateway);velocity_order_key(k,sizeof(k),order_id,"execution_report_sequence");rc|=velocity_batch_put_ll(&b,k,seq);velocity_order_key(k,sizeof(k),order_id,"updated_height");rc|=velocity_batch_put_ll(&b,k,h);velocity_order_key(k,sizeof(k),order_id,"last_execution_report");rc|=qrxdb_batch_put(&b,k,body_hash);
+    snprintf(report_key,sizeof(report_key),"velocity:execution_report:%s",body_hash);snprintf(report_val,sizeof(report_val),"order_id=%s\ngateway=%s\nowner=%s\nstatus=%s\nfilled_quantity_atoms=%lld\navg_price_atoms=%lld\nvenue_fee_atoms=%lld\nvenue_order_id=%s\nreport_sequence=%lld\nheight=%lld\n",order_id,gateway,owner,mapped,filled,price,vfee,venue_order_id,seq,h);rc|=qrxdb_batch_put(&b,report_key,report_val);
+    if(rc||qrxdb_batch_commit(&b)!=0){qrxdb_batch_abort(&b);qrxdb_close(&db);return -1;}char root[129];qrxdb_merkle_root_hex(&db,root);qrxdb_close(&db);
+    mirror_order_field_only(chain_dir,order_id,"status",mapped);mirror_order_ll_only(chain_dir,order_id,"external_filled_atoms",filled);mirror_order_ll_only(chain_dir,order_id,"external_avg_price_atoms",price);mirror_order_ll_only(chain_dir,order_id,"external_venue_fee_atoms",vfee);mirror_order_field_only(chain_dir,order_id,"venue_order_id",venue_order_id);mirror_order_field_only(chain_dir,order_id,"execution_gateway",gateway);mirror_order_ll_only(chain_dir,order_id,"execution_report_sequence",seq);mirror_order_ll_only(chain_dir,order_id,"updated_height",h);mirror_order_field_only(chain_dir,order_id,"last_execution_report",body_hash);
+    journal_append(chain_dir,"velocity_execution_report report=%s order=%s gateway=%s status=%s state_root=%s",body_hash,order_id,gateway,mapped,root);
+    free(order_id);free(status);free(filled_s);free(price_s);free(fee_s);free(venue_order_id);free(seq_s);return 0;
+}
+static int execution_report_status_cmd(const char *chain_dir,const char *report_id){char key[1024];snprintf(key,sizeof(key),"velocity:execution_report:%s",report_id);char *v=velocity_qrxdb_get_alloc(chain_dir,key);if(!v)die("execution report not found");printf("report_id=%s\n%s",report_id,v);free(v);return 0;}
+static int state_root_cmd(const char *chain_dir){QrxDB db;if(qrxdb_init(&db,chain_dir)!=0)die("qrxdb init failed");char root[129];qrxdb_merkle_root_hex(&db,root);printf("generation=%llu\nstate_root=%s\n",(unsigned long long)qrxdb_generation(&db),root);qrxdb_close(&db);return 0;}
+static int settlement_status_cmd(const char *chain_dir,const char *trade_id){char key[1024];snprintf(key,sizeof(key),"velocity:settlement:%s",trade_id);char *v=velocity_qrxdb_get_alloc(chain_dir,key);if(!v)die("settlement not found");printf("trade_id=%s\n%s",trade_id,v);free(v);return state_root_cmd(chain_dir);}
+
+static int create_gateway_register_raw_tx_cmd(const char *chain_dir,const char *authority,const char *gateway,const char *venue,const char *name,const char *gateway_ed,const char *gateway_ml,const char *gateway_exp,const char *authority_ed,const char *authority_ml,const char *lane,const char *tx_exp,const char *fee,const char *nonce){
+    char payload[8192];snprintf(payload,sizeof(payload),"venue=%s;name=%s;gateway_ed25519_pub_hex=%s;gateway_mldsa65_pub_b64=%s;expires_height=%s",venue,name,gateway_ed,gateway_ml,gateway_exp);return create_velocity_raw_tx_cmd(chain_dir,authority,gateway,"0",authority_ed,authority_ml,"GATEWAY_REGISTER",lane,tx_exp,payload,fee,nonce);
+}
+static int create_gateway_revoke_raw_tx_cmd(const char *chain_dir,const char *authority,const char *gateway,const char *authority_ed,const char *authority_ml,const char *lane,const char *tx_exp,const char *fee,const char *nonce){
+    return create_velocity_raw_tx_cmd(chain_dir,authority,gateway,"0",authority_ed,authority_ml,"GATEWAY_REVOKE",lane,tx_exp,"reason=authority_revoked",fee,nonce);
+}
+static int create_execution_report_raw_tx_cmd(const char *chain_dir,const char *gateway,const char *owner,const char *order_id,const char *status,const char *filled,const char *price,const char *venue_fee,const char *venue_order_id,const char *report_seq,const char *gateway_ed,const char *gateway_ml,const char *lane,const char *tx_exp,const char *fee,const char *nonce){
+    char payload[4096];snprintf(payload,sizeof(payload),"order_id=%s;status=%s;filled_quantity_atoms=%s;avg_price_atoms=%s;venue_fee_atoms=%s;venue_order_id=%s;report_sequence=%s",order_id,status,filled,price,venue_fee,venue_order_id,report_seq);return create_velocity_raw_tx_cmd(chain_dir,gateway,owner,"0",gateway_ed,gateway_ml,"EXECUTION_REPORT",lane,tx_exp,payload,fee,nonce);
+}
+/* === End VELOCITY Phase 3C === */
+
+static int btc_spv_funding_security_current(const char *chain_dir,const char *sid,uint64_t *conf_out,int *active_out,int *safe_out);
+#include "velocity/qrx_crosschain.inc"
+#include "velocity/qrx_btc_spv.inc"
+
+static int trading_info_cmd(const char *chain_dir) {(void)chain_dir;printf("feature_level=%d\nagent_signed_orders=true\nnative_order_state=true\nnative_matching=true\nnative_settlement=true\nnative_settlement_crash_atomic=true\nsettlement_batch=true\nsettlement_qrxdb_wal=true\nsettlement_state_root=true\nouter_apply_wal_atomic=true\nfee_nonce_applied_atomic=true\nqrxdb_authoritative_apply_state=true\nlegacy_state_mirrors_non_authoritative=true\npending_native_match_recovery=true\nnative_asset_ledger=true\nnative_stablecoins=false\nexternal_stablecoin_markets=true\nexternal_order_intents=true\nexternal_gateway_registry=true\nexternal_execution_reports=true\ncross_venue_arbitrage=true\narbitrage_live_requires_confirmation=true\narbitrage_time_in_force=IOC\nprice_scale_atoms=%lld\nnative_asset_decimals=8\nsupported_native_order_types=LIMIT,MARKET_WITH_PROTECTION_PRICE\nsupported_sides=BUY,SELL\nmatching_rule=price_then_created_height_then_order_id\nexecution_price=maker_limit_price\npermissions=TRADE,TRADE_NATIVE,TRADE_EXTERNAL,TRADE_CROSSCHAIN,ARBITRAGE_CROSS_VENUE\ncrosschain_market=BTC/QUB\ncrosschain_settlement=HTLC_SHA256_P2WSH_CSV\ncrosschain_qbtc=false\ncrosschain_bridge=false\ncrosschain_exact_fill_only=true\ncrosschain_bitcoin_spv_consensus=true\nbitcoin_spv_phase=3D.1\nbitcoin_spv_headers_on_qrx_consensus=true\nbitcoin_spv_merkle_proofs=true\nbitcoin_spv_reorg_tracking=true\ngateway_authority=dev_address\ndaily_limit_basis=block_time_derived_24h_epoch\n",QRX_VELOCITY_FEATURE_LEVEL,(long long)QRX_TRADE_PRICE_SCALE);return 0;}
+
+static int create_order_raw_tx_cmd(const char *chain_dir,const char *agent,const char *owner,const char *market,const char *side,const char *otype,const char *qty,const char *price,const char *order_exp,const char *agent_ed,const char *agent_ml,const char *lane,const char *tx_exp,const char *fee,const char *nonce){char payload[4096];snprintf(payload,sizeof(payload),"market=%s;side=%s;order_type=%s;quantity_atoms=%s;limit_price_atoms=%s;order_expires_height=%s",market,side,otype,qty,price,order_exp);return create_velocity_raw_tx_cmd(chain_dir,agent,owner,"0",agent_ed,agent_ml,"ORDER_CREATE",lane,tx_exp,payload,fee,nonce);}
+static int create_external_order_raw_tx_cmd(const char *chain_dir,const char *agent,const char *owner,const char *venue,const char *market,const char *side,const char *otype,const char *qty,const char *price,const char *order_exp,const char *agent_ed,const char *agent_ml,const char *lane,const char *tx_exp,const char *fee,const char *nonce){char payload[4096];snprintf(payload,sizeof(payload),"venue=%s;market=%s;side=%s;order_type=%s;quantity_atoms=%s;limit_price_atoms=%s;order_expires_height=%s",venue,market,side,otype,qty,price,order_exp);return create_velocity_raw_tx_cmd(chain_dir,agent,owner,"0",agent_ed,agent_ml,"EXTERNAL_ORDER",lane,tx_exp,payload,fee,nonce);}
+static int create_arbitrage_hedge_raw_tx_cmd(const char *chain_dir,const char *agent,const char *owner,const char *source_order,const char *arb_id,const char *qty,const char *price,const char *order_exp,const char *agent_ed,const char *agent_ml,const char *lane,const char *tx_exp,const char *fee,const char *nonce){char payload[4096];snprintf(payload,sizeof(payload),"venue=KRAKEN;market=BTC/EUR;side=SELL;order_type=LIMIT;quantity_atoms=%s;limit_price_atoms=%s;order_expires_height=%s;time_in_force=IOC;arbitrage_id=%s;source_order_id=%s",qty,price,order_exp,arb_id,source_order);return create_velocity_raw_tx_cmd(chain_dir,agent,owner,"0",agent_ed,agent_ml,"EXTERNAL_ORDER",lane,tx_exp,payload,fee,nonce);}
+static int create_order_cancel_raw_tx_cmd(const char *chain_dir,const char *agent,const char *owner,const char *order_id,const char *agent_ed,const char *agent_ml,const char *lane,const char *tx_exp,const char *fee,const char *nonce){char payload[1024];snprintf(payload,sizeof(payload),"order_id=%s",order_id);return create_velocity_raw_tx_cmd(chain_dir,agent,owner,"0",agent_ed,agent_ml,"ORDER_CANCEL",lane,tx_exp,payload,fee,nonce);}
+static int create_order_replace_raw_tx_cmd(const char *chain_dir,const char *agent,const char *owner,const char *order_id,const char *market,const char *side,const char *otype,const char *qty,const char *price,const char *order_exp,const char *agent_ed,const char *agent_ml,const char *lane,const char *tx_exp,const char *fee,const char *nonce){char payload[4096];snprintf(payload,sizeof(payload),"order_id=%s;market=%s;side=%s;order_type=%s;quantity_atoms=%s;limit_price_atoms=%s;order_expires_height=%s",order_id,market,side,otype,qty,price,order_exp);return create_velocity_raw_tx_cmd(chain_dir,agent,owner,"0",agent_ed,agent_ml,"ORDER_REPLACE",lane,tx_exp,payload,fee,nonce);}
+/* === End VELOCITY Phase 3B === */
+
+static int create_velocity_raw_tx_cmd(const char *chain_dir, const char *from, const char *to, const char *amount,
+    const char *ed_pub_hex, const char *mldsa_pub_b64, const char *tx_type, const char *lane_s,
+    const char *expiry_height_s, const char *payload, const char *fee, const char *nonce) {
+    if (!from || !*from || !to || !*to) die("missing from/to");
+    if (!velocity_tx_type_supported(tx_type)) die("unsupported velocity tx_type");
+    if (tx_type && strcmp(tx_type, "TRANSFER_FAST") != 0) parse_nonnegative_ll_strict(amount, "amount");
+    else parse_positive_ll_strict(amount, "amount");
+    long long lane = 0;
+    if (velocity_parse_lane(lane_s, &lane) != 0) die("invalid lane_id");
+    long long current_height = current_height_from_chain(chain_dir);
+    long long expiry_height = parse_positive_ll_strict(expiry_height_s, "expiry_height");
+    if (expiry_height <= current_height) die("expiry_height must be greater than current chain height");
+    char *network_id = chain_cfg_value(chain_dir, "network_id");
+    char *genesis_hash = chain_cfg_value(chain_dir, "genesis_hash");
+    char *protocol_version = chain_cfg_value(chain_dir, "protocol_version");
+    char fee_s[32], nonce_s[32], ts_s[32], lane_buf[32];
+    if (fee && *fee) { parse_nonnegative_ll_strict(fee, "fee"); snprintf(fee_s, sizeof(fee_s), "%s", fee); }
+    else {
+        long long fee_atoms = qrx_chain_get_ll_at_height_or_default(chain_dir, current_height + 1, "tx_fee_atoms", 1000LL);
+        if (fee_atoms < 0) fee_atoms = 0;
+        snprintf(fee_s, sizeof(fee_s), "%lld", fee_atoms);
+    }
+    if (nonce && *nonce) { parse_positive_ll_strict(nonce, "nonce"); snprintf(nonce_s, sizeof(nonce_s), "%s", nonce); }
+    else snprintf(nonce_s, sizeof(nonce_s), "%lld", velocity_get_lane_nonce(chain_dir, from, lane) + 1);
+    snprintf(ts_s, sizeof(ts_s), "%lld", (long long)time(NULL));
+    snprintf(lane_buf, sizeof(lane_buf), "%lld", lane);
+    const char *safe_payload = payload && *payload ? payload : "-";
+    const char *safe_ed = ed_pub_hex && *ed_pub_hex ? ed_pub_hex : "UNSIGNED";
+    const char *safe_ml = mldsa_pub_b64 && *mldsa_pub_b64 ? mldsa_pub_b64 : "UNSIGNED";
+    char *body = canonical_velocity_tx_body(network_id, genesis_hash, protocol_version, tx_type, from, to, amount, fee_s,
+        lane_buf, nonce_s, ts_s, expiry_height_s, safe_payload, safe_ed, safe_ml);
+    char hash3[129], hash2[65]; hash_primary_hex((unsigned char*)body, strlen(body), hash3); hash_legacy_hex((unsigned char*)body, strlen(body), hash2);
+    printf("%s", body);
+    printf("body_hash_algo=sha3-512\nbody_hash_sha3_512=%s\nbody_hash_sha256_legacy=%s\nsigned=false\n", hash3, hash2);
+    free(network_id); free(genesis_hash); free(protocol_version); free(body);
+    return 0;
 }
 
 static char *canonical_tx_body(const char *network_id, const char *genesis_hash, const char *protocol_version,
@@ -1585,7 +2818,10 @@ static int sign_cmd(const char *wallet_dir, const char *chain_dir, const char *t
     char *genesis_hash = chain_cfg_value(chain_dir, "genesis_hash");
     char *protocol_version = chain_cfg_value(chain_dir, "protocol_version");
 
-    char noncepath_bin[1024]; state_paths(chain_dir, NULL, 0, noncepath_bin, sizeof(noncepath_bin), NULL, 0, NULL, 0); long long nonce = kv_get_ll_bin(noncepath_bin, from) + 1;
+    /* QRXDB is authoritative for the account nonce. This also keeps wallet
+       signing correct immediately after WAL crash recovery, before legacy flat
+       compatibility mirrors have been refreshed. */
+    long long nonce = velocity_get_lane_nonce(chain_dir, from, 0) + 1;
     char nonce_s[32], ts_s[32], fee_s[32]; snprintf(nonce_s, sizeof(nonce_s), "%lld", nonce); snprintf(ts_s, sizeof(ts_s), "%lld", (long long)time(NULL));
     long long fee_atoms = qrx_chain_get_ll_at_height_or_default(chain_dir, current_height_from_chain(chain_dir) + 1, "tx_fee_atoms", 1000LL);
     if (fee_atoms < 0) fee_atoms = 0;
@@ -1614,38 +2850,162 @@ static int sign_cmd(const char *wallet_dir, const char *chain_dir, const char *t
     return 0;
 }
 
-static int verify_tx_text(const char *chain_dir, const char *tx) {
-    char *network_id = cfg_get(tx, "network_id");
-    char *genesis_hash = cfg_get(tx, "genesis_hash");
-    char *protocol_version = cfg_get(tx, "protocol_version");
-    char *from = cfg_get(tx, "from");
+
+static int getnonce_cmd(const char *chain_dir, const char *addr, const char *lane_s) {
+    if(!addr || !*addr) die("missing address");
+    long long lane = 0;
+    if (velocity_parse_lane(lane_s, &lane) != 0) die("invalid lane_id");
+    printf("%lld\n", velocity_get_lane_nonce(chain_dir, addr, lane));
+    return 0;
+}
+
+static int create_raw_tx_cmd(const char *chain_dir, const char *from, const char *to, const char *amount,
+                             const char *ed_pub_hex, const char *mldsa_pub_b64,
+                             const char *memo, const char *fee, const char *nonce, const char *timestamp) {
+    if(!from || !*from || !to || !*to) die("missing from/to");
+    parse_positive_ll_strict(amount, "amount");
+    char *network_id = chain_cfg_value(chain_dir, "network_id");
+    char *genesis_hash = chain_cfg_value(chain_dir, "genesis_hash");
+    char *protocol_version = chain_cfg_value(chain_dir, "protocol_version");
+    char fee_s[32], nonce_s[32], ts_s[32];
+    if(fee && *fee) {
+        parse_nonnegative_ll_strict(fee, "fee");
+        snprintf(fee_s, sizeof(fee_s), "%s", fee);
+    } else {
+        long long fee_atoms = qrx_chain_get_ll_at_height_or_default(chain_dir, current_height_from_chain(chain_dir) + 1, "tx_fee_atoms", 1000LL);
+        if(fee_atoms < 0) fee_atoms = 0;
+        snprintf(fee_s, sizeof(fee_s), "%lld", fee_atoms);
+    }
+    if(nonce && *nonce) {
+        parse_positive_ll_strict(nonce, "nonce");
+        snprintf(nonce_s, sizeof(nonce_s), "%s", nonce);
+    } else {
+        char noncepath_bin[1024];
+        state_paths(chain_dir, NULL, 0, noncepath_bin, sizeof(noncepath_bin), NULL, 0, NULL, 0);
+        snprintf(nonce_s, sizeof(nonce_s), "%lld", kv_get_ll_bin(noncepath_bin, from) + 1);
+    }
+    if(timestamp && *timestamp) snprintf(ts_s, sizeof(ts_s), "%s", timestamp);
+    else snprintf(ts_s, sizeof(ts_s), "%lld", (long long)time(NULL));
+    const char *safe_memo = memo && *memo ? memo : "payment";
+    const char *safe_ed = ed_pub_hex && *ed_pub_hex ? ed_pub_hex : "UNSIGNED";
+    const char *safe_ml = mldsa_pub_b64 && *mldsa_pub_b64 ? mldsa_pub_b64 : "UNSIGNED";
+    char *body = canonical_tx_body(network_id, genesis_hash, protocol_version, from, to, amount, fee_s, nonce_s, ts_s, safe_memo, safe_ed, safe_ml);
+    char body_hash_sha3[129]; hash_primary_hex((unsigned char*)body, strlen(body), body_hash_sha3);
+    char body_hash_sha256[65]; hash_legacy_hex((unsigned char*)body, strlen(body), body_hash_sha256);
+    printf("%s", body);
+    printf("body_hash_algo=sha3-512\nbody_hash_sha3_512=%s\nbody_hash_sha256_legacy=%s\n", body_hash_sha3, body_hash_sha256);
+    printf("signed=false\n");
+    free(network_id); free(genesis_hash); free(protocol_version); free(body);
+    return 0;
+}
+
+static int signrawtransactionwithwallet_cmd(const char *wallet_dir, const char *chain_dir, const char *raw_tx_file, const char *signed_tx_file) {
+    char *tx = read_file(raw_tx_file, NULL); if(!tx) die("cannot read raw tx");
+    char *tx_version = cfg_get(tx, "tx_version");
+    char *from_in = cfg_get(tx, "from");
     char *to = cfg_get(tx, "to");
     char *amount = cfg_get(tx, "amount");
     char *fee = cfg_get(tx, "fee");
     char *nonce = cfg_get(tx, "nonce");
     char *timestamp = cfg_get(tx, "timestamp");
     char *memo = cfg_get(tx, "memo");
-    char *ed_pub_hex = cfg_get(tx, "ed25519_pub_hex");
-    char *ml_pub_b64 = cfg_get(tx, "mldsa65_pub_b64");
-    char *body_hash_algo = cfg_get(tx, "body_hash_algo");
-    char *body_hash_sha3 = cfg_get(tx, "body_hash_sha3_512");
-    char *body_hash_sha256_legacy = cfg_get(tx, "body_hash_sha256_legacy");
-    char *body_hash_legacy = cfg_get(tx, "body_hash");
-    char *sig1_hex = cfg_get(tx, "sig_ed25519_hex");
-    char *sig2_hex = cfg_get(tx, "sig_mldsa65_hex");
-    if (!network_id||!genesis_hash||!protocol_version||!from||!to||!amount||!fee||!nonce||!timestamp||!memo||!ed_pub_hex||!ml_pub_b64||!sig1_hex||!sig2_hex) die("invalid tx fields");
-    if (!(body_hash_algo || body_hash_sha3 || body_hash_legacy)) die("missing tx hash fields");
-    char *exp_net = chain_cfg_value(chain_dir, "network_id");
-    char *exp_gen = chain_cfg_value(chain_dir, "genesis_hash");
-    char *exp_ver = chain_cfg_value(chain_dir, "protocol_version");
-    if (strcmp(network_id, exp_net) || strcmp(genesis_hash, exp_gen) || strcmp(protocol_version, exp_ver)) die("tx network binding mismatch");
-    if (!from || !*from || !to || !*to) die("invalid tx addresses");
-    long long amt_check = parse_positive_ll_strict(amount, "amount");
-    long long fee_check = parse_nonnegative_ll_strict(fee, "fee");
-    long long debit_check = 0;
-    checked_add_ll(amt_check, fee_check, "amount plus fee", &debit_check);
+    char *tx_type = cfg_get(tx, "tx_type");
+    char *lane_id = cfg_get(tx, "lane_id");
+    char *expiry_height = cfg_get(tx, "expiry_height");
+    char *payload = cfg_get(tx, "payload");
+    int is_velocity = tx_version && atoi(tx_version) == QRX_VELOCITY_TX_VERSION;
+    if(!to || !amount || !fee || !nonce || !timestamp) die("raw tx missing required fields");
+    if(is_velocity && (!tx_type || !lane_id || !expiry_height || !payload)) die("velocity raw tx missing required fields");
+    char *from = wallet_address(wallet_dir); if(!from) die("missing wallet address");
+    from[strcspn(from, "\r\n")] = 0;
+    if(from_in && *from_in && strcmp(from_in, from) != 0) die("raw tx from does not match wallet address");
 
-    char *body = canonical_tx_body(network_id, genesis_hash, protocol_version, from, to, amount, fee, nonce, timestamp, memo, ed_pub_hex, ml_pub_b64);
+    char pass[256]; if (get_passphrase(pass, sizeof(pass), "Passphrase: ") != 0) die("passphrase failed");
+    char p[1024];
+    snprintf(p, sizeof(p), "%s/ed25519_priv.pem", wallet_dir); EVP_PKEY *ed_priv = load_priv_pem(p, pass); if (!ed_priv) die("load ed priv failed");
+    snprintf(p, sizeof(p), "%s/mldsa65_priv.pem", wallet_dir); EVP_PKEY *ml_priv = load_priv_pem(p, pass); if (!ml_priv) die("load mldsa priv failed");
+    snprintf(p, sizeof(p), "%s/ed25519_pub.pem", wallet_dir); EVP_PKEY *ed_pub = load_pub_pem(p); if (!ed_pub) die("load ed pub failed");
+    snprintf(p, sizeof(p), "%s/mldsa65_pub.pem", wallet_dir); EVP_PKEY *ml_pub = load_pub_pem(p); if (!ml_pub) die("load mldsa pub failed");
+
+    char *network_id = chain_cfg_value(chain_dir, "network_id");
+    char *genesis_hash = chain_cfg_value(chain_dir, "genesis_hash");
+    char *protocol_version = chain_cfg_value(chain_dir, "protocol_version");
+    unsigned char edraw[32]; if (ed25519_raw_pub(ed_pub, edraw) != 0) die("raw ed pub failed");
+    char *ed_pub_hex = bytes_to_hex(edraw, sizeof(edraw));
+    char *ml_pem = pubkey_to_pem_string(ml_pub); char *ml_pem_b64 = base64_encode((unsigned char*)ml_pem, strlen(ml_pem));
+    char *body = is_velocity
+        ? canonical_velocity_tx_body(network_id, genesis_hash, protocol_version, tx_type, from, to, amount, fee, lane_id, nonce, timestamp, expiry_height, payload, ed_pub_hex, ml_pem_b64)
+        : canonical_tx_body(network_id, genesis_hash, protocol_version, from, to, amount, fee, nonce, timestamp, memo ? memo : "payment", ed_pub_hex, ml_pem_b64);
+    unsigned char *sig1=NULL, *sig2=NULL; size_t sig1len=0, sig2len=0;
+    if (sign_oneshot(ed_priv, (unsigned char*)body, strlen(body), &sig1, &sig1len) != 0) die("ed25519 sign failed");
+    if (sign_oneshot(ml_priv, (unsigned char*)body, strlen(body), &sig2, &sig2len) != 0) die("mldsa sign failed");
+    char *sig1_hex = bytes_to_hex(sig1, sig1len); char *sig2_hex = bytes_to_hex(sig2, sig2len);
+    char body_hash_sha3[129]; hash_primary_hex((unsigned char*)body, strlen(body), body_hash_sha3);
+    char body_hash_sha256[65]; hash_legacy_hex((unsigned char*)body, strlen(body), body_hash_sha256);
+    size_t outcap = strlen(body)+strlen(sig1_hex)+strlen(sig2_hex)+512;
+    char *out = malloc(outcap); if(!out) die("oom");
+    snprintf(out, outcap, "%sbody_hash_algo=sha3-512\nbody_hash_sha3_512=%s\nbody_hash_sha256_legacy=%s\nsig_ed25519_hex=%s\nsig_mldsa65_hex=%s\nsigned=true\n", body, body_hash_sha3, body_hash_sha256, sig1_hex, sig2_hex);
+    if(write_text(signed_tx_file, out) != 0) die("write signed tx failed");
+    puts(signed_tx_file);
+    OPENSSL_cleanse(pass, sizeof(pass));
+    free(tx); if(tx_version) free(tx_version); if(from_in) free(from_in); free(to); free(amount); free(fee); free(nonce); free(timestamp); if(memo) free(memo); if(tx_type) free(tx_type); if(lane_id) free(lane_id); if(expiry_height) free(expiry_height); if(payload) free(payload); free(from);
+    free(network_id); free(genesis_hash); free(protocol_version); free(ed_pub_hex); free(ml_pem); free(ml_pem_b64); free(body); free(sig1); free(sig2); free(sig1_hex); free(sig2_hex); free(out);
+    EVP_PKEY_free(ed_priv); EVP_PKEY_free(ml_priv); EVP_PKEY_free(ed_pub); EVP_PKEY_free(ml_pub);
+    return 0;
+}
+
+static int decoderawtransaction_cmd(const char *chain_dir, const char *tx_file) {
+    (void)chain_dir;
+    char *tx = read_file(tx_file, NULL); if(!tx) die("cannot read tx");
+    const char *keys[] = {"tx_version","network_id","genesis_hash","protocol_version","tx_type","from","to","amount","fee","lane_id","nonce","timestamp","expiry_height","payload","memo","ed25519_pub_hex","mldsa65_pub_b64","body_hash_algo","body_hash_sha3_512","body_hash_sha256_legacy","sig_ed25519_hex","sig_mldsa65_hex","signed",NULL};
+    for(int i=0; keys[i]; ++i){ char *v = cfg_get(tx, keys[i]); if(v){ printf("%s=%s\n", keys[i], v); free(v); } }
+    free(tx); return 0;
+}
+
+static int txid_cmd(const char *chain_dir, const char *tx_file) {
+    (void)chain_dir;
+    char *tx = read_file(tx_file, NULL); if(!tx) die("cannot read tx");
+    char *h = cfg_get(tx, "body_hash_sha3_512");
+    if(!h) h = cfg_get(tx, "body_hash");
+    if(!h) die("tx has no body hash");
+    printf("%s\n", h);
+    free(h); free(tx); return 0;
+}
+
+static int verify_tx_text(const char *chain_dir, const char *tx) {
+    char *tx_version = cfg_get(tx, "tx_version");
+    int is_velocity = tx_version && atoi(tx_version) == QRX_VELOCITY_TX_VERSION;
+    char *network_id = cfg_get(tx, "network_id");
+    char *genesis_hash = cfg_get(tx, "genesis_hash");
+    char *protocol_version = cfg_get(tx, "protocol_version");
+    char *from = cfg_get(tx, "from"); char *to = cfg_get(tx, "to"); char *amount = cfg_get(tx, "amount");
+    char *fee = cfg_get(tx, "fee"); char *nonce = cfg_get(tx, "nonce"); char *timestamp = cfg_get(tx, "timestamp");
+    char *memo = cfg_get(tx, "memo"); char *tx_type = cfg_get(tx, "tx_type"); char *lane_id = cfg_get(tx, "lane_id");
+    char *expiry_height = cfg_get(tx, "expiry_height"); char *payload = cfg_get(tx, "payload");
+    char *ed_pub_hex = cfg_get(tx, "ed25519_pub_hex"); char *ml_pub_b64 = cfg_get(tx, "mldsa65_pub_b64");
+    char *body_hash_algo = cfg_get(tx, "body_hash_algo"); char *body_hash_sha3 = cfg_get(tx, "body_hash_sha3_512");
+    char *body_hash_sha256_legacy = cfg_get(tx, "body_hash_sha256_legacy"); char *body_hash_legacy = cfg_get(tx, "body_hash");
+    char *sig1_hex = cfg_get(tx, "sig_ed25519_hex"); char *sig2_hex = cfg_get(tx, "sig_mldsa65_hex");
+    if (!network_id||!genesis_hash||!protocol_version||!from||!to||!amount||!fee||!nonce||!timestamp||!ed_pub_hex||!ml_pub_b64||!sig1_hex||!sig2_hex) die("invalid tx fields");
+    if (!is_velocity && !memo) die("legacy tx missing memo");
+    if (is_velocity && (!tx_type||!lane_id||!expiry_height||!payload)) die("velocity tx missing fields");
+    if (is_velocity && !velocity_tx_type_supported(tx_type)) die("unsupported velocity tx_type");
+    if (!(body_hash_algo || body_hash_sha3 || body_hash_legacy)) die("missing tx hash fields");
+    char *exp_net = chain_cfg_value(chain_dir, "network_id"); char *exp_gen = chain_cfg_value(chain_dir, "genesis_hash"); char *exp_ver = chain_cfg_value(chain_dir, "protocol_version");
+    if (strcmp(network_id, exp_net) || strcmp(genesis_hash, exp_gen) || strcmp(protocol_version, exp_ver)) die("tx network binding mismatch");
+    if (!*from || !*to) die("invalid tx addresses");
+    long long amt_check = (is_velocity && tx_type && strcmp(tx_type, "TRANSFER_FAST") != 0) ? parse_nonnegative_ll_strict(amount, "amount") : parse_positive_ll_strict(amount, "amount");
+    long long fee_check = parse_nonnegative_ll_strict(fee, "fee"); long long debit_check = 0;
+    checked_add_ll(amt_check, fee_check, "amount plus fee", &debit_check);
+    long long lane = 0;
+    if (is_velocity) {
+        if (velocity_parse_lane(lane_id, &lane) != 0) die("invalid lane_id");
+        long long expiry = parse_positive_ll_strict(expiry_height, "expiry_height");
+        if (current_height_from_chain(chain_dir) > expiry) die("transaction expired");
+    }
+    char *body = is_velocity
+        ? canonical_velocity_tx_body(network_id, genesis_hash, protocol_version, tx_type, from, to, amount, fee, lane_id, nonce, timestamp, expiry_height, payload, ed_pub_hex, ml_pub_b64)
+        : canonical_tx_body(network_id, genesis_hash, protocol_version, from, to, amount, fee, nonce, timestamp, memo, ed_pub_hex, ml_pub_b64);
     char body_hash_sha3_calc[129]; hash_primary_hex((unsigned char*)body, strlen(body), body_hash_sha3_calc);
     char body_hash_sha256_calc[65]; hash_legacy_hex((unsigned char*)body, strlen(body), body_hash_sha256_calc);
     const char *applied_key = NULL;
@@ -1654,34 +3014,99 @@ static int verify_tx_text(const char *chain_dir, const char *tx) {
         if (!body_hash_sha3 || strcmp(body_hash_sha3, body_hash_sha3_calc) != 0) die("body sha3-512 mismatch");
         if (body_hash_sha256_legacy && strcmp(body_hash_sha256_legacy, body_hash_sha256_calc) != 0) die("body sha256 legacy mismatch");
         applied_key = body_hash_sha3;
-    } else {
-        if (strcmp(body_hash_legacy, body_hash_sha256_calc) != 0) die("body hash mismatch");
-        applied_key = body_hash_legacy;
-    }
-
+    } else { if (strcmp(body_hash_legacy, body_hash_sha256_calc) != 0) die("body hash mismatch"); applied_key = body_hash_legacy; }
     unsigned char edraw[32]; size_t edlen=0; if (hex_to_bytes(ed_pub_hex, edraw, sizeof(edraw), &edlen) != 0 || edlen != 32) die("invalid ed pub hex");
     EVP_PKEY *ed_pub = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, NULL, edraw, edlen); if (!ed_pub) die("ed pub construct failed");
     if (address_matches_pub(ed_pub, from) != 0) die("from address mismatch");
     size_t mlpemlen=0; unsigned char *mlpem = base64_decode(ml_pub_b64, &mlpemlen); if (!mlpem) die("bad ML-DSA b64");
     char *mlpemstr = malloc(mlpemlen+1); memcpy(mlpemstr, mlpem, mlpemlen); mlpemstr[mlpemlen]=0;
     EVP_PKEY *ml_pub = pubkey_from_pem_string(mlpemstr); if (!ml_pub) die("ml pub parse failed");
-    unsigned char *sig1=NULL,*sig2=NULL; size_t sig1len=0,sig2len=0; sig1 = malloc(strlen(sig1_hex)/2+1); sig2 = malloc(strlen(sig2_hex)/2+1);
+    unsigned char *sig1=malloc(strlen(sig1_hex)/2+1), *sig2=malloc(strlen(sig2_hex)/2+1); size_t sig1len=0,sig2len=0;
     if (hex_to_bytes(sig1_hex, sig1, strlen(sig1_hex)/2+1, &sig1len) != 0) die("bad sig1");
     if (hex_to_bytes(sig2_hex, sig2, strlen(sig2_hex)/2+1, &sig2len) != 0) die("bad sig2");
     if (verify_oneshot(ed_pub, (unsigned char*)body, strlen(body), sig1, sig1len) != 0) die("ed25519 verify failed");
     if (verify_oneshot(ml_pub, (unsigned char*)body, strlen(body), sig2, sig2len) != 0) die("ML-DSA verify failed");
-
-    char noncepath[1024], applpath[1024];
-    state_paths(chain_dir, NULL, 0, noncepath, sizeof(noncepath), applpath, sizeof(applpath), NULL, 0);
-    long long current = kv_get_ll_bin(noncepath, from);
-    long long n = parse_positive_ll_strict(nonce, "nonce");
-    if (current == LLONG_MAX) die("nonce overflow");
-    if (n != current + 1) die("invalid nonce: expected current nonce + 1");
-    if (applied_has_bin(applpath, applied_key)) die("already applied tx");
-
-    free(network_id); free(genesis_hash); free(protocol_version); free(from); free(to); free(amount); free(fee); free(nonce); free(timestamp); free(memo); free(ed_pub_hex); free(ml_pub_b64); if (body_hash_algo) free(body_hash_algo); if (body_hash_sha3) free(body_hash_sha3); if (body_hash_sha256_legacy) free(body_hash_sha256_legacy); if (body_hash_legacy) free(body_hash_legacy); free(sig1_hex); free(sig2_hex); free(exp_net); free(exp_gen); free(exp_ver); free(body); free(mlpem); free(mlpemstr); free(sig1); free(sig2);
-    EVP_PKEY_free(ed_pub); EVP_PKEY_free(ml_pub);
+    long long current = velocity_get_lane_nonce(chain_dir, from, lane); long long n = parse_positive_ll_strict(nonce, "nonce");
+    if (current == LLONG_MAX) die("nonce overflow"); if (n != current + 1) die("invalid nonce: expected lane nonce + 1");
+    char applpath[1024]; state_paths(chain_dir, NULL, 0, NULL, 0, applpath, sizeof(applpath), NULL, 0); if (applied_has_authoritative(chain_dir,applpath, applied_key)) die("already applied tx");
+    if (is_velocity && (!strcmp(tx_type, "AGENT_REGISTER") || !strcmp(tx_type, "AGENT_UPDATE") || !strcmp(tx_type, "AGENT_REVOKE"))) validate_agent_fields_common(chain_dir, from, to, tx_type, payload);
+    else if (is_velocity && (!strcmp(tx_type, "ORDER_CREATE") || !strcmp(tx_type, "ORDER_CANCEL") || !strcmp(tx_type, "ORDER_REPLACE") || !strcmp(tx_type, "EXTERNAL_ORDER"))) validate_trade_fields_common(chain_dir, from, to, tx_type, payload, expiry_height, ed_pub_hex, ml_pub_b64);
+    else if (is_velocity && tx_type && !strcmp(tx_type, "CROSSCHAIN_ORDER")) validate_crosschain_order_fields(chain_dir, from, to, payload, expiry_height, ed_pub_hex, ml_pub_b64);
+    else if (is_velocity && tx_type && (!strcmp(tx_type, "CROSSCHAIN_REDEEM") || !strcmp(tx_type, "CROSSCHAIN_REFUND"))) validate_crosschain_action(chain_dir, from, tx_type, payload);
+    else if (is_velocity && tx_type && !strcmp(tx_type,"BTC_SPV_HEADER")) validate_btc_spv_header_tx(chain_dir,from,to,payload);
+    else if (is_velocity && tx_type && !strcmp(tx_type,"BTC_SPV_FUNDING_PROOF")) validate_btc_spv_funding_proof_tx(chain_dir,from,to,payload);
+    else if (is_velocity && (!strcmp(tx_type,"GATEWAY_REGISTER") || !strcmp(tx_type,"GATEWAY_REVOKE"))) validate_gateway_management_tx(chain_dir,from,to,tx_type,payload);
+    else if (is_velocity && !strcmp(tx_type,"EXECUTION_REPORT")) validate_execution_report_tx(chain_dir,from,to,payload,ed_pub_hex,ml_pub_b64);
+    else if (is_velocity && strcmp(tx_type, "TRANSFER_FAST") != 0) die("velocity tx schema reserved: execution not active for this tx_type");
+    if(tx_version) free(tx_version); free(network_id); free(genesis_hash); free(protocol_version); free(from); free(to); free(amount); free(fee); free(nonce); free(timestamp); if(memo) free(memo); if(tx_type) free(tx_type); if(lane_id) free(lane_id); if(expiry_height) free(expiry_height); if(payload) free(payload); free(ed_pub_hex); free(ml_pub_b64); if(body_hash_algo) free(body_hash_algo); if(body_hash_sha3) free(body_hash_sha3); if(body_hash_sha256_legacy) free(body_hash_sha256_legacy); if(body_hash_legacy) free(body_hash_legacy); free(sig1_hex); free(sig2_hex); free(exp_net); free(exp_gen); free(exp_ver); free(body); free(mlpem); free(mlpemstr); free(sig1); free(sig2); EVP_PKEY_free(ed_pub); EVP_PKEY_free(ml_pub);
     return 0;
+}
+
+static int velocity_stateless_verify_cb(void *ctx, const char *tx, char *err, size_t err_sz) {
+    const char *chain_dir=(const char*)ctx; int rc=-1;
+    char *tx_version=cfg_get(tx,"tx_version"),*network_id=cfg_get(tx,"network_id"),*genesis_hash=cfg_get(tx,"genesis_hash"),*protocol_version=cfg_get(tx,"protocol_version");
+    char *from=cfg_get(tx,"from"),*to=cfg_get(tx,"to"),*amount=cfg_get(tx,"amount"),*fee=cfg_get(tx,"fee"),*nonce=cfg_get(tx,"nonce"),*timestamp=cfg_get(tx,"timestamp"),*memo=cfg_get(tx,"memo");
+    char *tx_type=cfg_get(tx,"tx_type"),*lane_id=cfg_get(tx,"lane_id"),*expiry_height=cfg_get(tx,"expiry_height"),*payload=cfg_get(tx,"payload"),*ed_pub_hex=cfg_get(tx,"ed25519_pub_hex"),*ml_pub_b64=cfg_get(tx,"mldsa65_pub_b64");
+    char *body_hash_algo=cfg_get(tx,"body_hash_algo"),*body_hash_sha3=cfg_get(tx,"body_hash_sha3_512"),*body_hash_legacy=cfg_get(tx,"body_hash"),*sig1_hex=cfg_get(tx,"sig_ed25519_hex"),*sig2_hex=cfg_get(tx,"sig_mldsa65_hex");
+    char *exp_net=NULL,*exp_gen=NULL,*exp_ver=NULL,*body=NULL,*mlpemstr=NULL; unsigned char *mlpem=NULL,*sig1=NULL,*sig2=NULL; EVP_PKEY *ed_pub=NULL,*ml_pub=NULL;
+    if(!network_id||!genesis_hash||!protocol_version||!from||!to||!amount||!fee||!nonce||!timestamp||!ed_pub_hex||!ml_pub_b64||!sig1_hex||!sig2_hex){snprintf(err,err_sz,"missing fields");goto done;}
+    int is_velocity=tx_version&&atoi(tx_version)==QRX_VELOCITY_TX_VERSION;if(is_velocity&&(!tx_type||!lane_id||!expiry_height||!payload)){snprintf(err,err_sz,"missing velocity fields");goto done;}if(!is_velocity&&!memo){snprintf(err,err_sz,"missing memo");goto done;}
+    exp_net=chain_cfg_value(chain_dir,"network_id");exp_gen=chain_cfg_value(chain_dir,"genesis_hash");exp_ver=chain_cfg_value(chain_dir,"protocol_version");if(!exp_net||!exp_gen||!exp_ver||strcmp(network_id,exp_net)||strcmp(genesis_hash,exp_gen)||strcmp(protocol_version,exp_ver)){snprintf(err,err_sz,"network binding");goto done;}
+    body=is_velocity?canonical_velocity_tx_body(network_id,genesis_hash,protocol_version,tx_type,from,to,amount,fee,lane_id,nonce,timestamp,expiry_height,payload,ed_pub_hex,ml_pub_b64):canonical_tx_body(network_id,genesis_hash,protocol_version,from,to,amount,fee,nonce,timestamp,memo,ed_pub_hex,ml_pub_b64);
+    if(body_hash_algo||body_hash_sha3){char calc[129];hash_primary_hex((unsigned char*)body,strlen(body),calc);if(!body_hash_algo||strcmp(body_hash_algo,"sha3-512")||!body_hash_sha3||strcmp(body_hash_sha3,calc)){snprintf(err,err_sz,"sha3 body hash");goto done;}}else if(body_hash_legacy){char calc[65];hash_legacy_hex((unsigned char*)body,strlen(body),calc);if(strcmp(body_hash_legacy,calc)){snprintf(err,err_sz,"legacy body hash");goto done;}}else{snprintf(err,err_sz,"missing body hash");goto done;}
+    unsigned char edraw[32];size_t edlen=0;if(hex_to_bytes(ed_pub_hex,edraw,sizeof(edraw),&edlen)||edlen!=32){snprintf(err,err_sz,"ed pub");goto done;}ed_pub=EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519,NULL,edraw,edlen);if(!ed_pub||address_matches_pub(ed_pub,from)!=0){snprintf(err,err_sz,"ed address");goto done;}
+    size_t mlpemlen=0;mlpem=base64_decode(ml_pub_b64,&mlpemlen);if(!mlpem){snprintf(err,err_sz,"mldsa b64");goto done;}mlpemstr=(char*)malloc(mlpemlen+1);if(!mlpemstr)goto done;memcpy(mlpemstr,mlpem,mlpemlen);mlpemstr[mlpemlen]=0;ml_pub=pubkey_from_pem_string(mlpemstr);if(!ml_pub){snprintf(err,err_sz,"mldsa pub");goto done;}
+    size_t sig1len=0,sig2len=0;sig1=(unsigned char*)malloc(strlen(sig1_hex)/2+1);sig2=(unsigned char*)malloc(strlen(sig2_hex)/2+1);if(!sig1||!sig2||hex_to_bytes(sig1_hex,sig1,strlen(sig1_hex)/2+1,&sig1len)||hex_to_bytes(sig2_hex,sig2,strlen(sig2_hex)/2+1,&sig2len)){snprintf(err,err_sz,"signature encoding");goto done;}
+    if(verify_oneshot(ed_pub,(unsigned char*)body,strlen(body),sig1,sig1len)!=0){snprintf(err,err_sz,"ed25519 verify");goto done;}if(verify_oneshot(ml_pub,(unsigned char*)body,strlen(body),sig2,sig2len)!=0){snprintf(err,err_sz,"mldsa verify");goto done;}rc=0;
+done:
+    if(tx_version)free(tx_version);if(network_id)free(network_id);if(genesis_hash)free(genesis_hash);if(protocol_version)free(protocol_version);if(from)free(from);if(to)free(to);if(amount)free(amount);if(fee)free(fee);if(nonce)free(nonce);if(timestamp)free(timestamp);if(memo)free(memo);if(tx_type)free(tx_type);if(lane_id)free(lane_id);if(expiry_height)free(expiry_height);if(payload)free(payload);if(ed_pub_hex)free(ed_pub_hex);if(ml_pub_b64)free(ml_pub_b64);if(body_hash_algo)free(body_hash_algo);if(body_hash_sha3)free(body_hash_sha3);if(body_hash_legacy)free(body_hash_legacy);if(sig1_hex)free(sig1_hex);if(sig2_hex)free(sig2_hex);if(exp_net)free(exp_net);if(exp_gen)free(exp_gen);if(exp_ver)free(exp_ver);if(body)free(body);if(mlpem)free(mlpem);if(mlpemstr)free(mlpemstr);if(sig1)free(sig1);if(sig2)free(sig2);EVP_PKEY_free(ed_pub);EVP_PKEY_free(ml_pub);return rc;
+}
+
+static int velocity_mempool_plan_cmd(const char *node_dir,int max_txs,int workers){
+    char conf[1024];snprintf(conf,sizeof(conf),"%s/node.conf",node_dir);char *cfg=read_file(conf,NULL);if(!cfg)die("missing node.conf");char *chain_dir=cfg_get(cfg,"chain_dir");if(!chain_dir)die("node.conf missing chain_dir");
+    QrxVelocityMempool pool;QrxVelocityPlan plan;QrxVelocityMempoolStats ms;QrxVelocityVerifyStats vs;unsigned char *mask=NULL;if(qrx_velocity_mempool_open(&pool,node_dir,MEMPOOL_MAX_TXS)!=0)die("velocity mempool open failed");if(qrx_velocity_mempool_plan(&pool,max_txs>0?(size_t)max_txs:0,&plan)!=0)die("velocity plan failed");
+    if(qrx_velocity_parallel_verify(&plan,workers>0?(uint32_t)workers:1,velocity_stateless_verify_cb,chain_dir,&mask,&vs)!=0)die("parallel signature verification failed");qrx_velocity_mempool_stats(&pool,&ms);
+    printf("engine=VELOCITY_PHASE4F\nentries=%llu\nselected=%zu\nshards=%u\nwaves=%u\nconflicts=%llu\ndependency_edges=%llu\nbarrier_nodes=%llu\nbarrier_fences=%llu\ncritical_path_nodes=%u\nmax_parallel_width=%u\nschedule_hash=%s\nverify_workers=%u\nverify_ok=%llu\nverify_failed=%llu\nverify_elapsed_us=%llu\n",
+      (unsigned long long)ms.entries,plan.count,ms.shards,plan.wave_count,(unsigned long long)plan.conflicts,(unsigned long long)plan.dependency_edges,(unsigned long long)plan.barrier_nodes,(unsigned long long)plan.barrier_fences,plan.critical_path_nodes,plan.max_parallel_width,plan.schedule_hash,vs.workers,(unsigned long long)vs.ok,(unsigned long long)vs.failed,(unsigned long long)vs.elapsed_us);
+    for(size_t i=0;i<plan.count;i++){uint8_t ac=qrx_velocity_tx_adapter_class(plan.txs[i]);const char *an=ac==QRX_VELOCITY_ADAPTER_TRANSFER?"transfer":ac==QRX_VELOCITY_ADAPTER_STATEFUL?"stateful":ac==QRX_VELOCITY_ADAPTER_DYNAMIC?"dynamic":"barrier";printf("tx=%s wave=%u valid=%u adapter=%s\n",plan.txids[i],plan.waves[i],mask[i],an);}
+    free(mask);qrx_velocity_plan_free(&plan);qrx_velocity_mempool_close(&pool);free(chain_dir);free(cfg);return 0;
+}
+
+
+static int velocity_engine_info_cmd(const char *node_dir){
+    QrxVelocityMempool pool;QrxVelocityMempoolStats st;QrxVelocityPlan plan;memset(&plan,0,sizeof(plan));
+    if(qrx_velocity_mempool_open(&pool,node_dir,MEMPOOL_MAX_TXS)!=0)die("velocity mempool open failed");
+    if(qrx_velocity_mempool_stats(&pool,&st)!=0){qrx_velocity_mempool_close(&pool);return 1;}
+    size_t sample=st.entries>2048?2048:(size_t)st.entries;if(qrx_velocity_mempool_plan(&pool,sample,&plan)!=0){qrx_velocity_mempool_close(&pool);return 1;}
+    printf("phase=4F.2\nengine=VELOCITY_DETERMINISTIC_BLOCK_GRAPH_MVCC\ncross_venue_arbitrage=true\npaper_trading=true\ncomplete_csv_ledger=true\narbitrage_permission=ARBITRAGE_CROSS_VENUE\narbitrage_live_confirmation=true\narbitrage_hedge_tif=IOC\nram_mempool=true\nwal=true\nwal_group_commit_records=64\nshards=%u\nmax_txs=%llu\ncurrent_txs=%llu\ncurrent_bytes=%llu\nplanner_sample=%zu\nplanner_waves=%u\nplanner_conflicts=%llu\ndependency_graph=true\ndependency_edges=%llu\nbarrier_nodes=%llu\nbarrier_fences=%llu\nbarrier_full_fence=true\ncritical_path_nodes=%u\nmax_parallel_width=%u\nschedule_hash_sha3_512=%s\nschedule_version=1\nparallel_signature_verification=true\nconflict_detection=true\nparallel_execution_waves=true\ndeterministic_graph_levels=true\nmvcc_snapshot_execution=true\nisolated_write_sets=true\nruntime_readset_tracking=true\npredicate_prefix_tracking=true\nspeculative_parallel_execution=true\ndeterministic_conflict_resolution=true\nselective_retry=true\nconflict_winner_order=plan_index\nparallel_transfer_fast_prepare=true\nstateful_mvcc_adapters=true\nparallel_agent_state_prepare=true\nparallel_gateway_state_prepare=true\ndynamic_writeset_expansion=true\ndynamic_native_order_adapter=true\ndynamic_same_wave_allowed=true\nnative_matching_barrier=false\nnative_matching_snapshot_discovery=true\nnative_settlement_same_wal_batch=true\ncrosschain_barrier=true\nexternal_execution_barrier=true\nbitcoin_spv_reorg_barrier=true\nconflict_recheck_before_commit=true\ndeterministic_merge=true\nsingle_wal_batch_per_mvcc_batch=true\ndeterministic_order=fee_desc_txid_asc\ndeterministic_commit=true\nstate_commit=qrxdb_wal_atomic\nstate_root=true\nparallel_state_mutation=dependency_graph_waves_speculative_snapshot_runtime_occ_selective_retry\ncomplex_stateful_tx_parallel=native_dynamic_speculative_wave\n",
+        st.shards,(unsigned long long)st.max_entries,(unsigned long long)st.entries,(unsigned long long)st.bytes,plan.count,plan.wave_count,(unsigned long long)plan.conflicts,(unsigned long long)plan.dependency_edges,(unsigned long long)plan.barrier_nodes,(unsigned long long)plan.barrier_fences,plan.critical_path_nodes,plan.max_parallel_width,plan.schedule_hash);
+    qrx_velocity_plan_free(&plan);qrx_velocity_mempool_close(&pool);return 0;
+}
+
+static int velocity_mvcc_execute_cmd(const char *node_dir,int max_txs,int workers){
+    char conf[1024];snprintf(conf,sizeof(conf),"%s/node.conf",node_dir);char *cfg=read_file(conf,NULL);if(!cfg)die("missing node.conf");char *chain_dir=cfg_get(cfg,"chain_dir");if(!chain_dir)die("node.conf missing chain_dir");
+    if(max_txs<=0)max_txs=100;if(workers<=0)workers=4;if(workers>64)workers=64;
+    QrxVelocityMempool pool;QrxVelocityPlan plan;unsigned char *valid=NULL;QrxVelocityVerifyStats vst;QrxVelocityMvccStats mst;memset(&plan,0,sizeof(plan));memset(&vst,0,sizeof(vst));memset(&mst,0,sizeof(mst));
+    if(qrx_velocity_mempool_open(&pool,node_dir,MEMPOOL_MAX_TXS)!=0)die("velocity mempool open failed");
+    if(qrx_velocity_mempool_plan(&pool,(size_t)max_txs,&plan)!=0){qrx_velocity_mempool_close(&pool);die("velocity plan failed");}
+    if(qrx_velocity_parallel_verify(&plan,(uint32_t)workers,velocity_stateless_verify_cb,chain_dir,&valid,&vst)!=0){qrx_velocity_plan_free(&plan);qrx_velocity_mempool_close(&pool);die("parallel signature verification failed");}
+    QrxDB db;if(qrxdb_init(&db,chain_dir)!=0){free(valid);qrx_velocity_plan_free(&plan);qrx_velocity_mempool_close(&pool);die("QRXDB init failed");}
+    long long height=current_height_from_chain(chain_dir)+1;int rc=qrx_velocity_mvcc_execute_batch(&db,&plan,valid,(uint32_t)workers,height,&mst);
+    if(rc==QRX_MVCC_BARRIER){
+        printf("status=BARRIER_REQUIRED\nreason=remaining_serial_adapter\nprepared=%llu\nstateful_prepared=%llu\ndynamic_prepared=%llu\nbarriers=%llu\nstate_unchanged=true\n",(unsigned long long)mst.prepared,(unsigned long long)mst.stateful_prepared,(unsigned long long)mst.dynamic_prepared,(unsigned long long)mst.barriers);
+    }else if(rc==QRX_MVCC_UNSUPPORTED){
+        printf("status=FALLBACK_REQUIRED\nreason=unsupported_adapter\nprepared=%llu\nunsupported=%llu\nstate_unchanged=true\n",(unsigned long long)mst.prepared,(unsigned long long)mst.unsupported);
+    }else if(rc==QRX_MVCC_RETRY){
+        printf("status=RETRY\nreason=snapshot_generation_changed\nstate_unchanged=true\n");
+    }else if(rc==QRX_MVCC_OK){
+        for(size_t i=0;i<plan.count;i++)if(!valid||valid[i])qrx_velocity_mempool_remove(&pool,plan.txids[i]);qrx_velocity_mempool_checkpoint(&pool);
+        printf("status=COMMITTED\nprepared=%llu\ncommitted=%llu\nstateful_prepared=%llu\ndynamic_prepared=%llu\ndynamic_discovered_keys=%llu\ndynamic_trades=%llu\nexpired_orders=%llu\nspeculative_prepared=%llu\nruntime_read_keys=%llu\nruntime_read_prefixes=%llu\nconflict_edges=%llu\ndeterministic_conflicts=%llu\nselective_retries=%llu\nspeculative_winners=%llu\nwaves=%u\nworkers=%u\nsnapshot_generation=%llu\ncommit_generation=%llu\nmerged_writes=%llu\nprepare_us=%llu\ncommit_us=%llu\nstate_root=%s\n",
+            (unsigned long long)mst.prepared,(unsigned long long)mst.committed,(unsigned long long)mst.stateful_prepared,(unsigned long long)mst.dynamic_prepared,(unsigned long long)mst.dynamic_discovered_keys,(unsigned long long)mst.dynamic_trades,(unsigned long long)mst.expired_orders,(unsigned long long)mst.speculative_prepared,(unsigned long long)mst.runtime_read_keys,(unsigned long long)mst.runtime_read_prefixes,(unsigned long long)mst.conflict_edges,(unsigned long long)mst.deterministic_conflicts,(unsigned long long)mst.selective_retries,(unsigned long long)mst.speculative_winners,mst.waves,mst.workers,(unsigned long long)mst.snapshot_generation,(unsigned long long)mst.commit_generation,(unsigned long long)mst.merged_writes,(unsigned long long)mst.prepare_us,(unsigned long long)mst.commit_us,mst.state_root);
+        printf("scheduler_dependency_edges=%llu\nscheduler_barrier_fences=%llu\nscheduler_critical_path_nodes=%u\nscheduler_max_parallel_width=%u\nscheduler_hash=%s\n",(unsigned long long)plan.dependency_edges,(unsigned long long)plan.barrier_fences,plan.critical_path_nodes,plan.max_parallel_width,plan.schedule_hash);
+    }else{
+        printf("status=ERROR\nfailed=%llu\nstate_unchanged=true\n",(unsigned long long)mst.failed);
+    }
+    qrxdb_close(&db);free(valid);qrx_velocity_plan_free(&plan);qrx_velocity_mempool_close(&pool);free(chain_dir);free(cfg);return rc==QRX_MVCC_OK?0:((rc==QRX_MVCC_UNSUPPORTED||rc==QRX_MVCC_BARRIER)?2:1);
 }
 
 static int verify_cmd(const char *chain_dir, const char *tx_file) {
@@ -1689,44 +3114,172 @@ static int verify_cmd(const char *chain_dir, const char *tx_file) {
     int rc = verify_tx_text(chain_dir, tx); free(tx); puts(rc == 0 ? "OK" : "FAIL"); return rc;
 }
 
+/* === VELOCITY 0.0.7 Phase 3C+ : single WAL-backed outer apply commit === */
+static int atomic_batch_put_balance(QrxDBBatch *b,const char *address,long long value){
+    char k[768];snprintf(k,sizeof(k),"acct:balance:%s",address);return velocity_batch_put_ll(b,k,value);
+}
+static int atomic_batch_put_nonce(QrxDBBatch *b,const char *address,long long lane,long long value){
+    char k[768];if(lane==0)snprintf(k,sizeof(k),"acct:nonce:%s",address);else snprintf(k,sizeof(k),"velocity:nonce:%s:%lld",address,lane);return velocity_batch_put_ll(b,k,value);
+}
+static int atomic_batch_put_applied(QrxDBBatch *b,const char *txid,long long height){
+    char k[768],v[128];snprintf(k,sizeof(k),"tx:applied:%s",txid);snprintf(v,sizeof(v),"height=%lld\napplied=1\n",height);return qrxdb_batch_put(b,k,v);
+}
+static int atomic_batch_put_tx_index(QrxDBBatch *b,const char *txid,const char *kind,long long height,const char *tx){
+    char k[768],v[2048];snprintf(k,sizeof(k),"tx:loc:%s",txid);snprintf(v,sizeof(v),"tx_hash=%s\nblock_hash=%s\nheight=%lld\nindex=0\n",txid,kind?kind:"applytx",height);if(qrxdb_batch_put(b,k,v))return -1;
+    snprintf(k,sizeof(k),"tx:payload:%s",txid);if(qrxdb_batch_put(b,k,tx?tx:""))return -1;
+    snprintf(k,sizeof(k),"consensus:applytx:%s",txid);snprintf(v,sizeof(v),"height=%lld\ntype=%s\ncommitted=1\n",height,kind?kind:"LEGACY_TRANSFER");return qrxdb_batch_put(b,k,v);
+}
+static int atomic_stage_agent(QrxDBBatch *b,const char *owner,const char *agent,const char *tx_type,const char *payload,const char *body_hash,long long h){
+    char k[1024],hb[64];snprintf(hb,sizeof(hb),"%lld",h);int rc=0;
+#define PUT_AGENT(F,V) do{velocity_agent_key(k,sizeof(k),agent,(F));rc|=qrxdb_batch_put(b,k,(V)?(V):"");}while(0)
+    if(!strcmp(tx_type,"AGENT_REGISTER")||!strcmp(tx_type,"AGENT_UPDATE")){
+        char *ed=payload_get_field(payload,"agent_ed25519_pub_hex"),*ml=payload_get_field(payload,"agent_mldsa65_pub_b64"),*perm=payload_get_field(payload,"permissions"),*max_trade=payload_get_field(payload,"max_trade_atoms"),*daily=payload_get_field(payload,"daily_limit_atoms"),*markets=payload_get_field(payload,"market_allowlist"),*exp=payload_get_field(payload,"expires_height");
+        PUT_AGENT("owner",owner);PUT_AGENT("status","active");if(ed)PUT_AGENT("ed25519_pub_hex",ed);if(ml)PUT_AGENT("mldsa65_pub_b64",ml);PUT_AGENT("permissions",perm);PUT_AGENT("max_trade_atoms",max_trade);PUT_AGENT("daily_limit_atoms",daily);PUT_AGENT("market_allowlist",markets);PUT_AGENT("expires_height",exp);PUT_AGENT("updated_height",hb);PUT_AGENT("last_tx",body_hash);
+        free(ed);free(ml);free(perm);free(max_trade);free(daily);free(markets);free(exp);
+    } else if(!strcmp(tx_type,"AGENT_REVOKE")){
+        PUT_AGENT("status","revoked");PUT_AGENT("revoked_height",hb);PUT_AGENT("updated_height",hb);PUT_AGENT("last_tx",body_hash);
+    } else rc=-1;
+#undef PUT_AGENT
+    return rc? -1:0;
+}
+static int atomic_stage_order_payload(QrxDBBatch *b,const char *order_id,const char *agent,const char *owner,const char *kind,const char *status,const char *payload,const char *body_hash,const char *replaces,long long h){
+    const char *fields[]={"market","side","order_type","quantity_atoms","limit_price_atoms","order_expires_height","venue","client_order_id","time_in_force","arbitrage_id","source_order_id","hashlock_hex","btc_redeem_pubkey_hex","btc_refund_pubkey_hex","btc_refund_csv_blocks","qrx_refund_height",NULL};int rc=0;
+    rc|=velocity_batch_put_order(b,order_id,"owner",owner);rc|=velocity_batch_put_order(b,order_id,"agent",agent);rc|=velocity_batch_put_order(b,order_id,"kind",kind);rc|=velocity_batch_put_order(b,order_id,"status",status);rc|=velocity_batch_put_order_ll(b,order_id,"created_height",h);rc|=velocity_batch_put_order_ll(b,order_id,"updated_height",h);rc|=velocity_batch_put_order(b,order_id,"last_tx",body_hash?body_hash:order_id);if(replaces&&*replaces)rc|=velocity_batch_put_order(b,order_id,"replaces",replaces);
+    for(int i=0;fields[i];++i){char *v=payload_get_field(payload,fields[i]);if(v){rc|=velocity_batch_put_order(b,order_id,fields[i],v);free(v);}}
+    char *q=payload_get_field(payload,"quantity_atoms");if(q){long long qty=parse_positive_ll_strict(q,"quantity_atoms");rc|=velocity_batch_put_order_ll(b,order_id,"filled_atoms",0);rc|=velocity_batch_put_order_ll(b,order_id,"remaining_atoms",qty);free(q);}return rc?-1:0;
+}
+static int atomic_stage_agent_usage(QrxDBBatch *b,const char *chain_dir,const char *agent,long long qty){
+    if(qty<=0)return 0;long long bucket=0,cur=agent_usage_current(chain_dir,agent,&bucket,NULL),next=0;checked_add_ll(cur,qty,"agent usage",&next);char k[768];snprintf(k,sizeof(k),"velocity:agent_usage:%s:%lld",agent,bucket);return velocity_batch_put_ll(b,k,next);
+}
+static int atomic_stage_asset_value(QrxDBBatch *b,const char *asset,const char *owner,long long value){if(value<0)return -1;return velocity_batch_put_asset_balance(b,asset,owner,value);}
+static int atomic_stage_trade(QrxDBBatch *b,const char *chain_dir,const char *agent,const char *owner,const char *tx_type,const char *payload,const char *body_hash,long long h){
+    if(!strcmp(tx_type,"ORDER_CREATE")||!strcmp(tx_type,"EXTERNAL_ORDER")){
+        int external=!strcmp(tx_type,"EXTERNAL_ORDER");if(atomic_stage_order_payload(b,body_hash,agent,owner,external?"external":"native",external?"pending_execution":"open",payload,body_hash,NULL,h))return -1;
+        char *q=payload_get_field(payload,"quantity_atoms");long long qty=parse_positive_ll_strict(q,"quantity_atoms");free(q);if(atomic_stage_agent_usage(b,chain_dir,agent,qty))return -1;
+        if(!external){char *market=payload_get_field(payload,"market"),*side=payload_get_field(payload,"side"),*ps=payload_get_field(payload,"limit_price_atoms");long long price=parse_positive_ll_strict(ps,"limit_price_atoms");char asset[32];long long atoms=0;if(native_order_lock_requirements(chain_dir,owner,market,side,qty,price,asset,sizeof(asset),&atoms)) {free(market);free(side);free(ps);return -1;}long long cur=asset_balance_get(chain_dir,asset,owner);if(cur<atoms){free(market);free(side);free(ps);return -1;}if(atomic_stage_asset_value(b,asset,owner,cur-atoms)||velocity_batch_put_order(b,body_hash,"locked_asset",asset)||velocity_batch_put_order_ll(b,body_hash,"locked_atoms",atoms)||velocity_batch_put_order(b,body_hash,"settlement_version","1")){free(market);free(side);free(ps);return -1;}char pk[768];snprintf(pk,sizeof(pk),"velocity:match_pending:%s",body_hash);if(qrxdb_batch_put(b,pk,"1")){free(market);free(side);free(ps);return -1;}free(market);free(side);free(ps);}
+        return 0;
+    }
+    if(!strcmp(tx_type,"ORDER_CANCEL")){
+        char *target=payload_get_field(payload,"order_id");if(!target)return -1;char *kind=order_db_get_field(chain_dir,target,"kind");int rc=0;if(kind&&(!strcmp(kind,"native")||!strcmp(kind,"crosschain"))){char *asset=order_db_get_field(chain_dir,target,"locked_asset");long long atoms=order_db_get_ll(chain_dir,target,"locked_atoms",0);if(asset&&atoms>0){long long cur=asset_balance_get(chain_dir,asset,owner),next=0;checked_add_ll(cur,atoms,"cancel release",&next);rc|=atomic_stage_asset_value(b,asset,owner,next);}rc|=velocity_batch_put_order_ll(b,target,"locked_atoms",0);free(asset);}rc|=velocity_batch_put_order(b,target,"status",(kind&&!strcmp(kind,"external"))?"cancel_pending":"canceled");rc|=velocity_batch_put_order_ll(b,target,"updated_height",h);rc|=velocity_batch_put_order(b,target,"last_tx",body_hash);free(kind);free(target);return rc?-1:0;
+    }
+    if(!strcmp(tx_type,"ORDER_REPLACE")){
+        char *target=payload_get_field(payload,"order_id"),*market=payload_get_field(payload,"market"),*side=payload_get_field(payload,"side"),*qs=payload_get_field(payload,"quantity_atoms"),*ps=payload_get_field(payload,"limit_price_atoms");if(!target||!market||!side||!qs||!ps){free(target);free(market);free(side);free(qs);free(ps);return -1;}long long qty=parse_positive_ll_strict(qs,"quantity_atoms"),price=parse_positive_ll_strict(ps,"limit_price_atoms");char *old_asset=order_db_get_field(chain_dir,target,"locked_asset");long long old_atoms=order_db_get_ll(chain_dir,target,"locked_atoms",0);char new_asset[32];long long new_atoms=0;/* validation already established reserve feasibility; compute required asset without relying on its old-balance return code */(void)native_order_lock_requirements(chain_dir,owner,market,side,qty,price,new_asset,sizeof(new_asset),&new_atoms);
+        int rc=0;if(old_asset&&!strcasecmp(old_asset,new_asset)){long long cur=asset_balance_get(chain_dir,new_asset,owner),avail=0;checked_add_ll(cur,old_atoms,"replacement release",&avail);if(avail<new_atoms){free(target);free(market);free(side);free(qs);free(ps);free(old_asset);return -1;}rc|=atomic_stage_asset_value(b,new_asset,owner,avail-new_atoms);}else{if(old_asset&&old_atoms>0){long long cur=asset_balance_get(chain_dir,old_asset,owner),next=0;checked_add_ll(cur,old_atoms,"replacement old release",&next);rc|=atomic_stage_asset_value(b,old_asset,owner,next);}long long cur=asset_balance_get(chain_dir,new_asset,owner);if(cur<new_atoms){free(target);free(market);free(side);free(qs);free(ps);free(old_asset);return -1;}rc|=atomic_stage_asset_value(b,new_asset,owner,cur-new_atoms);}
+        rc|=velocity_batch_put_order(b,target,"status","replaced");rc|=velocity_batch_put_order_ll(b,target,"updated_height",h);rc|=velocity_batch_put_order_ll(b,target,"locked_atoms",0);rc|=velocity_batch_put_order(b,target,"replacement_order_id",body_hash);rc|=velocity_batch_put_order(b,target,"last_tx",body_hash);rc|=atomic_stage_order_payload(b,body_hash,agent,owner,"native","open",payload,body_hash,target,h);rc|=velocity_batch_put_order(b,body_hash,"locked_asset",new_asset);rc|=velocity_batch_put_order_ll(b,body_hash,"locked_atoms",new_atoms);rc|=velocity_batch_put_order(b,body_hash,"settlement_version","1");rc|=atomic_stage_agent_usage(b,chain_dir,agent,qty);char pk[768];snprintf(pk,sizeof(pk),"velocity:match_pending:%s",body_hash);rc|=qrxdb_batch_put(b,pk,"1");free(target);free(market);free(side);free(qs);free(ps);free(old_asset);return rc?-1:0;
+    }
+    return -1;
+}
+static int atomic_stage_gateway(QrxDBBatch *b,const char *authority,const char *gateway,const char *tx_type,const char *payload,const char *body_hash,long long h){
+    int rc=0;if(!strcmp(tx_type,"GATEWAY_REGISTER")){char *venue=payload_get_field(payload,"venue"),*name=payload_get_field(payload,"name"),*ed=payload_get_field(payload,"gateway_ed25519_pub_hex"),*ml=payload_get_field(payload,"gateway_mldsa65_pub_b64"),*exp=payload_get_field(payload,"expires_height");rc|=velocity_batch_put_gateway(b,gateway,"authority",authority);rc|=velocity_batch_put_gateway(b,gateway,"status","active");rc|=velocity_batch_put_gateway(b,gateway,"venue",venue);rc|=velocity_batch_put_gateway(b,gateway,"name",name);rc|=velocity_batch_put_gateway(b,gateway,"ed25519_pub_hex",ed);rc|=velocity_batch_put_gateway(b,gateway,"mldsa65_pub_b64",ml);rc|=velocity_batch_put_gateway(b,gateway,"expires_height",exp);rc|=velocity_batch_put_gateway_ll(b,gateway,"updated_height",h);rc|=velocity_batch_put_gateway(b,gateway,"last_tx",body_hash);free(venue);free(name);free(ed);free(ml);free(exp);}else if(!strcmp(tx_type,"GATEWAY_REVOKE")){rc|=velocity_batch_put_gateway(b,gateway,"status","revoked");rc|=velocity_batch_put_gateway_ll(b,gateway,"revoked_height",h);rc|=velocity_batch_put_gateway_ll(b,gateway,"updated_height",h);rc|=velocity_batch_put_gateway(b,gateway,"last_tx",body_hash);}else rc=-1;return rc?-1:0;
+}
+static int atomic_stage_execution_report(QrxDBBatch *b,const char *gateway,const char *owner,const char *payload,const char *body_hash,long long h){
+    char *order_id=payload_get_field(payload,"order_id"),*status=payload_get_field(payload,"status"),*fs=payload_get_field(payload,"filled_quantity_atoms"),*ps=payload_get_field(payload,"avg_price_atoms"),*vfs=payload_get_field(payload,"venue_fee_atoms"),*venue_order_id=payload_get_field(payload,"venue_order_id"),*ss=payload_get_field(payload,"report_sequence");if(!order_id||!status||!fs||!ps||!vfs||!venue_order_id||!ss){free(order_id);free(status);free(fs);free(ps);free(vfs);free(venue_order_id);free(ss);return -1;}long long filled=parse_nonnegative_ll_strict(fs,"filled_quantity_atoms"),price=parse_nonnegative_ll_strict(ps,"avg_price_atoms"),vfee=parse_nonnegative_ll_strict(vfs,"venue_fee_atoms"),seq=parse_positive_ll_strict(ss,"report_sequence");const char *mapped=!strcasecmp(status,"SUBMITTED")?"submitted":!strcasecmp(status,"PARTIALLY_FILLED")?"partially_filled":!strcasecmp(status,"FILLED")?"filled":!strcasecmp(status,"REJECTED")?"rejected":"canceled";int rc=0;rc|=velocity_batch_put_order(b,order_id,"status",mapped);rc|=velocity_batch_put_order_ll(b,order_id,"external_filled_atoms",filled);rc|=velocity_batch_put_order_ll(b,order_id,"external_avg_price_atoms",price);rc|=velocity_batch_put_order_ll(b,order_id,"external_venue_fee_atoms",vfee);rc|=velocity_batch_put_order(b,order_id,"venue_order_id",venue_order_id);rc|=velocity_batch_put_order(b,order_id,"execution_gateway",gateway);rc|=velocity_batch_put_order_ll(b,order_id,"execution_report_sequence",seq);rc|=velocity_batch_put_order_ll(b,order_id,"updated_height",h);rc|=velocity_batch_put_order(b,order_id,"last_execution_report",body_hash);char rk[768],rv[2048];snprintf(rk,sizeof(rk),"velocity:execution_report:%s",body_hash);snprintf(rv,sizeof(rv),"order_id=%s\ngateway=%s\nowner=%s\nstatus=%s\nfilled_quantity_atoms=%lld\navg_price_atoms=%lld\nvenue_fee_atoms=%lld\nvenue_order_id=%s\nreport_sequence=%lld\nheight=%lld\n",order_id,gateway,owner,mapped,filled,price,vfee,venue_order_id,seq,h);rc|=qrxdb_batch_put(b,rk,rv);free(order_id);free(status);free(fs);free(ps);free(vfs);free(venue_order_id);free(ss);return rc?-1:0;
+}
+static int mirror_agent_from_authoritative(const char *chain_dir,const char *agent){const char *fields[]={"owner","status","permissions","max_trade_atoms","daily_limit_atoms","market_allowlist","expires_height","updated_height","revoked_height","last_tx","ed25519_pub_hex","mldsa65_pub_b64",NULL};char path[1024],key[768];agent_registry_path(chain_dir,path,sizeof(path));for(int i=0;fields[i];i++){char *v=agent_db_get_field(chain_dir,agent,fields[i]);if(v){if(!agent_make_key(key,sizeof(key),agent,fields[i]))text_db_set(path,key,v);free(v);}}return 0;}
+static int mirror_order_from_authoritative(const char *chain_dir,const char *oid){const char *fields[]={"owner","agent","kind","venue","market","side","order_type","quantity_atoms","filled_atoms","remaining_atoms","limit_price_atoms","status","created_height","updated_height","order_expires_height","client_order_id","time_in_force","arbitrage_id","source_order_id","replaces","replacement_order_id","settlement_version","locked_asset","locked_atoms","external_filled_atoms","external_avg_price_atoms","external_venue_fee_atoms","venue_order_id","execution_gateway","execution_report_sequence","last_execution_report","last_trade_id","crosschain_session_id","hashlock_hex","btc_redeem_pubkey_hex","btc_refund_pubkey_hex","btc_refund_csv_blocks","qrx_refund_height","last_tx",NULL};for(int i=0;fields[i];i++){char *v=order_db_get_field(chain_dir,oid,fields[i]);if(v){mirror_order_field_only(chain_dir,oid,fields[i],v);free(v);}}return 0;}
+static int mirror_gateway_from_authoritative(const char *chain_dir,const char *gw){const char *fields[]={"authority","status","venue","name","ed25519_pub_hex","mldsa65_pub_b64","expires_height","updated_height","revoked_height","last_tx",NULL};for(int i=0;fields[i];i++){char *v=gateway_db_get_field(chain_dir,gw,fields[i]);if(v){mirror_gateway_field_only(chain_dir,gw,fields[i],v);free(v);}}return 0;}
+static void mirror_asset_authoritative(const char *chain_dir,const char *asset,const char *owner){if(asset&&*asset&&owner&&*owner)mirror_asset_balance_only(chain_dir,asset,owner,asset_balance_get(chain_dir,asset,owner));}
+static void mirror_agent_usage_authoritative(const char *chain_dir,const char *agent){long long bucket=0,used=agent_usage_current(chain_dir,agent,&bucket,NULL);char path[1024],key[512];agent_usage_path(chain_dir,path,sizeof(path));snprintf(key,sizeof(key),"%s|%lld",agent,bucket);kv_set_ll_bin(path,key,used);}
+static int clear_match_pending(const char *chain_dir,const char *oid){char k[768];snprintf(k,sizeof(k),"velocity:match_pending:%s",oid);return velocity_qrxdb_put(chain_dir,k,"0");}
+static int postcommit_trade(const char *chain_dir,const char *agent,const char *owner,const char *tx_type,const char *payload,const char *body_hash){
+    if(!strcmp(tx_type,"ORDER_CREATE")||!strcmp(tx_type,"EXTERNAL_ORDER")){mirror_order_from_authoritative(chain_dir,body_hash);mirror_agent_usage_authoritative(chain_dir,agent);if(!strcmp(tx_type,"ORDER_CREATE")){char *a=order_db_get_field(chain_dir,body_hash,"locked_asset");mirror_asset_authoritative(chain_dir,a,owner);free(a);if(match_native_order(chain_dir,body_hash)==0)clear_match_pending(chain_dir,body_hash);}return 0;}
+    if(!strcmp(tx_type,"ORDER_CANCEL")){char *target=payload_get_field(payload,"order_id");if(target){char *a=order_db_get_field(chain_dir,target,"locked_asset");mirror_order_from_authoritative(chain_dir,target);mirror_asset_authoritative(chain_dir,a,owner);free(a);free(target);}return 0;}
+    if(!strcmp(tx_type,"ORDER_REPLACE")){char *target=payload_get_field(payload,"order_id");if(target){char *old=order_db_get_field(chain_dir,target,"locked_asset"),*nw=order_db_get_field(chain_dir,body_hash,"locked_asset");mirror_order_from_authoritative(chain_dir,target);mirror_order_from_authoritative(chain_dir,body_hash);mirror_asset_authoritative(chain_dir,old,owner);if(!old||!nw||strcasecmp(old,nw))mirror_asset_authoritative(chain_dir,nw,owner);mirror_agent_usage_authoritative(chain_dir,agent);free(old);free(nw);free(target);if(match_native_order(chain_dir,body_hash)==0)clear_match_pending(chain_dir,body_hash);}return 0;}return 0;
+}
+typedef struct {char **ids;size_t count,cap;} PendingMatchList;
+static int pending_match_collect_cb(const char *key,const char *value,uint32_t value_len,void *ctx){(void)value_len;PendingMatchList *l=(PendingMatchList*)ctx;if(!value||strcmp(value,"1"))return 0;const char *pfx="velocity:match_pending:";size_t pl=strlen(pfx);if(strncmp(key,pfx,pl))return 0;if(l->count==l->cap){size_t nc=l->cap?l->cap*2:8;char **nn=realloc(l->ids,nc*sizeof(*nn));if(!nn)return -1;l->ids=nn;l->cap=nc;}l->ids[l->count++]=strdup(key+pl);return l->ids[l->count-1]?0:-1;}
+static void velocity_process_pending_matches(const char *chain_dir){QrxDB db;PendingMatchList l={0};if(qrxdb_init(&db,chain_dir)!=0)return;qrxdb_scan_prefix(&db,"velocity:match_pending:",pending_match_collect_cb,&l);qrxdb_close(&db);for(size_t i=0;i<l.count;i++){mirror_order_from_authoritative(chain_dir,l.ids[i]);if(match_native_order(chain_dir,l.ids[i])==0)clear_match_pending(chain_dir,l.ids[i]);free(l.ids[i]);}free(l.ids);}
+static void mirror_common_apply_state(const char *chain_dir,const char *from,const char *to,int has_recipient,long long lane,const char *body_hash){
+    char bal[1024],noncepath[1024],appl[1024],fp[1024];state_paths(chain_dir,bal,sizeof(bal),noncepath,sizeof(noncepath),appl,sizeof(appl),NULL,0);kv_set_ll_bin(bal,from,qrx_balance_get_authoritative(chain_dir,from));if(has_recipient&&strcmp(from,to))kv_set_ll_bin(bal,to,qrx_balance_get_authoritative(chain_dir,to));if(lane==0)kv_set_ll_bin(noncepath,from,velocity_get_lane_nonce(chain_dir,from,0));else{char lp[1024],lk[512];velocity_lane_nonce_path(chain_dir,lp,sizeof(lp));snprintf(lk,sizeof(lk),"%s|%lld",from,lane);kv_set_ll_bin(lp,lk,velocity_get_lane_nonce(chain_dir,from,lane));}fee_pool_path(chain_dir,fp,sizeof(fp));kv_set_ll_bin(fp,"pending_fees",fee_pool_pending(chain_dir));applied_add_bin(appl,body_hash);
+}
+
 static int applytx_cmd(const char *chain_dir, const char *tx_file) {
+    /* Finish any native order whose transaction was durably committed before a
+       previous process died during post-commit matching/mirroring. The pending
+       marker itself is part of the authoritative QRXDB state. */
+    velocity_process_pending_matches(chain_dir);
+    velocity_process_pending_crosschain_matches(chain_dir);
+
     char *tx = read_file(tx_file, NULL); if (!tx) die("cannot read tx");
     if (verify_tx_text(chain_dir, tx) != 0) die("verify failed");
-    char *from = cfg_get(tx, "from"); char *to = cfg_get(tx, "to"); char *amount = cfg_get(tx, "amount"); char *fee_s = cfg_get(tx, "fee"); char *nonce = cfg_get(tx, "nonce");
-    char *body_hash_sha3 = cfg_get(tx, "body_hash_sha3_512"); char *body_hash_legacy = cfg_get(tx, "body_hash");
-    const char *body_hash = body_hash_sha3 ? body_hash_sha3 : body_hash_legacy;
-    if (!from || !*from || !to || !*to) die("invalid tx addresses");
-    long long amt = parse_positive_ll_strict(amount, "amount");
-    long long fee = fee_s ? parse_nonnegative_ll_strict(fee_s, "fee") : 0;
-    long long n = parse_positive_ll_strict(nonce, "nonce");
-    long long debit = 0;
-    checked_add_ll(amt, fee, "amount plus fee", &debit);
-    char balpath[1024], noncepath[1024], applpath[1024];
-    state_paths(chain_dir, balpath, sizeof(balpath), noncepath, sizeof(noncepath), applpath, sizeof(applpath), NULL, 0);
-    long long current_nonce = kv_get_ll_bin(noncepath, from);
-    if (current_nonce == LLONG_MAX) die("nonce overflow");
-    if (n != current_nonce + 1) die("invalid nonce: expected current nonce + 1");
-    long long frombal = kv_get_ll_bin(balpath, from); if (frombal < debit) die("insufficient funds");
-    long long tobal = kv_get_ll_bin(balpath, to);
-    long long new_frombal = 0, new_tobal = 0;
-    checked_add_ll(frombal, -debit, "sender balance", &new_frombal);
-    checked_add_ll(tobal, amt, "recipient balance", &new_tobal);
-    if (kv_set_ll_bin(balpath, from, new_frombal) != 0) die("state write failed");
-    if (kv_set_ll_bin(balpath, to, new_tobal) != 0) die("state write failed");
-    if (fee_pool_add(chain_dir, fee) != 0) die("fee pool update failed");
-    if (kv_set_ll_bin(noncepath, from, n) != 0) die("state write failed");
-    if (applied_add_bin(applpath, body_hash) != 0) die("state write failed");
-    { QrxDB db; if (qrxdb_init(&db, chain_dir) == 0) {
-        qrxdb_chain_set_balance(&db, from, new_frombal);
-        qrxdb_chain_set_balance(&db, to, new_tobal);
-        qrxdb_chain_set_nonce(&db, from, n);
-        qrxdb_chain_mark_applied(&db, body_hash, (uint64_t)current_height_from_chain(chain_dir));
-        qrxdb_chain_index_tx(&db, body_hash, "mempool-or-direct-apply", (uint64_t)current_height_from_chain(chain_dir), 0, tx);
-        qrxdb_close(&db);
-    }}
-    journal_append(chain_dir, "applytx from=%s to=%s amount=%lld fee=%lld nonce=%s body_hash=%s", from, to, amt, fee, nonce, body_hash);
-    puts("APPLIED");
-    free(tx); free(from); free(to); free(amount); if (fee_s) free(fee_s); free(nonce); if (body_hash_sha3) free(body_hash_sha3); if (body_hash_legacy) free(body_hash_legacy); return 0;
+    char *tx_version = cfg_get(tx, "tx_version"); int is_velocity = tx_version && atoi(tx_version) == QRX_VELOCITY_TX_VERSION;
+    char *tx_type = cfg_get(tx, "tx_type"); char *lane_id = cfg_get(tx, "lane_id"); char *payload_apply = cfg_get(tx, "payload");
+    char *from = cfg_get(tx, "from"); char *to = cfg_get(tx, "to"); char *amount = cfg_get(tx, "amount"); char *fee_s = cfg_get(tx, "fee"); char *nonce = cfg_get(tx, "nonce"); char *timestamp = cfg_get(tx, "timestamp");
+    char *body_hash_sha3 = cfg_get(tx, "body_hash_sha3_512"); char *body_hash_legacy = cfg_get(tx, "body_hash"); const char *body_hash = body_hash_sha3 ? body_hash_sha3 : body_hash_legacy;
+    long long lane = 0; if (is_velocity && velocity_parse_lane(lane_id, &lane) != 0) die("invalid lane_id");
+    int is_agent_tx = is_velocity && tx_type && (!strcmp(tx_type, "AGENT_REGISTER") || !strcmp(tx_type, "AGENT_UPDATE") || !strcmp(tx_type, "AGENT_REVOKE"));
+    int is_trade_tx = is_velocity && tx_type && (!strcmp(tx_type, "ORDER_CREATE") || !strcmp(tx_type, "ORDER_CANCEL") || !strcmp(tx_type, "ORDER_REPLACE") || !strcmp(tx_type, "EXTERNAL_ORDER"));
+    int is_gateway_tx = is_velocity && tx_type && (!strcmp(tx_type,"GATEWAY_REGISTER") || !strcmp(tx_type,"GATEWAY_REVOKE"));
+    int is_execution_report = is_velocity && tx_type && !strcmp(tx_type,"EXECUTION_REPORT");
+    int is_crosschain_order = is_velocity && tx_type && !strcmp(tx_type,"CROSSCHAIN_ORDER");
+    int is_crosschain_action = is_velocity && tx_type && (!strcmp(tx_type,"CROSSCHAIN_REDEEM") || !strcmp(tx_type,"CROSSCHAIN_REFUND"));
+    int is_btc_spv_header = is_velocity && tx_type && !strcmp(tx_type,"BTC_SPV_HEADER");
+    int is_btc_spv_proof = is_velocity && tx_type && !strcmp(tx_type,"BTC_SPV_FUNDING_PROOF");
+    int is_transfer = !is_agent_tx && !is_trade_tx && !is_gateway_tx && !is_execution_report && !is_crosschain_order && !is_crosschain_action && !is_btc_spv_header && !is_btc_spv_proof;
+    if (is_velocity && !is_agent_tx && !is_trade_tx && !is_gateway_tx && !is_execution_report && !is_crosschain_order && !is_crosschain_action && !is_btc_spv_header && !is_btc_spv_proof && (!tx_type || strcmp(tx_type, "TRANSFER_FAST") != 0)) die("velocity execution not active for this tx_type");
+    if (!from || !*from || !to || !*to || !body_hash || !*body_hash) die("invalid tx addresses/hash");
+    if((is_trade_tx || is_crosschain_order) && !strcmp(from,to)) die("trading agent must use a distinct delegated address from the owner wallet");
+
+    long long amt = is_transfer ? parse_positive_ll_strict(amount, "amount") : parse_nonnegative_ll_strict(amount, "amount");
+    long long fee = fee_s ? parse_nonnegative_ll_strict(fee_s, "fee") : 0; long long n = parse_positive_ll_strict(nonce, "nonce");
+    long long debit = 0; checked_add_ll(is_transfer ? amt : 0, fee, "amount plus fee", &debit);
+    long long height=current_height_from_chain(chain_dir);
+    long long current_nonce = velocity_get_lane_nonce(chain_dir, from, lane); if (current_nonce == LLONG_MAX) die("nonce overflow"); if (n != current_nonce + 1) die("invalid nonce: expected lane nonce + 1");
+
+    long long frombal=qrx_balance_get_authoritative(chain_dir,from),tobal=qrx_balance_get_authoritative(chain_dir,to),new_frombal=0,new_tobal=tobal;
+    if(frombal<debit) die("insufficient funds");
+    if(is_transfer && !strcmp(from,to)){
+        /* Self transfer must not mint amount back over the sender debit. The
+           economic effect is only the fee. Verification still requires the
+           wallet to cover amount+fee, preserving the historical admission rule. */
+        checked_add_ll(frombal,-fee,"self-transfer fee",&new_frombal);new_tobal=new_frombal;
+    }else{
+        checked_add_ll(frombal,-debit,"sender balance",&new_frombal);
+        if(is_transfer) checked_add_ll(tobal,amt,"recipient balance",&new_tobal);
+    }
+    if(is_crosschain_action){
+        char *sid=payload_get_field(payload_apply,"session_id");
+        long long locked=sid?crosschain_get_ll(chain_dir,sid,"qrx_locked_atoms",0):0;
+        if(sid)free(sid);
+        if(locked<=0)die("cross-chain session has no locked QUB");
+        checked_add_ll(new_frombal,locked,"cross-chain QUB release",&new_frombal);
+    }
+    long long fee_pending=fee_pool_pending(chain_dir),new_fee_pending=0;checked_add_ll(fee_pending,fee,"fee pool",&new_fee_pending);
+
+    QrxDB db;QrxDBBatch batch;if(qrxdb_init(&db,chain_dir)!=0)die("QRXDB init failed");if(qrxdb_batch_begin(&db,&batch)!=0){qrxdb_close(&db);die("QRXDB batch begin failed");}
+    int brc=0;
+    brc|=atomic_batch_put_balance(&batch,from,new_frombal);
+    if(is_transfer && strcmp(from,to)) brc|=atomic_batch_put_balance(&batch,to,new_tobal);
+    if(is_agent_tx) brc|=atomic_stage_agent(&batch,from,to,tx_type,payload_apply,body_hash,height);
+    if(is_trade_tx) brc|=atomic_stage_trade(&batch,chain_dir,from,to,tx_type,payload_apply,body_hash,height);
+    if(is_crosschain_order) brc|=crosschain_stage_order(&batch,chain_dir,from,to,payload_apply,body_hash,height);
+    if(is_crosschain_action) brc|=crosschain_stage_action(&batch,chain_dir,from,tx_type,payload_apply,body_hash,height);
+    if(is_btc_spv_header) brc|=atomic_stage_btc_spv_header(&db,&batch,chain_dir,payload_apply);
+    if(is_btc_spv_proof) brc|=atomic_stage_btc_spv_funding_proof(&batch,chain_dir,from,payload_apply,body_hash,height);
+    if(is_gateway_tx) brc|=atomic_stage_gateway(&batch,from,to,tx_type,payload_apply,body_hash,height);
+    if(is_execution_report) brc|=atomic_stage_execution_report(&batch,from,to,payload_apply,body_hash,height);
+    brc|=velocity_batch_put_ll(&batch,"consensus:fee_pool:pending",new_fee_pending);
+    brc|=atomic_batch_put_nonce(&batch,from,lane,n);
+    brc|=atomic_batch_put_applied(&batch,body_hash,height);
+    const char *kind=is_agent_tx?"velocity-agent":is_crosschain_order?"velocity-crosschain-order":is_crosschain_action?"velocity-crosschain-settlement":is_btc_spv_header?"velocity-btc-spv-header":is_btc_spv_proof?"velocity-btc-spv-funding-proof":is_trade_tx?"velocity-trading-intent":is_gateway_tx?"velocity-gateway":is_execution_report?"velocity-execution-report":(is_velocity?"velocity-transfer-fast":"mempool-or-direct-apply");
+    brc|=atomic_batch_put_tx_index(&batch,body_hash,kind,height,tx);
+    if(brc){qrxdb_batch_abort(&batch);qrxdb_close(&db);die("atomic state staging failed");}
+    if(qrxdb_batch_commit(&batch)!=0){qrxdb_batch_abort(&batch);qrxdb_close(&db);die("atomic WAL commit failed");}
+    char state_root[129]={0};qrxdb_merkle_root_hex(&db,state_root);unsigned long long generation=(unsigned long long)qrxdb_generation(&db);qrxdb_close(&db);
+
+    /* Legacy files are compatibility mirrors only from this point onward. They
+       are deliberately written after the durable QRXDB commit and are never
+       authoritative for consensus validation when a QRXDB value exists. */
+    mirror_common_apply_state(chain_dir,from,to,is_transfer,lane,body_hash);
+    if(is_agent_tx) mirror_agent_from_authoritative(chain_dir,to);
+    if(is_trade_tx) postcommit_trade(chain_dir,from,to,tx_type,payload_apply,body_hash);
+    if(is_crosschain_order){ mirror_order_from_authoritative(chain_dir,body_hash); mirror_agent_usage_authoritative(chain_dir,from); {char *a=order_db_get_field(chain_dir,body_hash,"locked_asset"); if(a&&!strcasecmp(a,"QUB")) mirror_asset_authoritative(chain_dir,a,to); free(a);} match_crosschain_order(chain_dir,body_hash); }
+    if(is_gateway_tx) mirror_gateway_from_authoritative(chain_dir,to);
+    if(is_execution_report){char *oid=payload_get_field(payload_apply,"order_id");if(oid){mirror_order_from_authoritative(chain_dir,oid);free(oid);}}
+
+    journal_append(chain_dir, "applytx_atomic generation=%llu state_root=%s height=%lld timestamp=%s tx_version=%s tx_type=%s from=%s to=%s amount=%lld fee=%lld lane=%lld nonce=%s body_hash=%s", generation,state_root,height,timestamp?timestamp:"0",tx_version?tx_version:"2", tx_type?tx_type:"LEGACY_TRANSFER", from, to, amt, fee, lane, nonce, body_hash);
+    printf("APPLIED\nstate_root=%s\nqrxdb_generation=%llu\n",state_root,generation);
+    free(tx); if(tx_version) free(tx_version); if(tx_type) free(tx_type); if(lane_id) free(lane_id); if(payload_apply) free(payload_apply); free(from); free(to); free(amount); if (fee_s) free(fee_s); free(nonce); if(timestamp) free(timestamp); if (body_hash_sha3) free(body_hash_sha3); if (body_hash_legacy) free(body_hash_legacy); return 0;
 }
 
 static int node_init_cmd(const char *node_dir, const char *chain_dir, const char *wallet_dir, const char *host, const char *port) {
@@ -2000,11 +3553,18 @@ static int verify_hello_msg(const char *node_conf_text, const char *msg) {
 }
 
 static int node_store_mempool_tx(const char *node_dir, const char *tx_text) {
-    char cmd[2048]; snprintf(cmd, sizeof(cmd), "find '%s/mempool' -maxdepth 1 -type f 2>/dev/null | wc -l", node_dir);
-    FILE *fp = popen_qrx(cmd, "r"); long long count = 0; if (fp) { fscanf(fp, "%lld", &count); pclose_qrx(fp); }
-    if (count >= MEMPOOL_MAX_TXS) mempool_prune_cmd(node_dir, MEMPOOL_MAX_TXS - 16);
-    char hash[129]; hash_primary_hex((unsigned char*)tx_text, strlen(tx_text), hash);
-    char p[1024]; snprintf(p, sizeof(p), "%s/mempool/%s.qrxtx", node_dir, hash); return write_text(p, tx_text);
+    char txid[129]={0};
+    if(g_velocity_mempool_ready){
+        int rc=qrx_velocity_mempool_add(&g_velocity_mempool,tx_text,txid);
+        if(rc==0 || rc==1) return 0; /* duplicates are already safely admitted */
+        return -1;
+    }
+    /* Standalone/fallback path still uses the VELOCITY WAL rather than one file per TX. */
+    QrxVelocityMempool pool;
+    if(qrx_velocity_mempool_open(&pool,node_dir,MEMPOOL_MAX_TXS)!=0) return -1;
+    int rc=qrx_velocity_mempool_add(&pool,tx_text,txid);
+    qrx_velocity_mempool_close(&pool);
+    return (rc==0||rc==1)?0:-1;
 }
 
 static void node_handle_client(int fd, const char *node_dir) {
@@ -2072,6 +3632,8 @@ static int sendtx_to_peer(const char *node_dir, const char *tx_text, const char 
 static int node_run_cmd(const char *node_dir) {
     qrx_net_init_once();
     signal(SIGINT, on_sigint);
+    if(qrx_velocity_mempool_open(&g_velocity_mempool,node_dir,MEMPOOL_MAX_TXS)!=0) die("VELOCITY mempool init/recovery failed");
+    g_velocity_mempool_ready=1;
     char p[1024]; snprintf(p, sizeof(p), "%s/node.conf", node_dir); char *cfg = read_file(p, NULL); if (!cfg) die("missing node.conf");
     char *host = cfg_get(cfg, "host"), *port_s = cfg_get(cfg, "port"); int port = atoi(port_s);
     int s = socket(AF_INET, SOCK_STREAM, 0); if (s < 0) die("socket failed");
@@ -2086,7 +3648,9 @@ static int node_run_cmd(const char *node_dir) {
         if (fd < 0) { if (errno == EINTR) break; continue; }
         node_handle_client(fd, node_dir); qrx_close_socket(fd);
     }
-    qrx_close_socket(s); free(cfg); free(host); free(port_s); return 0;
+    qrx_close_socket(s); free(cfg); free(host); free(port_s);
+    if(g_velocity_mempool_ready){qrx_velocity_mempool_checkpoint(&g_velocity_mempool);qrx_velocity_mempool_close(&g_velocity_mempool);g_velocity_mempool_ready=0;}
+    return 0;
 }
 
 static int sendtx_cmd(const char *node_dir, const char *tx_file) {
@@ -2347,18 +3911,33 @@ static int propose_block_cmd(const char *node_dir, int max_txs) {
     long long chain_max_txs = qrx_chain_get_ll_at_height_or_default(chain_dir, height, "max_txs_per_block", 100);
     if (max_txs <= 0 || max_txs > chain_max_txs) max_txs = (int)chain_max_txs;
     if (validator_snapshot_write(chain_dir, height, round) != 0) die("validator snapshot write failed");
-    char cmd[2048]; snprintf(cmd, sizeof(cmd), "ls -1 '%s/mempool' 2>/dev/null", node_dir); FILE *fp = popen_qrx(cmd, "r"); if (!fp) die("mempool list failed");
     char blockbuf[MAX_MSG]; size_t off = 0;
     off += snprintf(blockbuf+off, sizeof(blockbuf)-off,
         "network_id=%s\ngenesis_hash=%s\nprotocol_version=%s\nconsensus_version=%s\nchain_id=%s\nheight=%lld\nround=%lld\nvalidator=%s\nvalidator_power=%lld\ntimestamp=%lld\n",
         network_id, genesis_hash, protocol_version, consensus_version, chain_id, height, round, address, validator_power, (long long)time(NULL));
-    int count = 0; char fname[512];
-    while (count < max_txs && fgets(fname, sizeof(fname), fp)) {
-        fname[strcspn(fname, "\r\n")] = 0; if (!*fname) continue;
-        char txp[1024]; snprintf(txp, sizeof(txp), "%s/mempool/%s", node_dir, fname); char *tx = read_file(txp, NULL); if (!tx) continue;
-        char h[129]; hash_primary_hex((unsigned char*)tx, strlen(tx), h); off += snprintf(blockbuf+off, sizeof(blockbuf)-off, "tx%d=%s\n", count+1, h); count++; free(tx);
+    int count = 0;
+    QrxVelocityMempool vpool; QrxVelocityPlan vplan; memset(&vplan,0,sizeof(vplan));
+    if(qrx_velocity_mempool_open(&vpool,node_dir,MEMPOOL_MAX_TXS)==0){
+        if(qrx_velocity_mempool_plan(&vpool,(size_t)max_txs,&vplan)==0){
+            char applpath[1024]; state_paths(chain_dir,NULL,0,NULL,0,applpath,sizeof(applpath),NULL,0);
+            int workers=4; const char *we=getenv("QRX_SIGNATURE_WORKERS"); if(we&&atoi(we)>0)workers=atoi(we); if(workers>64)workers=64;
+            unsigned char *valid=NULL; QrxVelocityVerifyStats vst; memset(&vst,0,sizeof(vst));
+            if(qrx_velocity_parallel_verify(&vplan,(uint32_t)workers,velocity_stateless_verify_cb,chain_dir,&valid,&vst)!=0) die("VELOCITY parallel signature verification failed");
+            for(size_t i=0;i<vplan.count && count<max_txs;i++){
+                if(!valid[i]){continue;}
+                char *body_hash=cfg_get(vplan.txs[i],"body_hash_sha3_512");
+                if(body_hash && applied_has_authoritative(chain_dir,applpath,body_hash)){free(body_hash);continue;}
+                if(body_hash)free(body_hash);
+                off += snprintf(blockbuf+off,sizeof(blockbuf)-off,"tx%d=%s\n",count+1,vplan.txids[i]);
+                off += snprintf(blockbuf+off,sizeof(blockbuf)-off,"tx%d_wave=%u\n",count+1,vplan.waves[i]);
+                count++;
+            }
+            off += snprintf(blockbuf+off,sizeof(blockbuf)-off,"velocity_execution_waves=%u\nvelocity_conflicts=%llu\nvelocity_sig_workers=%u\nvelocity_sig_verify_us=%llu\n",
+                vplan.wave_count,(unsigned long long)vplan.conflicts,vst.workers,(unsigned long long)vst.elapsed_us);
+            free(valid); qrx_velocity_plan_free(&vplan);
+        }
+        qrx_velocity_mempool_close(&vpool);
     }
-    pclose_qrx(fp);
     off += snprintf(blockbuf+off, sizeof(blockbuf)-off, "tx_count=%d\n", count);
     char block_hash[129]; hash_primary_hex((unsigned char*)blockbuf, off, block_hash);
     char block_hash_legacy[65]; hash_legacy_hex((unsigned char*)blockbuf, off, block_hash_legacy);
@@ -3437,7 +5016,14 @@ static int shielded_history_cmd(const char *chain_dir, const char *wallet_dir) {
     return 0;
 }
 
-static int history_cmd(const char *chain_dir, const char *address, int limit) {
+static long long history_timestamp(const char *line) {
+    const char *p = strstr(line, "journal_timestamp=");
+    if (!p) p = strstr(line, "timestamp=");
+    if (!p) return 0;
+    p = strchr(p, '='); return p ? atoll(p + 1) : 0;
+}
+
+static int history_cmd(const char *chain_dir, const char *address, size_t limit, long long from_ts, long long to_ts) {
     char journal[1024]; state_paths(chain_dir, NULL, 0, NULL, 0, NULL, 0, journal, sizeof(journal));
     char *txt = read_file(journal, NULL); if (!txt) die("missing journal");
     size_t lines_cap = 256, lines_n = 0; char **lines = calloc(lines_cap, sizeof(char*)); if (!lines) die("oom");
@@ -3445,6 +5031,11 @@ static int history_cmd(const char *chain_dir, const char *address, int limit) {
     while (line) {
         int match = 1;
         if (address && *address) match = strstr(line, address) != NULL;
+        if (match && (from_ts > 0 || to_ts > 0)) {
+            long long ts = history_timestamp(line);
+            if (ts <= 0) { free(lines); free(txt); die("history row without timestamp cannot be date-filtered; use an all-time export for legacy journal rows"); }
+            if ((from_ts > 0 && ts < from_ts) || (to_ts > 0 && ts >= to_ts)) match = 0;
+        }
         if (match) {
             if (lines_n == lines_cap) {
                 lines_cap *= 2;
@@ -3456,9 +5047,9 @@ static int history_cmd(const char *chain_dir, const char *address, int limit) {
         }
         line = strtok_r(NULL, "\n", &save);
     }
-    if (limit <= 0 || limit > (int)lines_n) limit = (int)lines_n;
-    int start = (int)lines_n - limit;
-    for (int i = start; i < (int)lines_n; ++i) puts(lines[i]);
+    if (limit == 0 || limit > lines_n) limit = lines_n;
+    size_t start = lines_n - limit;
+    for (size_t i = start; i < lines_n; ++i) puts(lines[i]);
     free(lines); free(txt); return 0;
 }
 
@@ -4000,8 +5591,9 @@ int qrx_backend_main(int argc, char **argv) {
     if (!strcmp(argv[1], "reward-epoch-auto") && (argc == 3 || argc == 4 || argc == 5)) return reward_epoch_auto_cmd(argv[2], argc >= 4 ? atoll(argv[3]) : 1000, argc == 5 && !strcmp(argv[4], "--block-finalized"));
     if (!strcmp(argv[1], "faucet") && argc == 5) return faucet_cmd(argv[2], argv[3], atoll(argv[4]));
     if (!strcmp(argv[1], "getdevaddress") && argc == 3) return getdevaddress_cmd(argv[2]);
+    if (!strcmp(argv[1], "feeinfo") && argc == 3) return feeinfo_cmd(argv[2]);
     if (!strcmp(argv[1], "balance") && argc == 4) return balance_cmd(argv[2], argv[3]);
-    if (!strcmp(argv[1], "history") && (argc == 3 || argc == 4 || argc == 5)) return history_cmd(argv[2], argc >= 4 ? argv[3] : NULL, argc == 5 ? atoi(argv[4]) : 50);
+    if (!strcmp(argv[1], "history") && (argc >= 3 && argc <= 7)) return history_cmd(argv[2], argc >= 4 ? argv[3] : NULL, argc >= 5 ? (!strcmp(argv[4], "all") ? 0 : (size_t)strtoull(argv[4], NULL, 10)) : 50, argc >= 6 ? atoll(argv[5]) : 0, argc >= 7 ? atoll(argv[6]) : 0);
     if (!strcmp(argv[1], "htlc-create") && (argc == 8 || argc == 9)) return htlc_create_cmd(argv[2], argv[3], argv[4], atoll(argv[5]), argv[6], atoll(argv[7]), argc == 9 ? argv[8] : NULL);
     if (!strcmp(argv[1], "htlc-redeem") && argc == 5) return htlc_redeem_cmd(argv[2], argv[3], argv[4]);
     if (!strcmp(argv[1], "htlc-refund") && argc == 5) return htlc_refund_cmd(argv[2], argv[3], argv[4]);
@@ -4019,6 +5611,62 @@ int qrx_backend_main(int argc, char **argv) {
     if (!strcmp(argv[1], "stealth-scan") && argc == 4) return stealth_scan_cmd(argv[2], argv[3]);
     if (!strcmp(argv[1], "stealth-history") && argc == 4) return stealth_history_cmd(argv[2], argv[3]);
     if (!strcmp(argv[1], "privacy-feature-status") && argc == 3) return privacy_feature_status_cmd(argv[2]);
+    if (!strcmp(argv[1], "getnonce") && (argc == 4 || argc == 5)) return getnonce_cmd(argv[2], argv[3], argc == 5 ? argv[4] : NULL);
+    if (!strcmp(argv[1], "getnoncelanes") && argc == 4) return getnoncelanes_cmd(argv[2], argv[3]);
+    if (!strcmp(argv[1], "agent-status") && argc == 4) return agent_status_cmd(argv[2], argv[3]);
+    if (!strcmp(argv[1], "list-agents") && (argc == 3 || argc == 4)) return list_agents_cmd(argv[2], argc == 4 ? argv[3] : NULL);
+    if (!strcmp(argv[1], "create-agent-register-raw-tx") && (argc == 16 || argc == 17 || argc == 18)) return create_agent_register_raw_tx_cmd(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], argv[13], argv[14], argv[15], argc >= 17 ? argv[16] : NULL, argc == 18 ? argv[17] : NULL);
+    if (!strcmp(argv[1], "create-agent-update-raw-tx") && (argc == 14 || argc == 15 || argc == 16)) return create_agent_update_raw_tx_cmd(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], argv[13], argc >= 15 ? argv[14] : NULL, argc == 16 ? argv[15] : NULL);
+    if (!strcmp(argv[1], "create-agent-revoke-raw-tx") && (argc == 9 || argc == 10 || argc == 11)) return create_agent_revoke_raw_tx_cmd(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argc >= 10 ? argv[9] : NULL, argc == 11 ? argv[10] : NULL);
+    if (!strcmp(argv[1], "order-status") && argc == 4) return order_status_cmd(argv[2], argv[3]);
+    if (!strcmp(argv[1], "list-orders") && (argc == 3 || argc == 4 || argc == 5)) return list_orders_cmd(argv[2], argc >= 4 ? argv[3] : NULL, argc == 5 ? argv[4] : NULL);
+    if (!strcmp(argv[1], "trade-status") && argc == 4) return trade_status_cmd(argv[2], argv[3]);
+    if (!strcmp(argv[1], "list-trades") && (argc >= 3 && argc <= 7)) return list_trades_cmd(argv[2], argc >= 4 ? argv[3] : NULL, argc >= 5 ? (!strcmp(argv[4],"all") ? 0 : atoll(argv[4])) : 50, argc >= 6 ? atoll(argv[5]) : 0, argc >= 7 ? atoll(argv[6]) : 0);
+    if (!strcmp(argv[1], "orderbook") && (argc == 4 || argc == 5)) return orderbook_cmd(argv[2], argv[3], argc == 5 ? atoi(argv[4]) : 20);
+    if (!strcmp(argv[1], "asset-balance") && argc == 5) return asset_balance_cmd(argv[2], argv[3], argv[4]);
+    if (!strcmp(argv[1], "list-assets") && argc == 3) return list_assets_cmd(argv[2]);
+    if (!strcmp(argv[1], "asset-register") && argc == 5) return asset_register_cmd(argv[2], argv[3], argv[4]);
+    if (!strcmp(argv[1], "asset-credit") && argc == 6) return asset_credit_cmd(argv[2], argv[3], argv[4], atoll(argv[5]));
+    if (!strcmp(argv[1], "agent-limits") && argc == 4) return agent_limits_cmd(argv[2], argv[3]);
+    if (!strcmp(argv[1], "trading-info") && argc == 3) return trading_info_cmd(argv[2]);
+    if (!strcmp(argv[1], "create-order-raw-tx") && (argc == 15 || argc == 16 || argc == 17)) return create_order_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argv[9],argv[10],argv[11],argv[12],argv[13],argv[14],argc>=16?argv[15]:NULL,argc==17?argv[16]:NULL);
+    if (!strcmp(argv[1], "create-external-order-raw-tx") && (argc == 16 || argc == 17 || argc == 18)) return create_external_order_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argv[9],argv[10],argv[11],argv[12],argv[13],argv[14],argv[15],argc>=17?argv[16]:NULL,argc==18?argv[17]:NULL);
+    if (!strcmp(argv[1], "create-arbitrage-hedge-raw-tx") && (argc == 14 || argc == 15 || argc == 16)) return create_arbitrage_hedge_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argv[9],argv[10],argv[11],argv[12],argv[13],argc>=15?argv[14]:NULL,argc==16?argv[15]:NULL);
+    if (!strcmp(argv[1], "create-order-cancel-raw-tx") && (argc == 10 || argc == 11 || argc == 12)) return create_order_cancel_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argv[9],argc>=11?argv[10]:NULL,argc==12?argv[11]:NULL);
+    if (!strcmp(argv[1], "create-order-replace-raw-tx") && (argc == 16 || argc == 17 || argc == 18)) return create_order_replace_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argv[9],argv[10],argv[11],argv[12],argv[13],argv[14],argv[15],argc>=17?argv[16]:NULL,argc==18?argv[17]:NULL);
+    if (!strcmp(argv[1], "gateway-status") && argc == 4) return gateway_status_cmd(argv[2],argv[3]);
+    if (!strcmp(argv[1], "list-gateways") && (argc == 3 || argc == 4)) return list_gateways_cmd(argv[2],argc==4?argv[3]:NULL);
+    if (!strcmp(argv[1], "execution-report-status") && argc == 4) return execution_report_status_cmd(argv[2],argv[3]);
+    if (!strcmp(argv[1], "state-root") && argc == 3) return state_root_cmd(argv[2]);
+    if (!strcmp(argv[1], "settlement-status") && argc == 4) return settlement_status_cmd(argv[2],argv[3]);
+    if (!strcmp(argv[1], "create-gateway-register-raw-tx") && (argc == 14 || argc == 15 || argc == 16)) return create_gateway_register_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argv[9],argv[10],argv[11],argv[12],argv[13],argc>=15?argv[14]:NULL,argc==16?argv[15]:NULL);
+    if (!strcmp(argv[1], "create-gateway-revoke-raw-tx") && (argc == 9 || argc == 10 || argc == 11)) return create_gateway_revoke_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argc>=10?argv[9]:NULL,argc==11?argv[10]:NULL);
+    if (!strcmp(argv[1], "create-execution-report-raw-tx") && (argc == 16 || argc == 17 || argc == 18)) return create_execution_report_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argv[9],argv[10],argv[11],argv[12],argv[13],argv[14],argv[15],argc>=17?argv[16]:NULL,argc==18?argv[17]:NULL);
+    if (!strcmp(argv[1], "crosschain-info") && argc == 3) return crosschain_info_cmd(argv[2]);
+    if (!strcmp(argv[1], "crosschain-status") && argc == 4) return crosschain_status_cmd(argv[2],argv[3]);
+    if (!strcmp(argv[1], "list-crosschain") && (argc == 3 || argc == 4)) return list_crosschain_cmd(argv[2],argc==4?argv[3]:NULL);
+    if (!strcmp(argv[1], "crosschain-orderbook") && (argc == 3 || argc == 4)) return crosschain_orderbook_cmd(argv[2],argc==4?atoi(argv[3]):20);
+    if (!strcmp(argv[1], "btc-htlc-template") && argc == 7) return btc_htlc_template_cmd(argv[2],argv[3],argv[4],atoll(argv[5]),argv[6]);
+    if (!strcmp(argv[1], "btc-spv-info") && argc == 3) return btc_spv_info_cmd(argv[2]);
+    if (!strcmp(argv[1], "btc-spv-best-header") && argc == 3) return btc_spv_best_header_cmd(argv[2]);
+    if (!strcmp(argv[1], "btc-spv-header") && argc == 4) return btc_spv_header_cmd(argv[2],argv[3]);
+    if (!strcmp(argv[1], "btc-spv-verify-proof") && argc == 7) return btc_spv_verify_proof_cmd(argv[2],argv[3],argv[4],argv[5],argv[6]);
+    if (!strcmp(argv[1], "btc-spv-confirmations") && argc == 4) return btc_spv_confirmations_cmd(argv[2],argv[3]);
+    if (!strcmp(argv[1], "crosschain-verify-funding") && argc == 8) return crosschain_verify_funding_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7]);
+    if (!strcmp(argv[1], "crosschain-funding") && argc == 4) return crosschain_funding_cmd(argv[2],argv[3]);
+    if (!strcmp(argv[1], "crosschain-security") && argc == 4) return crosschain_security_cmd(argv[2],argv[3]);
+    if (!strcmp(argv[1], "create-btc-spv-header-raw-tx") && (argc == 9 || argc == 10 || argc == 11)) return create_btc_spv_header_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argc>=10?argv[9]:NULL,argc==11?argv[10]:NULL);
+    if (!strcmp(argv[1], "create-btc-spv-funding-proof-raw-tx") && (argc == 13 || argc == 14 || argc == 15)) return create_btc_spv_funding_proof_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argv[9],argv[10],argv[11],argv[12],argc>=14?argv[13]:NULL,argc==15?argv[14]:NULL);
+    if (!strcmp(argv[1], "create-crosschain-buy-raw-tx") && (argc == 15 || argc == 16 || argc == 17)) return create_crosschain_buy_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argv[9],argv[10],argv[11],argv[12],argv[13],argv[14],argc>=16?argv[15]:NULL,argc==17?argv[16]:NULL);
+    if (!strcmp(argv[1], "create-crosschain-sell-raw-tx") && (argc == 14 || argc == 15 || argc == 16)) return create_crosschain_sell_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argv[9],argv[10],argv[11],argv[12],argv[13],argc>=15?argv[14]:NULL,argc==16?argv[15]:NULL);
+    if (!strcmp(argv[1], "create-crosschain-redeem-raw-tx") && (argc == 10 || argc == 11 || argc == 12)) return create_crosschain_redeem_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argv[9],argc>=11?argv[10]:NULL,argc==12?argv[11]:NULL);
+    if (!strcmp(argv[1], "create-crosschain-refund-raw-tx") && (argc == 9 || argc == 10 || argc == 11)) return create_crosschain_refund_raw_tx_cmd(argv[2],argv[3],argv[4],argv[5],argv[6],argv[7],argv[8],argc>=10?argv[9]:NULL,argc==11?argv[10]:NULL);
+    if (!strcmp(argv[1], "velocity-info") && argc == 3) return velocity_info_cmd(argv[2]);
+    if (!strcmp(argv[1], "create-velocity-raw-tx") && (argc == 12 || argc == 13 || argc == 14)) return create_velocity_raw_tx_cmd(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argc >= 13 ? argv[12] : NULL, argc == 14 ? argv[13] : NULL);
+    if (!strcmp(argv[1], "create-raw-tx") && (argc >= 8 && argc <= 12)) return create_raw_tx_cmd(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argc >= 9 ? argv[8] : NULL, argc >= 10 ? argv[9] : NULL, argc >= 11 ? argv[10] : NULL, argc >= 12 ? argv[11] : NULL);
+    if (!strcmp(argv[1], "signrawtransactionwithwallet") && argc == 6) return signrawtransactionwithwallet_cmd(argv[2], argv[3], argv[4], argv[5]);
+    if (!strcmp(argv[1], "decoderawtransaction") && argc == 4) return decoderawtransaction_cmd(argv[2], argv[3]);
+    if (!strcmp(argv[1], "txid") && argc == 4) return txid_cmd(argv[2], argv[3]);
     if (!strcmp(argv[1], "sign") && argc == 8) return sign_cmd(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7]);
     if (!strcmp(argv[1], "send") && (argc == 7 || argc == 8)) return send_cmd(argv[2], argv[3], argv[4], argv[5], argv[6], argc == 8 ? argv[7] : NULL);
     if (!strcmp(argv[1], "verify") && argc == 4) return verify_cmd(argv[2], argv[3]);
@@ -4059,6 +5707,9 @@ int qrx_backend_main(int argc, char **argv) {
     if (!strcmp(argv[1], "unban-peer") && argc == 4) return unban_peer_cmd(argv[2], argv[3]);
     if (!strcmp(argv[1], "mempool-status") && argc == 3) return mempool_status_cmd(argv[2]);
     if (!strcmp(argv[1], "mempool-prune") && (argc == 3 || argc == 4)) return mempool_prune_cmd(argv[2], argc == 4 ? atoi(argv[3]) : MEMPOOL_MAX_TXS);
+    if (!strcmp(argv[1], "velocity-mempool-plan") && (argc >= 3 && argc <= 5)) return velocity_mempool_plan_cmd(argv[2], argc >= 4 ? atoi(argv[3]) : 0, argc == 5 ? atoi(argv[4]) : 4);
+    if (!strcmp(argv[1], "velocity-mvcc-execute") && (argc >= 3 && argc <= 5)) return velocity_mvcc_execute_cmd(argv[2], argc >= 4 ? atoi(argv[3]) : 100, argc == 5 ? atoi(argv[4]) : 4);
+    if (!strcmp(argv[1], "velocity-engine-info") && argc == 3) return velocity_engine_info_cmd(argv[2]);
     if (!strcmp(argv[1], "decay-bans") && (argc == 3 || argc == 4)) return decay_bans_cmd(argv[2], argc == 4 ? atoll(argv[3]) : 10);
     if (!strcmp(argv[1], "state-check") && argc == 3) return state_check_cmd(argv[2]);
     if (!strcmp(argv[1], "snapshot-state") && (argc == 3 || argc == 4)) return snapshot_state_cmd(argv[2], argc == 4 ? argv[3] : NULL);

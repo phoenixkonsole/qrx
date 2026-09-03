@@ -54,7 +54,32 @@ typedef struct QrxDBIndexEntry {
     uint64_t generation;
 } QrxDBIndexEntry;
 
+
+
+typedef struct QrxDB QrxDB;
+
+typedef int (*QrxDBScanCallback)(const char *key, const char *value, uint32_t value_len, void *ctx);
+
 typedef struct {
+    char *key;
+    char *value;
+    uint32_t key_len;
+    uint32_t value_len;
+    uint64_t offset;
+} QrxDBBatchEntry;
+
+typedef struct {
+    QrxDB *db;
+    QrxDBBatchEntry *entries;
+    size_t count;
+    size_t cap;
+    uint64_t generation;
+    uint64_t start_offset;
+    uint64_t planned_end_offset;
+    int active;
+} QrxDBBatch;
+
+struct QrxDB {
     char base_path[1024];
     char data_path[1024];
     char wal_path[1024];      /* Current WAL segment path, kept for compatibility. */
@@ -84,11 +109,18 @@ typedef struct {
 #else
     int fd;
 #endif
-} QrxDB;
+};
 
 int qrxdb_init(QrxDB *db, const char *chain_dir);
 int qrxdb_put(QrxDB *db, const char *key, const char *value);
+int qrxdb_batch_begin(QrxDB *db, QrxDBBatch *batch);
+int qrxdb_batch_put(QrxDBBatch *batch, const char *key, const char *value);
+int qrxdb_batch_commit(QrxDBBatch *batch);
+void qrxdb_batch_abort(QrxDBBatch *batch);
+int qrxdb_merkle_root_hex(QrxDB *db, char out[129]);
 int qrxdb_get(QrxDB *db, const char *key, char *out, size_t out_sz);
+int qrxdb_scan_prefix(QrxDB *db, const char *prefix, QrxDBScanCallback callback, void *ctx);
+int qrxdb_scan_prefix_at(QrxDB *db, const QrxDBReadTxn *txn, const char *prefix, QrxDBScanCallback callback, void *ctx);
 int qrxdb_get_view(QrxDB *db, const char *key, QrxDBView *view);
 int qrxdb_snapshot(QrxDB *db, const char *snapshot_name);
 int qrxdb_snapshot_signed(QrxDB *db, const char *snapshot_name, const char *wallet_dir, const char *passphrase);

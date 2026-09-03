@@ -5,6 +5,7 @@
 #include "core_frontend.h"
 
 #include <errno.h>
+#include <ctype.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -70,6 +71,17 @@ static void qrx_trim_line(char *s) {
     s[strcspn(s, "\r\n \t")] = 0;
 }
 
+static const char *qrx_strcasestr_local(const char *haystack, const char *needle) {
+    if(!haystack || !needle || !*needle) return haystack;
+    size_t nl = strlen(needle);
+    for(const char *h = haystack; *h; ++h) {
+        size_t i = 0;
+        while(i < nl && h[i] && tolower((unsigned char)h[i]) == tolower((unsigned char)needle[i])) i++;
+        if(i == nl) return h;
+    }
+    return NULL;
+}
+
 static int qrx_mkdir_simple(const char *path) {
 #ifdef _WIN32
     if(_mkdir(path) != 0 && errno != EEXIST) return -1;
@@ -111,7 +123,7 @@ static int qrx_write_current_network(const char *network) {
 }
 
 #ifndef QRX_VERSION
-#define QRX_VERSION "0.0.6"
+#define QRX_VERSION "0.0.7-velocity-phase4"
 #endif
 
 #ifndef QRX_BUILD_ID
@@ -756,6 +768,148 @@ static long long qrx_best_peer_height(long long local_height){
     return best;
 }
 
+
+typedef struct {
+    long long height;
+    char hash[256];
+    char timestamp[64];
+    char tx_count[32];
+    char path[PATH_MAX];
+} QrxRecentBlock;
+
+static void qrx_insert_recent_block(QrxRecentBlock *arr, int *n, int max, const QrxRecentBlock *b){
+    if(max <= 0) return;
+    int pos = *n;
+    if(pos < max) (*n)++;
+    else if(b->height <= arr[max-1].height) return;
+    if(pos >= max) pos = max - 1;
+    while(pos > 0 && arr[pos-1].height < b->height){ arr[pos] = arr[pos-1]; pos--; }
+    arr[pos] = *b;
+}
+
+static int qrx_collect_recent_blocks(QrxRecentBlock *arr, int max){
+    int n = 0;
+    char bdir[PATH_MAX]; snprintf(bdir, sizeof(bdir), "%s/blocks", g_cdir);
+#ifdef _WIN32
+    char search[MAX_PATH]; snprintf(search, sizeof(search), "%s\\*", bdir);
+    WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA(search, &fd);
+    if(h != INVALID_HANDLE_VALUE){
+        do {
+            if(fd.cFileName[0] == '.' || (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+            char path[MAX_PATH]; snprintf(path, sizeof(path), "%s\\%s", bdir, fd.cFileName);
+#else
+    DIR *d = opendir(bdir);
+    if(d){
+        struct dirent *fd;
+        while((fd = readdir(d))){
+            if(fd->d_name[0] == '.') continue;
+            char path[PATH_MAX]; snprintf(path, sizeof(path), "%s/%s", bdir, fd->d_name);
+#endif
+            char *txt = read_text_file_local(path);
+            if(txt){
+                QrxRecentBlock b; memset(&b, 0, sizeof(b));
+                char hs[64] = {0};
+                if(cfg_value_local(txt, "height", hs, sizeof(hs)) == 0) b.height = parse_ll_safe(hs, -1);
+                cfg_value_local(txt, "block_hash", b.hash, sizeof(b.hash));
+                cfg_value_local(txt, "timestamp", b.timestamp, sizeof(b.timestamp));
+                cfg_value_local(txt, "tx_count", b.tx_count, sizeof(b.tx_count));
+                snprintf(b.path, sizeof(b.path), "%s", path);
+                if(b.height >= 0) qrx_insert_recent_block(arr, &n, max, &b);
+                free(txt);
+            }
+#ifdef _WIN32
+        } while(FindNextFileA(h, &fd));
+        FindClose(h);
+#else
+        }
+        closedir(d);
+#endif
+    }
+    return n;
+}
+
+static void qrx_recent_blocks_json(char *out, size_t out_sz, int limit){
+    if(limit <= 0) limit = 10; if(limit > 100) limit = 100;
+    QrxRecentBlock arr[100]; memset(arr, 0, sizeof(arr));
+    int n = qrx_collect_recent_blocks(arr, limit);
+    snprintf(out, out_sz, "[");
+    for(int i=0;i<n;i++){
+        char hjs[512]={0}, tjs[128]={0};
+        json_string(hjs, sizeof(hjs), arr[i].hash);
+        json_string(tjs, sizeof(tjs), arr[i].timestamp);
+        if(i) strncat(out, ",", out_sz - strlen(out) - 1);
+        char item[1024];
+        snprintf(item, sizeof(item), "{\"height\":%lld,\"hash\":%s,\"timestamp\":%s,\"tx_count\":%lld}", arr[i].height, hjs, tjs, parse_ll_safe(arr[i].tx_count, 0));
+        strncat(out, item, out_sz - strlen(out) - 1);
+    }
+    strncat(out, "]", out_sz - strlen(out) - 1);
+}
+
+static void qrx_recent_transactions_json(char *out, size_t out_sz, int limit){
+    if(limit <= 0) limit = 10; if(limit > 100) limit = 100;
+    QrxRecentBlock blocks[100]; memset(blocks, 0, sizeof(blocks));
+    int bn = qrx_collect_recent_blocks(blocks, 100);
+    int emitted = 0;
+    snprintf(out, out_sz, "[");
+    for(int i=0;i<bn && emitted<limit;i++){
+        char *txt = read_text_file_local(blocks[i].path);
+        if(!txt) continue;
+        long long txc = parse_ll_safe(blocks[i].tx_count, 0);
+        for(long long j=1; j<=txc && emitted<limit; j++){
+            char key[32], txh[256]={0}; snprintf(key, sizeof(key), "tx%lld", j);
+            if(cfg_value_local(txt, key, txh, sizeof(txh)) == 0 && txh[0]){
+                char txjs[512]={0}, bhjs[512]={0};
+                json_string(txjs, sizeof(txjs), txh); json_string(bhjs, sizeof(bhjs), blocks[i].hash);
+                if(emitted) strncat(out, ",", out_sz - strlen(out) - 1);
+                char item[1024]; snprintf(item, sizeof(item), "{\"txid\":%s,\"block_height\":%lld,\"block_hash\":%s,\"index\":%lld,\"source\":\"block\"}", txjs, blocks[i].height, bhjs, j);
+                strncat(out, item, out_sz - strlen(out) - 1);
+                emitted++;
+            }
+        }
+        free(txt);
+    }
+    if(emitted < limit){
+        char mdir[PATH_MAX]; snprintf(mdir, sizeof(mdir), "%s/mempool", g_ndir);
+#ifdef _WIN32
+        char search[MAX_PATH]; snprintf(search, sizeof(search), "%s\\*", mdir);
+        WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA(search, &fd);
+        if(h != INVALID_HANDLE_VALUE){
+            do {
+                if(fd.cFileName[0] == '.' || (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                char path[MAX_PATH]; snprintf(path, sizeof(path), "%s\\%s", mdir, fd.cFileName);
+#else
+        DIR *d = opendir(mdir);
+        if(d){
+            struct dirent *fd;
+            while((fd = readdir(d)) && emitted < limit){
+                if(fd->d_name[0] == '.') continue;
+                char path[PATH_MAX]; snprintf(path, sizeof(path), "%s/%s", mdir, fd->d_name);
+#endif
+                char *txt = read_text_file_local(path);
+                if(txt){
+                    char txh[256]={0};
+                    if(cfg_value_local(txt, "body_hash_sha3_512", txh, sizeof(txh)) != 0) cfg_value_local(txt, "body_hash", txh, sizeof(txh));
+                    if(txh[0]){
+                        char txjs[512]={0}; json_string(txjs, sizeof(txjs), txh);
+                        if(emitted) strncat(out, ",", out_sz - strlen(out) - 1);
+                        char item[768]; snprintf(item, sizeof(item), "{\"txid\":%s,\"source\":\"mempool\"}", txjs);
+                        strncat(out, item, out_sz - strlen(out) - 1);
+                        emitted++;
+                    }
+                    free(txt);
+                }
+#ifdef _WIN32
+            } while(emitted < limit && FindNextFileA(h, &fd));
+            FindClose(h);
+#else
+            }
+            closedir(d);
+#endif
+        }
+    }
+    strncat(out, "]", out_sz - strlen(out) - 1);
+}
+
 static void qrx_uptime_human(long long sec, char *out, size_t out_sz){
     long long d = sec / 86400; sec %= 86400;
     long long h = sec / 3600; sec %= 3600;
@@ -934,9 +1088,9 @@ static void handle_json_rpc_http(const char *req, char *resp, size_t resp_sz) {
     body += (body[1] == '\n') ? 2 : 4;
 
     char method[128] = {0};
-    char tail[3072] = {0};
-    char cmd[4096] = {0};
-    char raw[65536] = {0};
+    char tail[131072] = {0};
+    char cmd[196608] = {0};
+    char raw[131072] = {0};
 
     if(json_get_string_field(body, "method", method, sizeof(method)) != 0) {
         http_response(resp, resp_sz, 400, "{\"ok\":false,\"error\":\"missing method\"}\n", 0);
@@ -951,7 +1105,7 @@ static void handle_json_rpc_http(const char *req, char *resp, size_t resp_sz) {
 }
 
 static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
-    char line[4096]; snprintf(line, sizeof(line), "%s", cmdline); trim_nl(line);
+    char line[131072]; snprintf(line, sizeof(line), "%s", cmdline); trim_nl(line);
     char *args[32] = {0}; int argc = 0; char *save = NULL; char *tok = strtok_r(line, " ", &save);
     while(tok && argc < 31){ args[argc++] = tok; tok = strtok_r(NULL, " ", &save); }
     if(argc == 0){ json_error(resp, resp_sz, "unknown", "empty command"); return 0; }
@@ -1022,6 +1176,50 @@ static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
         snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getnodestatus\",\"result\":{\"version\":%s,\"build\":%s,\"network\":%s,\"uptime\":%lld,\"connections\":%lld,\"listening\":true,\"networkactive\":true,\"local_height\":%lld,\"best_peer_height\":%lld,\"highest_known_block\":%lld,\"blocks_behind\":%lld,\"sync_percent\":%.2f,\"bestblockhash\":%s,\"wallet_loaded\":%s,\"wallet_address\":%s,\"block_producer\":%s,\"node_pid\":%ld,\"rpc\":\"%s\",\"hybrid_crypto\":true,\"mldsa\":true,\"openssl\":%s}}\n", vjs, bjs, net, up, con, h, peer_h, highest, behind, sync, hashjs, wallet_loaded ? "true" : "false", ajs, g_block_producer_enabled ? "true" : "false", (long)g_node_pid, g_sock, ssljs);
         return 0;
     }
+    if(!strcmp(args[0], "getmempoolinfo")){
+        char out[8192], obj[12000]={0};
+        char *argv[] = { g_backend_path, "mempool-status", g_ndir, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "getmempoolinfo", "backend failed");
+        else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getmempoolinfo\",\"result\":%s}\n", obj); }
+        return 0;
+    }
+    if(!strcmp(args[0], "getrecentblocks")){
+        int limit = argc >= 2 ? atoi(args[1]) : 10;
+        char arr[60000]={0}; qrx_recent_blocks_json(arr, sizeof(arr), limit);
+        snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getrecentblocks\",\"result\":{\"blocks\":%s}}\n", arr);
+        return 0;
+    }
+    if(!strcmp(args[0], "getrecenttransactions")){
+        int limit = argc >= 2 ? atoi(args[1]) : 10;
+        char arr[60000]={0}; qrx_recent_transactions_json(arr, sizeof(arr), limit);
+        snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getrecenttransactions\",\"result\":{\"transactions\":%s}}\n", arr);
+        return 0;
+    }
+    if(!strcmp(args[0], "getvalidatorstatus")){
+        char addr[512]={0}, out[20000], obj[24000]={0}, ajs[1024]={0};
+        int has_wallet = qrx_get_wallet_address(g_wdir, addr, sizeof(addr)) == 0;
+        if(has_wallet){
+            char *argv[] = { g_backend_path, "staking-status", g_cdir, addr, NULL };
+            if(run_capture(argv, out, sizeof(out)) == 0) json_keyval_object(obj, sizeof(obj), out);
+            else snprintf(obj, sizeof(obj), "{}");
+        } else snprintf(obj, sizeof(obj), "{}");
+        json_string(ajs, sizeof(ajs), has_wallet ? addr : "");
+        snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getvalidatorstatus\",\"result\":{\"wallet_address\":%s,\"block_producer_enabled\":%s,\"staking\":%s}}\n", ajs, g_block_producer_enabled ? "true" : "false", obj);
+        return 0;
+    }
+    if(!strcmp(args[0], "getblockproducerinfo")){
+        char addr[512]={0}, ajs[1024]={0};
+        int has_wallet = qrx_get_wallet_address(g_wdir, addr, sizeof(addr)) == 0;
+        json_string(ajs, sizeof(ajs), has_wallet ? addr : "");
+        snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getblockproducerinfo\",\"result\":{\"enabled\":%s,\"wallet_address\":%s,\"blocktime_seconds\":%d,\"commission_bps\":%lld,\"node_pid\":%ld}}\n", g_block_producer_enabled ? "true" : "false", ajs, g_blocktime_seconds, g_commission_bps, (long)g_node_pid);
+        return 0;
+    }
+    if(!strcmp(args[0], "getfeeinfo")){
+        char out[8192], obj[12000]={0}; char *argv[] = { g_backend_path, "feeinfo", g_cdir, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "getfeeinfo", "backend failed");
+        else { json_keyval_object(obj, sizeof(obj), out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getfeeinfo\",\"result\":%s}\n", obj); }
+        return 0;
+    }
     if(!strcmp(args[0], "getnewaddress")){
         char out[8192], addr[1024]={0};
         char *argv[] = { g_backend_path, "wallet-new-address", g_wdir, NULL };
@@ -1041,6 +1239,163 @@ static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
         if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "listaddresses", "backend failed");
         else { json_lines_array(arr,sizeof(arr),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"listaddresses\",\"result\":{\"addresses\":%s}}\n", arr); }
         return 0;
+    }
+    if(!strcmp(args[0], "getaddressnonce") && argc >= 2){
+        char out[8192]; char *argv[] = { g_backend_path, "getnonce", g_cdir, args[1], argc >= 3 ? args[2] : NULL, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "getaddressnonce", "backend failed");
+        else { trim_ws_right(out); json_ok_number(resp, resp_sz, "getaddressnonce", "nonce", atoll(out)); }
+        return 0;
+    }
+    if(!strcmp(args[0], "getnoncelanes") && argc >= 2){
+        char out[16384], arr[24000]={0}; char *argv[] = { g_backend_path, "getnoncelanes", g_cdir, args[1], NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "getnoncelanes", "backend failed");
+        else { json_lines_array(arr,sizeof(arr),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getnoncelanes\",\"result\":{\"lanes\":%s}}\n", arr); }
+        return 0;
+    }
+    if(!strcmp(args[0], "getagent") && argc >= 2){
+        char out[32768], obj[40000]={0}; char *argv[] = { g_backend_path, "agent-status", g_cdir, args[1], NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "getagent", "backend failed");
+        else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getagent\",\"result\":%s}\n", obj); }
+        return 0;
+    }
+    if(!strcmp(args[0], "listagents")){
+        char out[32768], arr[40000]={0}; char *argv[] = { g_backend_path, "list-agents", g_cdir, argc >= 2 ? args[1] : NULL, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "listagents", "backend failed");
+        else { json_lines_array(arr,sizeof(arr),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"listagents\",\"result\":{\"agents\":%s}}\n", arr); }
+        return 0;
+    }
+    if(!strcmp(args[0], "getvelocityinfo")){
+        char out[16384], obj[24000]={0}; char *argv[] = { g_backend_path, "velocity-info", g_cdir, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "getvelocityinfo", "backend failed");
+        else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getvelocityinfo\",\"result\":%s}\n", obj); }
+        return 0;
+    }
+    if(!strcmp(args[0], "getvelocityengineinfo")){
+        char out[32768], obj[48000]={0}; char *argv[] = { g_backend_path, "velocity-engine-info", g_ndir, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "getvelocityengineinfo", "backend failed");
+        else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getvelocityengineinfo\",\"result\":%s}\n", obj); }
+        return 0;
+    }
+    if(!strcmp(args[0], "getagentlimits") && argc >= 2){
+        char out[32768], obj[40000]={0}; char *argv[] = { g_backend_path, "agent-limits", g_cdir, args[1], NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getagentlimits","backend failed");
+        else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getagentlimits\",\"result\":%s}\n",obj); } return 0;
+    }
+    if(!strcmp(args[0], "getorder") && argc >= 2){
+        char out[32768], obj[40000]={0}; char *argv[] = { g_backend_path, "order-status", g_cdir, args[1], NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getorder","backend failed");
+        else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getorder\",\"result\":%s}\n",obj); } return 0;
+    }
+    if(!strcmp(args[0], "listorders")){
+        char out[65536], arr[90000]={0}; char *argv[] = { g_backend_path, "list-orders", g_cdir, argc>=2?args[1]:NULL, argc>=3?args[2]:NULL, NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"listorders","backend failed");
+        else { json_lines_array(arr,sizeof(arr),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"listorders\",\"result\":{\"orders\":%s}}\n",arr); } return 0;
+    }
+    if(!strcmp(args[0], "gettrade") && argc >= 2){
+        char out[32768], obj[40000]={0}; char *argv[] = { g_backend_path, "trade-status", g_cdir, args[1], NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"gettrade","backend failed");
+        else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"gettrade\",\"result\":%s}\n",obj); } return 0;
+    }
+    if(!strcmp(args[0], "listtrades")){
+        char out[65536], arr[90000]={0}; char *argv[] = { g_backend_path, "list-trades", g_cdir, argc>=2?args[1]:NULL, argc>=3?args[2]:NULL, NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"listtrades","backend failed");
+        else { json_lines_array(arr,sizeof(arr),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"listtrades\",\"result\":{\"trades\":%s}}\n",arr); } return 0;
+    }
+    if(!strcmp(args[0], "getorderbook") && argc >= 2){
+        char out[65536], arr[90000]={0}; char *argv[] = { g_backend_path, "orderbook", g_cdir, args[1], argc>=3?args[2]:NULL, NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getorderbook","backend failed");
+        else { json_lines_array(arr,sizeof(arr),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getorderbook\",\"result\":{\"lines\":%s}}\n",arr); } return 0;
+    }
+    if(!strcmp(args[0], "getassetbalance") && argc >= 2){
+        char addr[512],out[8192]; char *argv[] = { g_backend_path, "asset-balance", g_cdir, args[1], NULL, NULL };
+        if(argc>=3) argv[4]=args[2]; else { if(qrx_get_wallet_address(g_wdir,addr,sizeof(addr))!=0){json_error(resp,resp_sz,"getassetbalance","address unavailable");return 0;} argv[4]=addr; }
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getassetbalance","backend failed"); else { trim_ws_right(out); json_ok_number(resp,resp_sz,"getassetbalance","balance",atoll(out)); } return 0;
+    }
+    if(!strcmp(args[0], "listassets")){
+        char out[32768],arr[50000]={0}; char *argv[] = { g_backend_path, "list-assets", g_cdir, NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"listassets","backend failed"); else { json_lines_array(arr,sizeof(arr),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"listassets\",\"result\":{\"assets\":%s}}\n",arr); } return 0;
+    }
+    if(!strcmp(args[0], "gettradinginfo")){
+        char out[16384], obj[24000]={0}; char *argv[] = { g_backend_path, "trading-info", g_cdir, NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"gettradinginfo","backend failed");
+        else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"gettradinginfo\",\"result\":%s}\n",obj); } return 0;
+    }
+    if(!strcmp(args[0], "getgateway") && argc >= 2){
+        char out[32768], obj[48000]={0}; char *argv[] = { g_backend_path, "gateway-status", g_cdir, args[1], NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getgateway","backend failed");
+        else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getgateway\",\"result\":%s}\n",obj); } return 0;
+    }
+    if(!strcmp(args[0], "listgateways")){
+        char out[65536], arr[90000]={0}; char *argv[] = { g_backend_path, "list-gateways", g_cdir, argc>=2?args[1]:NULL, NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"listgateways","backend failed");
+        else { json_lines_array(arr,sizeof(arr),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"listgateways\",\"result\":{\"gateways\":%s}}\n",arr); } return 0;
+    }
+    if(!strcmp(args[0], "getexecutionreport") && argc >= 2){
+        char out[32768], obj[48000]={0}; char *argv[] = { g_backend_path, "execution-report-status", g_cdir, args[1], NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getexecutionreport","backend failed");
+        else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getexecutionreport\",\"result\":%s}\n",obj); } return 0;
+    }
+    if(!strcmp(args[0], "getstateroot")){
+        char out[8192], obj[12000]={0}; char *argv[] = { g_backend_path, "state-root", g_cdir, NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getstateroot","backend failed");
+        else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getstateroot\",\"result\":%s}\n",obj); } return 0;
+    }
+    if(!strcmp(args[0], "getsettlement") && argc >= 2){
+        char out[32768], obj[48000]={0}; char *argv[] = { g_backend_path, "settlement-status", g_cdir, args[1], NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getsettlement","backend failed");
+        else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getsettlement\",\"result\":%s}\n",obj); } return 0;
+    }
+    if(!strcmp(args[0], "getcrosschaininfo")){
+        char out[16384],obj[24000]={0}; char *argv[]={g_backend_path,"crosschain-info",g_cdir,NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getcrosschaininfo","backend failed"); else {json_keyval_object(obj,sizeof(obj),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getcrosschaininfo\",\"result\":%s}\n",obj);} return 0;
+    }
+    if(!strcmp(args[0], "getcrosschainswap") && argc>=2){
+        char out[32768],obj[48000]={0}; char *argv[]={g_backend_path,"crosschain-status",g_cdir,args[1],NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getcrosschainswap","backend failed"); else {json_keyval_object(obj,sizeof(obj),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getcrosschainswap\",\"result\":%s}\n",obj);} return 0;
+    }
+    if(!strcmp(args[0], "listcrosschainswaps")){
+        char out[65536],arr[90000]={0}; char *argv[]={g_backend_path,"list-crosschain",g_cdir,argc>=2?args[1]:NULL,NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"listcrosschainswaps","backend failed"); else {json_lines_array(arr,sizeof(arr),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"listcrosschainswaps\",\"result\":{\"swaps\":%s}}\n",arr);} return 0;
+    }
+    if(!strcmp(args[0], "getcrosschainorderbook")){
+        char out[65536],arr[90000]={0}; char *argv[]={g_backend_path,"crosschain-orderbook",g_cdir,argc>=2?args[1]:NULL,NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getcrosschainorderbook","backend failed"); else {json_lines_array(arr,sizeof(arr),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getcrosschainorderbook\",\"result\":{\"lines\":%s}}\n",arr);} return 0;
+    }
+    if(!strcmp(args[0], "getbtchtlctemplate") && argc>=5){
+        char out[32768],obj[48000]={0}; char *argv[]={g_backend_path,"btc-htlc-template",args[1],args[2],args[3],args[4],argc>=6?args[5]:"mainnet",NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getbtchtlctemplate","backend failed"); else {json_keyval_object(obj,sizeof(obj),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getbtchtlctemplate\",\"result\":%s}\n",obj);} return 0;
+    }
+    if(!strcmp(args[0], "getbtcspvinfo")){
+        char out[32768],obj[48000]={0}; char *argv[]={g_backend_path,"btc-spv-info",g_cdir,NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getbtcspvinfo","backend failed"); else {json_keyval_object(obj,sizeof(obj),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getbtcspvinfo\",\"result\":%s}\n",obj);} return 0;
+    }
+    if(!strcmp(args[0], "getbtcbestheader")){
+        char out[32768],obj[48000]={0}; char *argv[]={g_backend_path,"btc-spv-best-header",g_cdir,NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getbtcbestheader","backend failed"); else {json_keyval_object(obj,sizeof(obj),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getbtcbestheader\",\"result\":%s}\n",obj);} return 0;
+    }
+    if(!strcmp(args[0], "getbtcheader") && argc>=2){
+        char out[32768],obj[48000]={0}; char *argv[]={g_backend_path,"btc-spv-header",g_cdir,args[1],NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getbtcheader","backend failed"); else {json_keyval_object(obj,sizeof(obj),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getbtcheader\",\"result\":%s}\n",obj);} return 0;
+    }
+    if(!strcmp(args[0], "verifybtcproof") && argc>=5){
+        char out[32768],obj[48000]={0}; char *argv[]={g_backend_path,"btc-spv-verify-proof",g_cdir,args[1],args[2],args[3],args[4],NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"verifybtcproof","backend failed"); else {json_keyval_object(obj,sizeof(obj),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"verifybtcproof\",\"result\":%s}\n",obj);} return 0;
+    }
+    if(!strcmp(args[0], "getbtcconfirmations") && argc>=2){
+        char out[32768],obj[48000]={0}; char *argv[]={g_backend_path,"btc-spv-confirmations",g_cdir,args[1],NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getbtcconfirmations","backend failed"); else {json_keyval_object(obj,sizeof(obj),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getbtcconfirmations\",\"result\":%s}\n",obj);} return 0;
+    }
+    if(!strcmp(args[0], "verifycrosschainfunding") && argc>=6){
+        char out[32768],obj[48000]={0}; char *argv[]={g_backend_path,"crosschain-verify-funding",g_cdir,args[1],args[2],args[3],args[4],args[5],NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"verifycrosschainfunding","backend failed"); else {json_keyval_object(obj,sizeof(obj),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"verifycrosschainfunding\",\"result\":%s}\n",obj);} return 0;
+    }
+    if(!strcmp(args[0], "getcrosschainfunding") && argc>=2){
+        char out[32768],obj[48000]={0}; char *argv[]={g_backend_path,"crosschain-funding",g_cdir,args[1],NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getcrosschainfunding","backend failed"); else {json_keyval_object(obj,sizeof(obj),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getcrosschainfunding\",\"result\":%s}\n",obj);} return 0;
+    }
+    if(!strcmp(args[0], "getcrosschainsecurity") && argc>=2){
+        char out[32768],obj[48000]={0}; char *argv[]={g_backend_path,"crosschain-security",g_cdir,args[1],NULL};
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"getcrosschainsecurity","backend failed"); else {json_keyval_object(obj,sizeof(obj),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"getcrosschainsecurity\",\"result\":%s}\n",obj);} return 0;
     }
     if(!strcmp(args[0], "getbalance")){
         char addr[512], out[8192];
@@ -1178,6 +1533,126 @@ static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
     if(!strcmp(args[0], "delegate") && argc >= 3){
         char out[8192]; char *argv[] = { g_backend_path, "delegate", g_cdir, g_wdir, args[1], args[2], NULL };
         if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "delegate", "backend failed"); else json_ok_raw(resp, resp_sz, "delegate", out); return 0;
+    }
+    if(!strcmp(args[0], "createrawtransaction") && argc >= 6){
+        char out[32768], rawjs[60000]={0};
+        const char *memo = argc >= 7 ? args[6] : NULL;
+        const char *fee = argc >= 8 ? args[7] : NULL;
+        const char *nonce = argc >= 9 ? args[8] : NULL;
+        char *argv[] = { g_backend_path, "create-raw-tx", g_cdir, args[1], args[2], args[3], args[4], args[5], (char*)memo, (char*)fee, (char*)nonce, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "createrawtransaction", "backend failed");
+        else { trim_ws_right(out); json_string(rawjs, sizeof(rawjs), out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"createrawtransaction\",\"result\":{\"raw_tx\":%s}}\n", rawjs); }
+        return 0;
+    }
+    if(!strcmp(args[0], "createagentregistertransaction") && argc >= 14){
+        char out[65536];
+        char *argv[] = { g_backend_path, "create-agent-register-raw-tx", g_cdir, args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], args[12], args[13], argc >= 15 ? args[14] : NULL, argc >= 16 ? args[15] : NULL, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "createagentregistertransaction", "backend failed");
+        else { char rawjs[70000]; trim_ws_right(out); json_string(rawjs, sizeof(rawjs), out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"createagentregistertransaction\",\"result\":{\"raw_tx\":%s}}\n", rawjs); }
+        return 0;
+    }
+    if(!strcmp(args[0], "createagentupdatetransaction") && argc >= 12){
+        char out[65536];
+        char *argv[] = { g_backend_path, "create-agent-update-raw-tx", g_cdir, args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11], argc >= 13 ? args[12] : NULL, argc >= 14 ? args[13] : NULL, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "createagentupdatetransaction", "backend failed");
+        else { char rawjs[70000]; trim_ws_right(out); json_string(rawjs, sizeof(rawjs), out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"createagentupdatetransaction\",\"result\":{\"raw_tx\":%s}}\n", rawjs); }
+        return 0;
+    }
+    if(!strcmp(args[0], "createagentrevoketransaction") && argc >= 7){
+        char out[65536];
+        char *argv[] = { g_backend_path, "create-agent-revoke-raw-tx", g_cdir, args[1], args[2], args[3], args[4], args[5], args[6], argc >= 8 ? args[7] : NULL, argc >= 9 ? args[8] : NULL, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "createagentrevoketransaction", "backend failed");
+        else { char rawjs[70000]; trim_ws_right(out); json_string(rawjs, sizeof(rawjs), out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"createagentrevoketransaction\",\"result\":{\"raw_tx\":%s}}\n", rawjs); }
+        return 0;
+    }
+    if(!strcmp(args[0], "createordertransaction") && argc >= 13){
+        char out[65536], rawjs[120000]={0};
+        char *argv[] = { g_backend_path,"create-order-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],args[7],args[8],args[9],args[10],args[11],args[12],argc>=14?args[13]:NULL,argc>=15?args[14]:NULL,NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"createordertransaction","backend failed"); else { trim_ws_right(out); json_string(rawjs,sizeof(rawjs),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"createordertransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs); } return 0;
+    }
+    if(!strcmp(args[0], "createexternalordertransaction") && argc >= 14){
+        char out[65536], rawjs[120000]={0};
+        char *argv[] = { g_backend_path,"create-external-order-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],args[7],args[8],args[9],args[10],args[11],args[12],args[13],argc>=15?args[14]:NULL,argc>=16?args[15]:NULL,NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"createexternalordertransaction","backend failed"); else { trim_ws_right(out); json_string(rawjs,sizeof(rawjs),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"createexternalordertransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs); } return 0;
+    }
+    if(!strcmp(args[0], "createarbitragehedgetransaction") && argc >= 12){
+        char out[65536], rawjs[120000]={0};
+        char *argv[] = { g_backend_path,"create-arbitrage-hedge-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],args[7],args[8],args[9],args[10],args[11],argc>=13?args[12]:NULL,argc>=14?args[13]:NULL,NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"createarbitragehedgetransaction","backend failed"); else { trim_ws_right(out); json_string(rawjs,sizeof(rawjs),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"createarbitragehedgetransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs); } return 0;
+    }
+    if(!strcmp(args[0], "creategatewayregistertransaction") && argc >= 12){
+        char out[65536], rawjs[120000]={0};
+        char *argv[] = { g_backend_path,"create-gateway-register-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],args[7],args[8],args[9],args[10],args[11],argc>=13?args[12]:NULL,argc>=14?args[13]:NULL,NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"creategatewayregistertransaction","backend failed"); else { trim_ws_right(out); json_string(rawjs,sizeof(rawjs),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"creategatewayregistertransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs); } return 0;
+    }
+    if(!strcmp(args[0], "creategatewayrevoketransaction") && argc >= 7){
+        char out[65536], rawjs[120000]={0};
+        char *argv[] = { g_backend_path,"create-gateway-revoke-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],argc>=8?args[7]:NULL,argc>=9?args[8]:NULL,NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"creategatewayrevoketransaction","backend failed"); else { trim_ws_right(out); json_string(rawjs,sizeof(rawjs),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"creategatewayrevoketransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs); } return 0;
+    }
+    if(!strcmp(args[0], "createexecutionreporttransaction") && argc >= 14){
+        char out[65536], rawjs[120000]={0};
+        char *argv[] = { g_backend_path,"create-execution-report-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],args[7],args[8],args[9],args[10],args[11],args[12],args[13],argc>=15?args[14]:NULL,argc>=16?args[15]:NULL,NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"createexecutionreporttransaction","backend failed"); else { trim_ws_right(out); json_string(rawjs,sizeof(rawjs),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"createexecutionreporttransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs); } return 0;
+    }
+    if(!strcmp(args[0], "createbtcspvheadertransaction") && argc>=7){
+        char out[65536],rawjs[120000]={0}; char *argv[]={g_backend_path,"create-btc-spv-header-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],argc>=8?args[7]:NULL,argc>=9?args[8]:NULL,NULL};
+        if(run_capture(argv,out,sizeof(out))!=0)json_error(resp,resp_sz,"createbtcspvheadertransaction","backend failed");else{trim_ws_right(out);json_string(rawjs,sizeof(rawjs),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"createbtcspvheadertransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs);}return 0;
+    }
+    if(!strcmp(args[0], "createbtcspvfundingprooftransaction") && argc>=11){
+        char out[131072],rawjs[180000]={0}; char *argv[]={g_backend_path,"create-btc-spv-funding-proof-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],args[7],args[8],args[9],args[10],argc>=12?args[11]:NULL,argc>=13?args[12]:NULL,NULL};
+        if(run_capture(argv,out,sizeof(out))!=0)json_error(resp,resp_sz,"createbtcspvfundingprooftransaction","backend failed");else{trim_ws_right(out);json_string(rawjs,sizeof(rawjs),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"createbtcspvfundingprooftransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs);}return 0;
+    }
+    if(!strcmp(args[0], "createcrosschainbuytransaction") && argc>=13){
+        char out[65536],rawjs[120000]={0}; char *argv[]={g_backend_path,"create-crosschain-buy-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],args[7],args[8],args[9],args[10],args[11],args[12],argc>=14?args[13]:NULL,argc>=15?args[14]:NULL,NULL};
+        if(run_capture(argv,out,sizeof(out))!=0)json_error(resp,resp_sz,"createcrosschainbuytransaction","backend failed");else{trim_ws_right(out);json_string(rawjs,sizeof(rawjs),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"createcrosschainbuytransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs);}return 0;
+    }
+    if(!strcmp(args[0], "createcrosschainselltransaction") && argc>=12){
+        char out[65536],rawjs[120000]={0}; char *argv[]={g_backend_path,"create-crosschain-sell-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],args[7],args[8],args[9],args[10],args[11],argc>=13?args[12]:NULL,argc>=14?args[13]:NULL,NULL};
+        if(run_capture(argv,out,sizeof(out))!=0)json_error(resp,resp_sz,"createcrosschainselltransaction","backend failed");else{trim_ws_right(out);json_string(rawjs,sizeof(rawjs),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"createcrosschainselltransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs);}return 0;
+    }
+    if(!strcmp(args[0], "createcrosschainredeemtransaction") && argc>=8){
+        char out[65536],rawjs[120000]={0}; char *argv[]={g_backend_path,"create-crosschain-redeem-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],args[7],argc>=9?args[8]:NULL,argc>=10?args[9]:NULL,NULL};
+        if(run_capture(argv,out,sizeof(out))!=0)json_error(resp,resp_sz,"createcrosschainredeemtransaction","backend failed");else{trim_ws_right(out);json_string(rawjs,sizeof(rawjs),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"createcrosschainredeemtransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs);}return 0;
+    }
+    if(!strcmp(args[0], "createcrosschainrefundtransaction") && argc>=7){
+        char out[65536],rawjs[120000]={0}; char *argv[]={g_backend_path,"create-crosschain-refund-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],argc>=8?args[7]:NULL,argc>=9?args[8]:NULL,NULL};
+        if(run_capture(argv,out,sizeof(out))!=0)json_error(resp,resp_sz,"createcrosschainrefundtransaction","backend failed");else{trim_ws_right(out);json_string(rawjs,sizeof(rawjs),out);snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"createcrosschainrefundtransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs);}return 0;
+    }
+    if(!strcmp(args[0], "createordercanceltransaction") && argc >= 8){
+        char out[65536], rawjs[120000]={0};
+        char *argv[] = { g_backend_path,"create-order-cancel-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],args[7],argc>=9?args[8]:NULL,argc>=10?args[9]:NULL,NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"createordercanceltransaction","backend failed"); else { trim_ws_right(out); json_string(rawjs,sizeof(rawjs),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"createordercanceltransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs); } return 0;
+    }
+    if(!strcmp(args[0], "createorderreplacetransaction") && argc >= 14){
+        char out[65536], rawjs[120000]={0};
+        char *argv[] = { g_backend_path,"create-order-replace-raw-tx",g_cdir,args[1],args[2],args[3],args[4],args[5],args[6],args[7],args[8],args[9],args[10],args[11],args[12],args[13],argc>=15?args[14]:NULL,argc>=16?args[15]:NULL,NULL };
+        if(run_capture(argv,out,sizeof(out))!=0) json_error(resp,resp_sz,"createorderreplacetransaction","backend failed"); else { trim_ws_right(out); json_string(rawjs,sizeof(rawjs),out); snprintf(resp,resp_sz,"{\"ok\":true,\"method\":\"createorderreplacetransaction\",\"result\":{\"raw_tx\":%s}}\n",rawjs); } return 0;
+    }
+    if(!strcmp(args[0], "createvelocitytransaction") && argc >= 10){
+        char out[65536], rawjs[120000]={0};
+        char *argv[] = { g_backend_path, "create-velocity-raw-tx", g_cdir, args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], argc >= 12 ? args[10] : NULL, argc >= 13 ? args[11] : NULL, NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "createvelocitytransaction", "backend failed");
+        else { trim_ws_right(out); json_string(rawjs, sizeof(rawjs), out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"createvelocitytransaction\",\"result\":{\"raw_tx\":%s}}\n", rawjs); }
+        return 0;
+    }
+    if(!strcmp(args[0], "signrawtransactionwithwallet") && argc >= 3){
+        char out[8192]; char *argv[] = { g_backend_path, "signrawtransactionwithwallet", g_wdir, g_cdir, args[1], args[2], NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "signrawtransactionwithwallet", "backend failed");
+        else { trim_ws_right(out); json_ok_string(resp, resp_sz, "signrawtransactionwithwallet", "signed_tx_file", out); }
+        return 0;
+    }
+    if(!strcmp(args[0], "decoderawtransaction") && argc >= 2){
+        char out[32768], obj[60000]={0}; char *argv[] = { g_backend_path, "decoderawtransaction", g_cdir, args[1], NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "decoderawtransaction", "backend failed");
+        else { json_keyval_object(obj, sizeof(obj), out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"decoderawtransaction\",\"result\":%s}\n", obj); }
+        return 0;
+    }
+    if(!strcmp(args[0], "gettxid") && argc >= 2){
+        char out[8192]; char *argv[] = { g_backend_path, "txid", g_cdir, args[1], NULL };
+        if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "gettxid", "backend failed");
+        else { trim_ws_right(out); json_ok_string(resp, resp_sz, "gettxid", "txid", out); }
+        return 0;
     }
     if(!strcmp(args[0], "sendtoaddress") && argc >= 3){
         char out[8192]; const char *memo = argc >= 4 ? args[3] : "payment";
@@ -1360,15 +1835,41 @@ qrx_wsa_init_once();
 #else
         if(fd < 0){ if(errno == EINTR) continue; break; }
 #endif
-        char cmd[65536];
+        char cmd[196608];
+        size_t cmd_off = 0;
+        size_t expected_total = 0;
+        for(;;){
 #ifdef _WIN32
-        int n = recv(fd, cmd, sizeof(cmd)-1, 0);
+            int n = recv(fd, cmd + cmd_off, (int)(sizeof(cmd)-1-cmd_off), 0);
 #else
-        ssize_t n = recv(fd, cmd, sizeof(cmd)-1, 0);
+            ssize_t n = recv(fd, cmd + cmd_off, sizeof(cmd)-1-cmd_off, 0);
 #endif
-        if(n < 0) n = 0;
-        cmd[n] = 0;
-        char resp[131072];
+            if(n <= 0) break;
+            cmd_off += (size_t)n;
+            cmd[cmd_off] = 0;
+            if(expected_total == 0 && (strstr(cmd,"POST ")==cmd || strstr(cmd,"OPTIONS ")==cmd || strstr(cmd,"GET ")==cmd)){
+                const char *hdr_end = strstr(cmd,"\r\n\r\n");
+                size_t hdr_len = 0;
+                if(hdr_end) hdr_len = (size_t)(hdr_end-cmd)+4;
+                else { hdr_end = strstr(cmd,"\n\n"); if(hdr_end) hdr_len=(size_t)(hdr_end-cmd)+2; }
+                if(hdr_len){
+                    const char *cl = qrx_strcasestr_local(cmd,"Content-Length:");
+                    if(cl && cl < cmd + hdr_len){
+                        cl += strlen("Content-Length:");
+                        while(*cl==' '||*cl=='\t') cl++;
+                        unsigned long long body_len = strtoull(cl,NULL,10);
+                        if(body_len > sizeof(cmd)-1-hdr_len){ expected_total=sizeof(cmd); }
+                        else expected_total=hdr_len+(size_t)body_len;
+                    } else expected_total=hdr_len;
+                }
+            }
+            if(expected_total && cmd_off >= expected_total) break;
+            if(cmd_off + 1 >= sizeof(cmd)) break;
+            /* Plain-text local control commands have no HTTP length framing. */
+            if(expected_total==0 && !(strstr(cmd,"POST ")==cmd || strstr(cmd,"OPTIONS ")==cmd || strstr(cmd,"GET ")==cmd) && strchr(cmd,'\n')) break;
+        }
+        cmd[cmd_off] = 0;
+        char resp[196608];
         int stop_after = 0;
         if(strstr(cmd, "POST ") == cmd || strstr(cmd, "OPTIONS ") == cmd || strstr(cmd, "GET ") == cmd) {
             handle_json_rpc_http(cmd, resp, sizeof(resp));
