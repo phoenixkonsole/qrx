@@ -233,6 +233,27 @@ static int qrx_set_env(const char *name, const char *value, int overwrite) {
 #endif
 }
 
+static int qrx_hex_nibble(char c) {
+    if(c >= '0' && c <= '9') return c - '0';
+    if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int qrx_hex_decode_text(const char *hex, char *out, size_t out_sz) {
+    size_t n;
+    if(!hex || !out || out_sz == 0) return -1;
+    n = strlen(hex);
+    if((n & 1u) || (n / 2u) + 1u > out_sz) return -1;
+    for(size_t i=0, j=0; i<n; i+=2, ++j) {
+        int hi=qrx_hex_nibble(hex[i]), lo=qrx_hex_nibble(hex[i+1]);
+        if(hi < 0 || lo < 0) return -1;
+        out[j]=(char)((hi<<4)|lo);
+    }
+    out[n/2u]=0;
+    return 0;
+}
+
 static void configure_wallet_passphrase(const char *network) {
     if(getenv("QRX_PASSPHRASE")) return;
 
@@ -1514,6 +1535,20 @@ static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
         char *argv[] = { g_backend_path, "staking-status", g_cdir, addr, NULL };
         if(run_capture(argv, out, sizeof(out)) != 0) json_error(resp, resp_sz, "getstakinginfo", "backend failed");
         else { json_keyval_object(obj,sizeof(obj),out); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getstakinginfo\",\"result\":%s}\n", obj); }
+        return 0;
+    }
+    if(!strcmp(args[0], "walletpassphrasehex") && argc >= 2){
+        char secret[1024];
+        if(!strcmp(args[1], "-")) secret[0]=0;
+        else if(qrx_hex_decode_text(args[1], secret, sizeof(secret)) != 0){ json_error(resp, resp_sz, "walletpassphrasehex", "invalid passphrase encoding"); return 0; }
+        if(qrx_set_env("QRX_PASSPHRASE", secret, 1) != 0){ memset(secret,0,sizeof(secret)); json_error(resp, resp_sz, "walletpassphrasehex", "could not update wallet session"); return 0; }
+        memset(secret,0,sizeof(secret));
+        snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"walletpassphrasehex\",\"result\":{\"unlocked\":true}}\n");
+        return 0;
+    }
+    if(!strcmp(args[0], "walletlock")){
+        qrx_set_env("QRX_PASSPHRASE", "", 1);
+        snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"walletlock\",\"result\":{\"locked\":true}}\n");
         return 0;
     }
     if(!strcmp(args[0], "getwalletinfo")){

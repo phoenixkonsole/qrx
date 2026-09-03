@@ -9,7 +9,9 @@ int qrx_dev_fund_percent(int64_t block_height) {
 
 uint64_t qrx_dev_reward_share(uint64_t total_reward_atoms, int64_t block_height) {
     int pct = qrx_dev_fund_percent(block_height);
-    return (total_reward_atoms * (uint64_t)pct) / 100ULL;
+    /* Overflow-safe floor(total * pct / 100). */
+    return (total_reward_atoms / 100ULL) * (uint64_t)pct
+         + ((total_reward_atoms % 100ULL) * (uint64_t)pct) / 100ULL;
 }
 
 uint64_t qrx_validator_reward_share(uint64_t total_reward_atoms, int64_t block_height) {

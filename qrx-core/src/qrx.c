@@ -4,6 +4,7 @@
 #include "protocol/qrx_chainid.h"
 #include "protocol/qrx_domain_separation.h"
 #include "security/qrx_secure_memory.h"
+#include "economics/qrx_economics.h"
 
 #ifndef QRX_MAX_FUTURE_DRIFT_SECONDS
 #define QRX_MAX_FUTURE_DRIFT_SECONDS 300
@@ -5339,10 +5340,19 @@ static int staking_status_cmd(const char *chain_dir, const char *address) {
     return validator_set_cmd(chain_dir);
 }
 
-static int reward_epoch_distribute_cmd(const char *chain_dir, long long reward, long long mint_amount, long long commission_bps) {
+static int reward_epoch_distribute_cmd(const char *chain_dir, long long reward, long long mint_amount, long long dev_share, long long commission_bps) {
     if (reward <= 0) die("reward must be > 0");
+    if (dev_share < 0) die("dev share must be >= 0");
     if (mint_amount > 0 && mint_with_cap(chain_dir, "rewards_minted", mint_amount) != 0) die("max supply exceeded");
     if (commission_bps < 0 || commission_bps > 10000) die("commission bps must be between 0 and 10000");
+    if (dev_share > 0) {
+        char *dev = chain_cfg_value(chain_dir, "dev_address");
+        if (!dev || !*dev) { if (dev) free(dev); die("dev_address not configured"); }
+        if (adjust_balance(chain_dir, dev, dev_share) != 0) { free(dev); die("development fund reward credit failed"); }
+        journal_append(chain_dir, "development_fund address=%s reward=%lld policy=subsidy_only", dev, dev_share);
+        printf("development_fund=%s reward=%lld\n", dev, dev_share);
+        free(dev);
+    }
     char stakes[1024], delegations[1024], totals[1024], ub[1024], ube[1024], ud[1024], ude[1024];
     staking_paths(chain_dir, stakes, sizeof(stakes), delegations, sizeof(delegations), totals, sizeof(totals), ub, sizeof(ub), ube, sizeof(ube), ud, sizeof(ud), ude, sizeof(ude), NULL, 0);
     StateKVRecord *stakes_arr = NULL; size_t stakes_n = 0; if (kv_load(stakes, &stakes_arr, &stakes_n) != 0) die("failed to load stakes");
@@ -5396,7 +5406,10 @@ static int reward_epoch_distribute_cmd(const char *chain_dir, long long reward, 
 
 static int reward_epoch_cmd(const char *chain_dir, long long reward, long long commission_bps) {
     require_manual_mint_allowed(chain_dir, "reward-epoch");
-    return reward_epoch_distribute_cmd(chain_dir, reward, reward, commission_bps);
+    long long height = current_height_from_chain(chain_dir);
+    long long dev_share = (long long)qrx_dev_reward_share((uint64_t)reward, height);
+    long long validator_reward = reward - dev_share;
+    return reward_epoch_distribute_cmd(chain_dir, validator_reward, reward, dev_share, commission_bps);
 }
 
 
@@ -5431,6 +5444,10 @@ static int getparams_cmd(const char *chain_dir, long long height) {
     printf("delegator_reward_percent=%lld\n", qrx_chain_get_ll_at_height_or_default(chain_dir, h, "delegator_reward_percent", 70));
     printf("network_pool_percent=%lld\n", qrx_chain_get_ll_at_height_or_default(chain_dir, h, "network_pool_percent", 0));
     printf("tx_fee_atoms=%lld\n", qrx_chain_get_ll_at_height_or_default(chain_dir, h, "tx_fee_atoms", 1000));
+    printf("development_fund_percent=%d\n", qrx_dev_fund_percent(h));
+    { char *dev = chain_cfg_value(chain_dir, "dev_address"); printf("development_fund_address=%s\n", dev ? dev : ""); if (dev) free(dev); }
+    printf("development_fund_basis=block_subsidy_only\n");
+    printf("transaction_fee_recipient_policy=validators_and_delegators_100_percent\n");
     printf("pending_fee_pool_atoms=%lld\n", fee_pool_pending(chain_dir));
     printf("min_validator_stake_atoms=%lld\n", qrx_chain_get_ll_at_height_or_default(chain_dir, h, "min_validator_stake_atoms", 10000000000LL));
     printf("double_sign_slash_bps=%lld\n", qrx_chain_get_ll_at_height_or_default(chain_dir, h, "double_sign_slash_bps", 5000));
@@ -5505,15 +5522,23 @@ static int reward_epoch_auto_cmd(const char *chain_dir, long long commission_bps
     long long height = current_height_from_chain(chain_dir);
     long long subsidy = qrx_chain_get_block_reward_at_height(chain_dir, height, 25000000LL, 12614400LL);
     long long fees = fee_pool_pending(chain_dir);
+    long long dev_share = (long long)qrx_dev_reward_share((uint64_t)subsidy, height);
+    long long validator_subsidy = subsidy - dev_share;
+    long long validator_reward = validator_subsidy + fees;
     long long total = subsidy + fees;
     if (total <= 0) die("no block subsidy or fees to distribute");
-    int rc = reward_epoch_distribute_cmd(chain_dir, total, subsidy, commission_bps);
+    if (validator_reward <= 0) die("no validator/delegator reward to distribute");
+    int rc = reward_epoch_distribute_cmd(chain_dir, validator_reward, subsidy, dev_share, commission_bps);
     if (rc == 0 && fees > 0) {
         long long drained = fee_pool_drain(chain_dir);
         journal_append(chain_dir, "fee_pool_drained amount=%lld height=%lld", drained, height);
         printf("fees_distributed=%lld\n", drained);
     }
     printf("block_subsidy=%lld\n", subsidy);
+    printf("development_fund_share=%lld\n", dev_share);
+    printf("validator_subsidy=%lld\n", validator_subsidy);
+    printf("transaction_fees_to_validators=%lld\n", fees);
+    printf("validator_reward_total=%lld\n", validator_reward);
     printf("reward_total=%lld\n", total);
     return rc;
 }
@@ -5725,20 +5750,4 @@ int qrx_backend_main(int argc, char **argv) {
     if (!strcmp(argv[1], "reward-epoch") && (argc == 4 || argc == 5)) return reward_epoch_cmd(argv[2], atoll(argv[3]), argc == 5 ? atoll(argv[4]) : 1000);
     if (!strcmp(argv[1], "slash") && (argc == 6 || argc == 7)) return slash_cmd(argv[2], argv[3], atoll(argv[4]), argv[5], argc == 7 ? atoll(argv[6]) : 10);
     usage(); return 1;
-}
-
-
-/* ===== QRX Dynamic Development Fund ===== */
-
-int qrx_dev_fund_percent(long long block_height){
-    const long long YEAR_BLOCKS = 3153600LL;
-
-    if(block_height < YEAR_BLOCKS) return 20;
-    if(block_height < YEAR_BLOCKS * 2LL) return 10;
-    if(block_height < YEAR_BLOCKS * 3LL) return 5;
-    return 2;
-}
-
-const char *qrx_dev_fund_address(void){
-    return "QRXFOUNDATIONPLACEHOLDER111111111111111111111";
 }
