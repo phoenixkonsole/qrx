@@ -82,6 +82,8 @@ set(QRX_CORE_SOURCES
     src/consensus/qrx_finality.c
     src/consensus/qrx_finality_state.c
     src/consensus/qrx_slashing.c
+    src/economics/qrx_economics.c
+    src/treasury/qrx_dev_addresses.c
 )
 
 add_library(qrxcore STATIC ${QRX_CORE_SOURCES})
