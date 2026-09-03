@@ -1,6 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use dirs::data_local_dir;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -10,29 +9,16 @@ use std::{
     process::{Child, Command, Stdio},
     sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
-    net::{TcpStream, ToSocketAddrs},
 };
-use tauri::Manager;
 use thiserror::Error;
 use std::str::FromStr;
+use bdk::bitcoin::{Address, Network};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use aes_gcm::aead::Aead;
 use base64::{engine::general_purpose, Engine as _};
 use rand::RngCore;
 use argon2::{Algorithm, Argon2, Params, Version};
-use bdk::{
-    bitcoin::{Address, Network},
-    blockchain::{Blockchain, ElectrumBlockchain},
-    database::MemoryDatabase,
-    electrum_client::Client as ElectrumClient,
-    keys::{
-        bip39::{Language, Mnemonic, WordCount},
-        DerivableKey, ExtendedKey, GeneratableKey, GeneratedKey,
-    },
-    wallet::AddressIndex,
-    FeeRate, SignOptions, SyncOptions, Wallet,
-};
-use bdk::miniscript::Segwitv0;
+use openssl::{pkey::PKey, symm::Cipher};
 
 struct DaemonState {
     child: Mutex<Option<Child>>,
@@ -103,12 +89,80 @@ struct WalletListItem {
     path: String,
     address: Option<String>,
     has_recovery_file: bool,
+    wallet_version: Option<u64>,
+    legacy_or_unknown: bool,
+    safety_backup_exists: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LegacyGuiWalletCandidate {
+    name: String,
+    path: String,
+    address: Option<String>,
+    wallet_version: Option<u64>,
+    has_recovery_file: bool,
+    already_in_shared_store: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WalletAddressSet {
+    wallet: String,
+    primary_address: Option<String>,
+    manifest_address: Option<String>,
+    addresses: Vec<String>,
+    additional_addresses: Vec<String>,
+    address_mismatch: bool,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ImportResult {
     wallet: WalletContext,
     imported_files: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WalletInspection {
+    name: String,
+    path: String,
+    wallet_version: Option<u64>,
+    address: Option<String>,
+    manifest_address: Option<String>,
+    address_mismatch: bool,
+    has_wallet_manifest: bool,
+    has_recovery_file: bool,
+    ed25519_private: bool,
+    ed25519_public: bool,
+    mldsa65_private: bool,
+    mldsa65_public: bool,
+    hybrid_ready: bool,
+    private_key_encryption: String,
+    passphrase_state: String,
+    safety_backup_exists: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct KeySetImportResult {
+    wallet: WalletContext,
+    copied_files: Vec<String>,
+    inspection: WalletInspection,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WalletPassphraseChangeResult {
+    wallet: String,
+    backup_path: String,
+    passphrase_state: String,
+    changed_files: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ExistingWalletPrepareResult {
+    wallet: WalletContext,
+    wallet_version: Option<u64>,
+    legacy_or_unknown: bool,
+    backup_created: bool,
+    backup_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -126,6 +180,10 @@ struct DaemonHealth {
     pid: Option<u32>,
     network: String,
     wallet: String,
+    actual_wallet: Option<String>,
+    actual_wallet_dir: Option<String>,
+    wallet_mismatch: bool,
+    data_root_mismatch: bool,
     data_dir: String,
     control_socket: String,
     stdout_log: String,
@@ -196,10 +254,13 @@ fn current_sidecar_binary_name(base: &str) -> String {
 }
 
 fn app_data_dir() -> Result<PathBuf, AppError> {
-
-    let base = data_local_dir()
-        .ok_or_else(|| AppError::Message("Could not resolve local app data directory".into()))?;
-    let dir = base.join("gui-wallet").join("qrx-data");
+    // GUI and Core intentionally share the exact same QRX data root.
+    // qrx/qrxd/qrx-cli default to ~/.qrx/<network>; using ~/.qrx here means
+    // an existing Core wallet is discovered and used in place instead of
+    // being copied into a separate GUI-only store.
+    let home = dirs::home_dir()
+        .ok_or_else(|| AppError::Message("Could not resolve home directory".into()))?;
+    let dir = home.join(".qrx");
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -285,8 +346,18 @@ fn stderr_log_path(network: &str, wallet: &str) -> Result<PathBuf, AppError> {
     Ok(logs_dir(network, wallet)?.join("qrxd.stderr.log"))
 }
 
-fn control_socket_path(network: &str) -> Result<PathBuf, AppError> {
-    Ok(network_root(network)?.join("control.sock"))
+fn rpc_port_for_network(network: &str) -> u16 {
+    match network {
+        "mainnet" => 37660,
+        "alpha" => 37661,
+        "testnet" => 37662,
+        "regtest" => 37663,
+        _ => 37661,
+    }
+}
+
+fn rpc_endpoint(network: &str) -> String {
+    format!("http://127.0.0.1:{}/rpc", rpc_port_for_network(network))
 }
 
 fn candidate_paths(app: Option<&tauri::AppHandle>, binary: &str) -> Vec<PathBuf> {
@@ -364,6 +435,181 @@ fn read_address(wallet_dir: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+fn read_manifest_address(wallet_dir: &Path) -> Option<String> {
+    let text = fs::read_to_string(wallet_dir.join("wallet.json")).ok()?;
+    let json: Value = serde_json::from_str(&text).ok()?;
+    json.get("address")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn addresses_from_value(value: &Value) -> Vec<String> {
+    fn push_unique(out: &mut Vec<String>, raw: &str) {
+        let a = raw.trim();
+        if !a.is_empty() && !out.iter().any(|x| x == a) { out.push(a.to_string()); }
+    }
+    let mut out = Vec::new();
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                if let Some(a) = item.as_str() { push_unique(&mut out, a); }
+                else if let Some(a) = item.get("address").and_then(Value::as_str) { push_unique(&mut out, a); }
+            }
+        }
+        Value::Object(map) => {
+            if let Some(items) = map.get("addresses").and_then(Value::as_array) {
+                for item in items {
+                    if let Some(a) = item.as_str() { push_unique(&mut out, a); }
+                    else if let Some(a) = item.get("address").and_then(Value::as_str) { push_unique(&mut out, a); }
+                }
+            }
+            if let Some(result) = map.get("result") {
+                for a in addresses_from_value(result) { push_unique(&mut out, &a); }
+            }
+        }
+        Value::String(a) => push_unique(&mut out, a),
+        _ => {}
+    }
+    out
+}
+
+
+const CURRENT_QRX_WALLET_VERSION: u64 = 12;
+
+fn read_wallet_version(wallet_dir: &Path) -> Option<u64> {
+    let text = fs::read_to_string(wallet_dir.join("wallet.json")).ok()?;
+    let json: Value = serde_json::from_str(&text).ok()?;
+    json.get("wallet_version").and_then(|v| v.as_u64())
+}
+
+fn wallet_backup_root(network: &str, wallet: &str) -> Result<PathBuf, AppError> {
+    Ok(app_data_dir()?.join("backups").join(network).join(wallet))
+}
+
+fn safety_backup_exists(network: &str, wallet: &str) -> bool {
+    let Ok(root) = wallet_backup_root(network, wallet) else { return false; };
+    if !root.is_dir() { return false; }
+    fs::read_dir(root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|e| e.path().is_dir() && e.file_name().to_string_lossy().starts_with("pre-0.0.7-"))
+}
+
+fn directory_copy_stats(root: &Path) -> Result<(u64, u64), AppError> {
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    if !root.is_dir() {
+        return Ok((0, 0));
+    }
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            let (sub_files, sub_bytes) = directory_copy_stats(&path)?;
+            files += sub_files;
+            bytes += sub_bytes;
+        } else if ft.is_file() {
+            files += 1;
+            bytes += entry.metadata()?.len();
+        }
+    }
+    Ok((files, bytes))
+}
+
+fn create_pre_007_safety_backup(network: &str, wallet: &str) -> Result<String, AppError> {
+    let source = wallet_dir(network, wallet)?;
+    if !source.is_dir() {
+        return Err(AppError::Message("Existing wallet directory is missing; backup aborted".into()));
+    }
+    let (source_files, source_bytes) = directory_copy_stats(&source)?;
+    if source_files == 0 {
+        return Err(AppError::Message("Existing wallet directory is empty; backup aborted".into()));
+    }
+
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| AppError::Message(format!("System clock error while creating backup: {e}")))?
+        .as_secs();
+    let root = wallet_backup_root(network, wallet)?;
+    fs::create_dir_all(&root)?;
+
+    // Never reuse an existing destination. Even a partial old backup must not be overwritten.
+    let mut destination = root.join(format!("pre-0.0.7-{secs}"));
+    let mut suffix = 1u32;
+    while destination.exists() {
+        destination = root.join(format!("pre-0.0.7-{secs}-{suffix}"));
+        suffix += 1;
+    }
+
+    copy_dir_recursive(&source, &destination)?;
+
+    // Old 0.0.6/legacy wallets may predate wallet.json. Verify the backup by
+    // comparing the number and total size of all regular files instead.
+    let (backup_files, backup_bytes) = directory_copy_stats(&destination)?;
+    if backup_files != source_files || backup_bytes != source_bytes {
+        return Err(AppError::Message(format!(
+            "Safety backup verification failed: source has {source_files} files/{source_bytes} bytes, backup has {backup_files} files/{backup_bytes} bytes"
+        )));
+    }
+
+    let manifest = serde_json::json!({
+        "purpose": "pre-0.0.7 safety backup",
+        "source": source.to_string_lossy(),
+        "network": network,
+        "wallet": wallet,
+        "wallet_version": read_wallet_version(&source),
+        "created_unix": secs,
+        "source_files": source_files,
+        "source_bytes": source_bytes,
+        "verification": "regular-file count and total byte size matched before wallet use",
+        "policy": "copy-only; original wallet was not modified"
+    });
+    fs::write(
+        destination.join("QRX_BACKUP_MANIFEST.json"),
+        serde_json::to_vec_pretty(&manifest)
+            .map_err(|e| AppError::Message(format!("Could not serialize backup manifest: {e}")))?,
+    )?;
+
+    Ok(destination.to_string_lossy().to_string())
+}
+
+fn create_wallet_security_backup(network: &str, wallet: &str, purpose: &str) -> Result<String, AppError> {
+    let source = wallet_dir(network, wallet)?;
+    if !source.is_dir() { return Err(AppError::Message("Wallet directory is missing; security backup aborted".into())); }
+    let (source_files, source_bytes) = directory_copy_stats(&source)?;
+    if source_files == 0 { return Err(AppError::Message("Wallet directory is empty; security backup aborted".into())); }
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| AppError::Message(format!("System clock error: {e}")))?.as_secs();
+    let root = wallet_backup_root(network, wallet)?;
+    fs::create_dir_all(&root)?;
+    let safe_purpose: String = purpose.chars().map(|c| if c.is_ascii_alphanumeric() || c=='-' { c } else { '-' }).collect();
+    let mut destination = root.join(format!("{safe_purpose}-{secs}"));
+    let mut suffix=1u32;
+    while destination.exists(){ destination=root.join(format!("{safe_purpose}-{secs}-{suffix}")); suffix+=1; }
+    copy_dir_recursive(&source,&destination)?;
+    let (backup_files, backup_bytes)=directory_copy_stats(&destination)?;
+    if source_files!=backup_files || source_bytes!=backup_bytes {
+        return Err(AppError::Message(format!("Security backup verification failed: source {source_files} files/{source_bytes} bytes, backup {backup_files} files/{backup_bytes} bytes")));
+    }
+    let manifest=serde_json::json!({
+        "purpose": purpose, "source": source.to_string_lossy(), "network":network, "wallet":wallet,
+        "wallet_version":read_wallet_version(&source), "created_unix":secs, "source_files":source_files, "source_bytes":source_bytes,
+        "verification":"regular-file count and total byte size matched before security change",
+        "policy":"copy-only backup created before private-key passphrase modification"
+    });
+    fs::write(destination.join("QRX_BACKUP_MANIFEST.json"),serde_json::to_vec_pretty(&manifest).map_err(|e|AppError::Message(e.to_string()))?)?;
+    Ok(destination.to_string_lossy().to_string())
+}
+
+fn encrypted_pem_accepts_passphrase(path:&Path, passphrase:&str)->bool {
+    let Ok(pem)=fs::read(path) else { return false; };
+    PKey::private_key_from_pem_passphrase(&pem,passphrase.as_bytes()).is_ok()
+}
+
 fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<Vec<String>, AppError> {
     let mut copied = Vec::new();
     fs::create_dir_all(destination)?;
@@ -376,6 +622,12 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<Vec<String>, 
         if path.is_dir() {
             copied.extend(copy_dir_recursive(&path, &dest)?);
         } else {
+            if dest.exists() {
+                return Err(AppError::Message(format!(
+                    "Refusing to overwrite existing file: {}",
+                    dest.to_string_lossy()
+                )));
+            }
             fs::copy(&path, &dest)?;
             copied.push(dest.to_string_lossy().to_string());
         }
@@ -511,7 +763,7 @@ fn daemon_health_inner(
     passphrase: Option<&str>,
 ) -> Result<DaemonHealth, AppError> {
     let data_dir = app_data_dir()?;
-    let control_socket = control_socket_path(network)?;
+    let control_socket = rpc_endpoint(network);
     let stdout_log = stdout_log_path(network, wallet)?;
     let stderr_log = stderr_log_path(network, wallet)?;
 
@@ -554,14 +806,31 @@ fn daemon_health_inner(
         }
     }
 
+    let actual_wallet_dir = info.as_ref()
+        .and_then(|v| v.get("wallet_dir"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+    let actual_wallet = actual_wallet_dir.as_ref()
+        .and_then(|p| Path::new(p).file_name())
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string());
+    let wallet_mismatch = running && actual_wallet.as_deref().map(|w| w != wallet).unwrap_or(false);
+    let data_root_mismatch = running && actual_wallet_dir.as_ref()
+        .map(|p| !Path::new(p).starts_with(&data_dir))
+        .unwrap_or(false);
+
     Ok(DaemonHealth {
         running,
         launched_by_app,
         pid,
         network: network.to_string(),
         wallet: wallet.to_string(),
+        actual_wallet,
+        actual_wallet_dir,
+        wallet_mismatch,
+        data_root_mismatch,
         data_dir: data_dir.to_string_lossy().to_string(),
-        control_socket: control_socket.to_string_lossy().to_string(),
+        control_socket,
         stdout_log: stdout_log.to_string_lossy().to_string(),
         stderr_log: stderr_log.to_string_lossy().to_string(),
         info,
@@ -595,9 +864,7 @@ fn spawn_daemon(
         .arg("--datadir")
         .arg(&ctx.data_dir)
         .arg("--wallet")
-        .arg(wallet)
-        .arg("--listen")
-        .arg("127.0.0.1:26661");
+        .arg(wallet);
 
     if !validator_enabled {
         cmd.arg("--no-block-producer");
@@ -611,6 +878,276 @@ fn spawn_daemon(
         .spawn()?;
 
     Ok(child)
+}
+
+
+fn pem_encryption_state(path: &Path) -> Option<&'static str> {
+    let text = fs::read_to_string(path).ok()?;
+    if text.contains("BEGIN ENCRYPTED PRIVATE KEY") {
+        Some("encrypted")
+    } else if text.contains("BEGIN PRIVATE KEY") || text.contains("BEGIN RSA PRIVATE KEY") || text.contains("BEGIN EC PRIVATE KEY") {
+        Some("unencrypted")
+    } else {
+        Some("unknown")
+    }
+}
+
+fn inspect_wallet_inner(network: &str, wallet: &str) -> Result<WalletInspection, AppError> {
+    let name = sanitize_wallet_name(wallet)?;
+    let dir = wallet_dir(network, &name)?;
+    if !dir.is_dir() {
+        return Err(AppError::Message("Wallet directory does not exist".into()));
+    }
+    let ed_priv = dir.join("ed25519_priv.pem");
+    let ed_pub = dir.join("ed25519_pub.pem");
+    let ml_priv = dir.join("mldsa65_priv.pem");
+    let ml_pub = dir.join("mldsa65_pub.pem");
+    let ep = ed_priv.is_file();
+    let epu = ed_pub.is_file();
+    let mp = ml_priv.is_file();
+    let mpu = ml_pub.is_file();
+    let mut states = Vec::new();
+    if ep { if let Some(v)=pem_encryption_state(&ed_priv){ states.push(v); } }
+    if mp { if let Some(v)=pem_encryption_state(&ml_priv){ states.push(v); } }
+    let private_key_encryption = if states.is_empty() {
+        "none/watch-only-or-incomplete".to_string()
+    } else if states.iter().all(|v| *v == "encrypted") {
+        "encrypted".to_string()
+    } else if states.iter().all(|v| *v == "unencrypted") {
+        "unencrypted".to_string()
+    } else {
+        "mixed-or-unknown".to_string()
+    };
+    let encrypted_paths: Vec<&Path> = [ed_priv.as_path(), ml_priv.as_path()].into_iter()
+        .filter(|p| p.is_file() && pem_encryption_state(p)==Some("encrypted")).collect();
+    // Use Ed25519 as the canonical password probe. The Rust OpenSSL provider on
+    // some macOS builds cannot parse ML-DSA65 even though the QRX Core OpenSSL
+    // build can. Treating that provider limitation as "password required" made
+    // legacy wallets encrypted with an empty PKCS#8 passphrase look locked.
+    // The daemon/Core still validates the full hybrid key set when signing.
+    let empty_passphrase_works = if ed_priv.is_file() && pem_encryption_state(&ed_priv)==Some("encrypted") {
+        encrypted_pem_accepts_passphrase(&ed_priv, "")
+    } else {
+        !encrypted_paths.is_empty() && encrypted_paths.iter().any(|p| encrypted_pem_accepts_passphrase(p, ""))
+    };
+    let passphrase_state = match private_key_encryption.as_str() {
+        "encrypted" if empty_passphrase_works => "encrypted-container-empty-passphrase-no-user-password",
+        "encrypted" => "passphrase-required-to-use-private-keys",
+        "unencrypted" => "no-passphrase-required-for-private-keys",
+        "none/watch-only-or-incomplete" => "no-private-keys-detected",
+        _ => "inspect-manually-mixed-or-unknown",
+    }.to_string();
+    let canonical_address = read_address(&dir);
+    let manifest_address = read_manifest_address(&dir);
+    let address_mismatch = canonical_address.is_some() && manifest_address.is_some() && canonical_address != manifest_address;
+    Ok(WalletInspection {
+        name: name.clone(), path: dir.to_string_lossy().to_string(),
+        wallet_version: read_wallet_version(&dir), address: canonical_address,
+        manifest_address, address_mismatch,
+        has_wallet_manifest: dir.join("wallet.json").is_file(),
+        has_recovery_file: dir.join("recovery.qrxseed").is_file(),
+        ed25519_private: ep, ed25519_public: epu, mldsa65_private: mp, mldsa65_public: mpu,
+        hybrid_ready: ep && epu && mp && mpu, private_key_encryption, passphrase_state,
+        safety_backup_exists: safety_backup_exists(network, &name),
+    })
+}
+
+#[tauri::command]
+fn inspect_wallet(network: Option<String>, wallet: String) -> Result<WalletInspection, String> {
+    inspect_wallet_inner(network.as_deref().unwrap_or("alpha"), &wallet).map_err(String::from)
+}
+
+
+#[tauri::command]
+fn verify_wallet_passphrase(app: tauri::AppHandle, network: Option<String>, wallet: String, passphrase: String) -> Result<bool, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = sanitize_wallet_name(&wallet).map_err(String::from)?;
+    let inspection = inspect_wallet_inner(&network, &wallet).map_err(String::from)?;
+    if inspection.private_key_encryption == "unencrypted" { return Ok(true); }
+    if inspection.private_key_encryption != "encrypted" {
+        return Err("Wallet key protection is mixed/unknown; passphrase verification is unavailable until the key set is inspected.".into());
+    }
+    let empty_allowed = inspection.passphrase_state == "encrypted-container-empty-passphrase-no-user-password";
+    // Always allow an explicit empty-string verification attempt. This is
+    // required for 0.0.6-era wallets whose PKCS#8 containers are encrypted but
+    // were created with an empty user passphrase. A wrong empty passphrase is
+    // rejected by the key-decryption check below.
+    if passphrase.is_empty() && !empty_allowed {
+        let dir = wallet_dir(&network, &wallet).map_err(String::from)?;
+        let ed = dir.join("ed25519_priv.pem");
+        if !(ed.is_file() && pem_encryption_state(&ed)==Some("encrypted") && encrypted_pem_accepts_passphrase(&ed, "")) {
+            return Err("Enter the wallet passphrase.".into());
+        }
+    }
+    let dir = wallet_dir(&network, &wallet).map_err(String::from)?;
+    let candidates = [dir.join("ed25519_priv.pem"), dir.join("mldsa65_priv.pem")];
+    let mut checked = 0usize;
+    let mut canonical_ed25519_verified = false;
+    for path in candidates.iter().filter(|p| p.is_file()) {
+        let pem = fs::read(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+        if !String::from_utf8_lossy(&pem).contains("BEGIN ENCRYPTED PRIVATE KEY") {
+            continue;
+        }
+        let is_ed25519 = path.file_name().and_then(|n| n.to_str()) == Some("ed25519_priv.pem");
+        match PKey::private_key_from_pem_passphrase(&pem, passphrase.as_bytes()) {
+            Ok(_) => { checked += 1; if is_ed25519 { canonical_ed25519_verified = true; } }
+            Err(_) if !is_ed25519 && canonical_ed25519_verified => {
+                // ML-DSA65 may be unsupported by the Rust OpenSSL provider on
+                // macOS. Core/qrxd performs the authoritative hybrid-key check.
+                continue;
+            }
+            Err(_) => return Err("Incorrect wallet passphrase.".to_string()),
+        }
+    }
+    if checked == 0 {
+        return Err("No encrypted private key could be verified in this wallet.".into());
+    }
+    // If qrxd is already running, synchronize the verified session secret into
+    // the daemon. Hex encoding keeps spaces/special characters out of the
+    // legacy whitespace-delimited CLI command surface. If the daemon is not
+    // running yet, start_daemon receives the in-memory passphrase later.
+    let passphrase_hex: String = passphrase.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    let encoded = if passphrase_hex.is_empty() { "-" } else { passphrase_hex.as_str() };
+    let _ = run_cli(Some(&app), &network, &wallet, &["walletpassphrasehex", encoded], None);
+    Ok(true)
+}
+
+#[tauri::command]
+fn change_wallet_passphrase(app: tauri::AppHandle, network: Option<String>, wallet: String, current_passphrase: String, new_passphrase: String) -> Result<WalletPassphraseChangeResult, String> {
+    let network=network.unwrap_or_else(||"alpha".into());
+    let wallet=sanitize_wallet_name(&wallet).map_err(String::from)?;
+    if new_passphrase.is_empty(){ return Err("New passphrase must not be empty. Use a real passphrase; empty-passphrase legacy wallets are supported for reading but should be upgraded.".into()); }
+    if new_passphrase.len()<8 { return Err("New wallet passphrase must be at least 8 characters.".into()); }
+    let inspection=inspect_wallet_inner(&network,&wallet).map_err(String::from)?;
+    if inspection.private_key_encryption!="encrypted" && inspection.private_key_encryption!="unencrypted" { return Err("Wallet key set is incomplete/mixed; refusing passphrase change.".into()); }
+    let dir=wallet_dir(&network,&wallet).map_err(String::from)?;
+    let paths=[dir.join("ed25519_priv.pem"),dir.join("mldsa65_priv.pem")];
+    if paths.iter().any(|p|!p.is_file()){ return Err("Hybrid private key set is incomplete; refusing passphrase change.".into()); }
+    let mut keys=Vec::new();
+    for path in &paths {
+        let pem=fs::read(path).map_err(|e|format!("Could not read {}: {e}",path.display()))?;
+        let key=if pem_encryption_state(path)==Some("encrypted") {
+            PKey::private_key_from_pem_passphrase(&pem,current_passphrase.as_bytes()).map_err(|_|"Current wallet passphrase is incorrect.".to_string())?
+        } else { PKey::private_key_from_pem(&pem).map_err(|_|format!("Could not parse private key {}",path.display()))? };
+        keys.push(key);
+    }
+    let backup_path=create_wallet_security_backup(&network,&wallet,"pre-passphrase-change").map_err(String::from)?;
+    let nonce=SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e|e.to_string())?.as_nanos();
+    let mut temps=Vec::new();
+    for (idx,(path,key)) in paths.iter().zip(keys.iter()).enumerate(){
+        let bytes=key.private_key_to_pem_pkcs8_passphrase(Cipher::aes_256_cbc(),new_passphrase.as_bytes()).map_err(|e|format!("Could not re-encrypt {}: {e}",path.display()))?;
+        let tmp=dir.join(format!(".qrx-passphrase-{nonce}-{idx}.pem"));
+        fs::write(&tmp,&bytes).map_err(|e|format!("Could not write temporary key {}: {e}",tmp.display()))?;
+        if !encrypted_pem_accepts_passphrase(&tmp,&new_passphrase){ let _=fs::remove_file(&tmp); return Err("New encrypted private key failed verification; original wallet was not modified.".into()); }
+        temps.push(tmp);
+    }
+    let olds=[dir.join(format!(".qrx-old-ed25519-{nonce}.pem")),dir.join(format!(".qrx-old-mldsa65-{nonce}.pem"))];
+    if let Err(e)=fs::rename(&paths[0],&olds[0]){ for t in &temps{let _=fs::remove_file(t);} return Err(format!("Could not stage original Ed25519 key: {e}")); }
+    if let Err(e)=fs::rename(&paths[1],&olds[1]){ let _=fs::rename(&olds[0],&paths[0]); for t in &temps{let _=fs::remove_file(t);} return Err(format!("Could not stage original ML-DSA65 key: {e}")); }
+    let install = (|| -> Result<(),String>{ fs::rename(&temps[0],&paths[0]).map_err(|e|e.to_string())?; fs::rename(&temps[1],&paths[1]).map_err(|e|e.to_string())?; Ok(()) })();
+    if let Err(e)=install { let _=fs::remove_file(&paths[0]); let _=fs::remove_file(&paths[1]); let _=fs::rename(&olds[0],&paths[0]); let _=fs::rename(&olds[1],&paths[1]); for t in &temps{let _=fs::remove_file(t);} return Err(format!("Could not install re-encrypted keys; original keys restored: {e}")); }
+    if !encrypted_pem_accepts_passphrase(&paths[0],&new_passphrase) || !encrypted_pem_accepts_passphrase(&paths[1],&new_passphrase){ let _=fs::remove_file(&paths[0]); let _=fs::remove_file(&paths[1]); let _=fs::rename(&olds[0],&paths[0]); let _=fs::rename(&olds[1],&paths[1]); return Err("Post-write verification failed; original keys restored.".into()); }
+    let _=fs::remove_file(&olds[0]); let _=fs::remove_file(&olds[1]);
+    let passphrase_hex:String=new_passphrase.as_bytes().iter().map(|b|format!("{b:02x}")).collect();
+    let _=run_cli(Some(&app),&network,&wallet,&["walletpassphrasehex",&passphrase_hex],None);
+    Ok(WalletPassphraseChangeResult{wallet,backup_path,passphrase_state:"passphrase-required-to-use-private-keys".into(),changed_files:paths.iter().map(|p|p.to_string_lossy().to_string()).collect()})
+}
+
+#[tauri::command]
+fn lock_wallet_session(app: tauri::AppHandle, network: Option<String>, wallet: Option<String>) -> Result<bool, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = sanitize_wallet_name(wallet.as_deref().unwrap_or("node1")).map_err(String::from)?;
+    // An offline daemon is already effectively locked.
+    let _ = run_cli(Some(&app), &network, &wallet, &["walletlock"], None);
+    Ok(true)
+}
+
+#[tauri::command]
+fn import_key_set_directory(network: Option<String>, wallet: String, source_dir: String) -> Result<KeySetImportResult, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = sanitize_wallet_name(&wallet).map_err(String::from)?;
+    let source = PathBuf::from(source_dir);
+    if !source.is_dir() { return Err("Key-set source directory not found".into()); }
+    let required = ["address.txt","ed25519_priv.pem","ed25519_pub.pem","mldsa65_priv.pem","mldsa65_pub.pem"];
+    for name in required { if !source.join(name).is_file() { return Err(format!("Key-set folder is missing required file: {name}")); } }
+    let target = wallet_dir(&network, &wallet).map_err(String::from)?;
+    if target.exists() { return Err("Target wallet already exists; refusing to overwrite any wallet or key data".into()); }
+    fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+    let mut copied = Vec::new();
+    for name in ["address.txt","ed25519_priv.pem","ed25519_pub.pem","mldsa65_priv.pem","mldsa65_pub.pem","recovery.qrxseed"] {
+        let src=source.join(name); if src.is_file(){ let dst=target.join(name); fs::copy(&src,&dst).map_err(|e|e.to_string())?; copied.push(dst.to_string_lossy().to_string()); }
+    }
+    let wallet_json=source.join("wallet.json");
+    if wallet_json.is_file(){ let dst=target.join("wallet.json"); fs::copy(wallet_json,&dst).map_err(|e|e.to_string())?; copied.push(dst.to_string_lossy().to_string()); }
+    else {
+        let address=read_address(&target).ok_or_else(||"Imported key set has no readable address.txt".to_string())?;
+        let manifest=serde_json::json!({"wallet_version": CURRENT_QRX_WALLET_VERSION,"address":address,"signature_scheme":"ed25519+mldsa65","recovery_scheme": if target.join("recovery.qrxseed").is_file(){"imported-recovery-file"}else{"none"},"created_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e|e.to_string())?.as_secs(),"imported_key_set":true});
+        let dst=target.join("wallet.json"); fs::write(&dst,serde_json::to_vec_pretty(&manifest).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?; copied.push(dst.to_string_lossy().to_string());
+    }
+    let inspection=inspect_wallet_inner(&network,&wallet).map_err(String::from)?;
+    Ok(KeySetImportResult{wallet:ensure_context(&network,&wallet).map_err(String::from)?,copied_files:copied,inspection})
+}
+
+fn legacy_gui_data_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        #[cfg(target_os = "macos")]
+        roots.push(home.join("Library").join("Application Support").join("gui-wallet").join("qrx-data"));
+        #[cfg(target_os = "linux")]
+        roots.push(home.join(".local").join("share").join("gui-wallet").join("qrx-data"));
+    }
+    if let Some(local) = dirs::data_local_dir() {
+        roots.push(local.join("gui-wallet").join("qrx-data"));
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+#[tauri::command]
+fn list_legacy_gui_wallets(network: Option<String>) -> Result<Vec<LegacyGuiWalletCandidate>, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let shared = wallet_root(&network).map_err(String::from)?;
+    let mut out = Vec::new();
+    for base in legacy_gui_data_roots() {
+        let root = base.join(&network).join("wallets");
+        if !root.is_dir() { continue; }
+        for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if !path.is_dir() { continue; }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !path.join("address.txt").is_file() { continue; }
+            out.push(LegacyGuiWalletCandidate {
+                name: name.clone(),
+                path: path.to_string_lossy().to_string(),
+                address: read_address(&path),
+                wallet_version: read_wallet_version(&path),
+                has_recovery_file: path.join("recovery.qrxseed").is_file(),
+                already_in_shared_store: shared.join(&name).exists(),
+            });
+        }
+    }
+    out.sort_by(|a,b| a.name.cmp(&b.name).then(a.path.cmp(&b.path)));
+    out.dedup_by(|a,b| a.path == b.path);
+    Ok(out)
+}
+
+#[tauri::command]
+async fn import_legacy_gui_wallet(network: Option<String>, wallet: String, source_dir: String) -> Result<ImportResult, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = sanitize_wallet_name(&wallet).map_err(String::from)?;
+    let source = PathBuf::from(&source_dir);
+    let canonical_source = source.canonicalize().map_err(|e| format!("Legacy wallet source is unavailable: {e}"))?;
+    let mut allowed = false;
+    for base in legacy_gui_data_roots() {
+        let root = base.join(&network).join("wallets");
+        if let Ok(canon_root) = root.canonicalize() {
+            if canonical_source.starts_with(&canon_root) { allowed = true; break; }
+        }
+    }
+    if !allowed { return Err("Refusing legacy import from an unrecognized GUI wallet store".into()); }
+    import_wallet_directory_blocking(Some(network), wallet, canonical_source.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -635,16 +1172,70 @@ fn list_wallets(network: Option<String>) -> Result<Vec<WalletListItem>, String> 
         if !path.is_dir() {
             continue;
         }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let wallet_version = read_wallet_version(&path);
+        let legacy_or_unknown = wallet_version.map(|v| v < CURRENT_QRX_WALLET_VERSION).unwrap_or(true);
         wallets.push(WalletListItem {
-            name: entry.file_name().to_string_lossy().to_string(),
+            name: name.clone(),
             path: path.to_string_lossy().to_string(),
             address: read_address(&path),
             has_recovery_file: path.join("recovery.qrxseed").exists(),
+            wallet_version,
+            legacy_or_unknown,
+            safety_backup_exists: safety_backup_exists(&network, &name),
         });
     }
 
     wallets.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(wallets)
+}
+
+#[tauri::command]
+async fn prepare_existing_wallet(
+    network: Option<String>,
+    wallet: String,
+) -> Result<ExistingWalletPrepareResult, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = sanitize_wallet_name(&wallet).map_err(String::from)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = wallet_dir(&network, &wallet).map_err(String::from)?;
+        if !source.is_dir() {
+            return Err("Existing QRX wallet directory does not exist".into());
+        }
+        let (source_files, _) = directory_copy_stats(&source).map_err(String::from)?;
+        if source_files == 0 {
+            return Err("Existing QRX wallet directory is empty".into());
+        }
+
+        let wallet_version = read_wallet_version(&source);
+        let legacy_or_unknown = wallet_version
+            .map(|v| v < CURRENT_QRX_WALLET_VERSION)
+            .unwrap_or(true);
+
+        let mut backup_created = false;
+        let mut backup_path = None;
+        if legacy_or_unknown && !safety_backup_exists(&network, &wallet) {
+            let path = create_pre_007_safety_backup(&network, &wallet).map_err(String::from)?;
+            backup_created = true;
+            backup_path = Some(path);
+        } else if legacy_or_unknown {
+            // A prior pre-0.0.7 safety backup already exists; never overwrite it.
+            backup_path = wallet_backup_root(&network, &wallet)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string());
+        }
+
+        Ok(ExistingWalletPrepareResult {
+            wallet: ensure_context(&network, &wallet).map_err(String::from)?,
+            wallet_version,
+            legacy_or_unknown,
+            backup_created,
+            backup_path,
+        })
+    })
+    .await
+    .map_err(|e| format!("Existing-wallet preparation worker failed: {e}"))?
 }
 
 #[tauri::command]
@@ -733,8 +1324,7 @@ fn restore_wallet_from_recovery(
     Ok(ensure_context(&network, &wallet).map_err(String::from)?)
 }
 
-#[tauri::command]
-fn import_wallet_directory(
+fn import_wallet_directory_blocking(
     network: Option<String>,
     wallet: String,
     source_dir: String,
@@ -750,8 +1340,11 @@ fn import_wallet_directory(
     }
 
     let target = wallet_dir(&network, &wallet).map_err(String::from)?;
-    if target.exists() && target.join("wallet.json").exists() {
-        return Err("Target wallet already exists".into());
+    // Imports are copy-only and must never overwrite any existing target,
+    // even a partially created directory. Existing Core wallets are used
+    // directly through the shared ~/.qrx data root and do not need import.
+    if target.exists() {
+        return Err("Target path already exists; refusing to overwrite any wallet data".into());
     }
 
     fs::create_dir_all(&target).map_err(|e| e.to_string())?;
@@ -760,6 +1353,21 @@ fn import_wallet_directory(
         wallet: ensure_context(&network, &wallet).map_err(String::from)?,
         imported_files,
     })
+}
+
+#[tauri::command]
+async fn import_wallet_directory(
+    network: Option<String>,
+    wallet: String,
+    source_dir: String,
+) -> Result<ImportResult, String> {
+    // Directory copies can be slow (large wallets, APFS/iCloud/external disks).
+    // Keep all filesystem traversal/copy work off the webview/main event loop.
+    tauri::async_runtime::spawn_blocking(move || {
+        import_wallet_directory_blocking(network, wallet, source_dir)
+    })
+    .await
+    .map_err(|e| format!("Wallet import worker failed: {e}"))?
 }
 
 #[tauri::command]
@@ -813,6 +1421,14 @@ fn start_daemon(
     let health = daemon_health_inner(Some(&app), &state, &network, &wallet, passphrase.as_deref())
         .map_err(String::from)?;
     if health.running {
+        if health.wallet_mismatch || health.data_root_mismatch {
+            return Err(format!(
+                "A different QRX daemon is already using this network RPC port (running wallet: {}, path: {}). Stop that node first, then start wallet {}.",
+                health.actual_wallet.as_deref().unwrap_or("unknown"),
+                health.actual_wallet_dir.as_deref().unwrap_or("unknown"),
+                wallet
+            ));
+        }
         ctx.daemon_running = true;
         return Ok(ctx);
     }
@@ -937,6 +1553,64 @@ fn get_new_address(
 }
 
 #[tauri::command]
+fn list_addresses(
+    app: tauri::AppHandle,
+    network: Option<String>,
+    wallet: Option<String>,
+    passphrase: Option<String>,
+) -> Result<Value, String> {
+    let wallet = sanitize_wallet_name(wallet.as_deref().unwrap_or("node1")).map_err(String::from)?;
+    Ok(run_cli(
+        Some(&app),
+        network.as_deref().unwrap_or("alpha"),
+        &wallet,
+        &["listaddresses"],
+        passphrase.as_deref(),
+    )
+    .map_err(String::from)?
+    .result)
+}
+
+#[tauri::command]
+fn get_wallet_address_set(
+    app: tauri::AppHandle,
+    network: Option<String>,
+    wallet: Option<String>,
+    passphrase: Option<String>,
+) -> Result<WalletAddressSet, String> {
+    let network = network.unwrap_or_else(|| "alpha".into());
+    let wallet = sanitize_wallet_name(wallet.as_deref().unwrap_or("node1")).map_err(String::from)?;
+    let dir = wallet_dir(&network, &wallet).map_err(String::from)?;
+    if !dir.is_dir() { return Err("Wallet directory does not exist".into()); }
+
+    // address.txt is the canonical wallet identity. Never infer the primary
+    // address from listaddresses ordering; 0.0.6 wallets can have a different
+    // addresses.txt order after additional receive addresses were generated.
+    let primary_address = read_address(&dir);
+    let manifest_address = read_manifest_address(&dir);
+    let address_mismatch = primary_address.is_some() && manifest_address.is_some() && primary_address != manifest_address;
+    let mut warnings = Vec::new();
+    if address_mismatch {
+        warnings.push("WALLET ADDRESS MISMATCH: address.txt differs from wallet.json. address.txt remains canonical; do not sign until the wallet is inspected.".to_string());
+    }
+
+    let mut addresses = Vec::<String>::new();
+    if let Some(primary) = primary_address.as_ref() { addresses.push(primary.clone()); }
+    match run_cli(Some(&app), &network, &wallet, &["listaddresses"], passphrase.as_deref()) {
+        Ok(result) => {
+            for addr in addresses_from_value(&result.result) {
+                if !addresses.iter().any(|a| a == &addr) { addresses.push(addr); }
+            }
+        }
+        Err(e) => warnings.push(format!("listaddresses unavailable; showing addresses known from wallet files only: {e}")),
+    }
+    let additional_addresses = addresses.iter()
+        .filter(|a| primary_address.as_ref().map(|p| p != *a).unwrap_or(true))
+        .cloned().collect();
+    Ok(WalletAddressSet { wallet, primary_address, manifest_address, addresses, additional_addresses, address_mismatch, warnings })
+}
+
+#[tauri::command]
 fn get_history(
     app: tauri::AppHandle,
     network: Option<String>,
@@ -946,16 +1620,16 @@ fn get_history(
 ) -> Result<Value, String> {
     let network = network.unwrap_or_else(|| "alpha".into());
     let wallet = sanitize_wallet_name(wallet.as_deref().unwrap_or("node1")).map_err(String::from)?;
-    let limit_s = limit.unwrap_or(20).to_string();
-    let res = run_cli(
-        Some(&app),
-        &network,
-        &wallet,
-        &["history", "", &limit_s],
-        passphrase.as_deref(),
-    )
-    .or_else(|_| run_cli(Some(&app), &network, &wallet, &["history"], passphrase.as_deref()))
-    .map_err(String::from)?;
+    let limit = limit.unwrap_or(20);
+    let res = if limit == 20 {
+        run_cli(Some(&app), &network, &wallet, &["history"], passphrase.as_deref())
+    } else {
+        let info = run_cli(Some(&app), &network, &wallet, &["getwalletinfo"], passphrase.as_deref())?;
+        let address = info.result.get("address").and_then(Value::as_str)
+            .ok_or_else(|| AppError::Message("getwalletinfo did not return an address".into()))?;
+        let limit_s = limit.to_string();
+        run_cli(Some(&app), &network, &wallet, &["history", address, &limit_s], passphrase.as_deref())
+    }.map_err(String::from)?;
     Ok(res.result)
 }
 
@@ -1218,37 +1892,6 @@ struct BtcReceiveAddress {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct BtcWalletFile {
-    network: String,
-    encrypted_mnemonic: String,
-    nonce: String,
-    kdf: String,
-    kdf_salt: String,
-    descriptor: String,
-    change_descriptor: String,
-    mnemonic_note: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct LegacyBtcWalletFile {
-    network: String,
-    mnemonic: String,
-    descriptor: String,
-    change_descriptor: String,
-    mnemonic_note: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct LegacyEncryptedBtcWalletFile {
-    network: String,
-    encrypted_mnemonic: String,
-    nonce: String,
-    descriptor: String,
-    change_descriptor: String,
-    mnemonic_note: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct BtcWalletInitResult {
     status: String,
     network: String,
@@ -1445,91 +2088,6 @@ fn htlc_env_value_for_network(network: &str) -> String {
     }
 }
 
-fn default_btc_endpoints(mode: &str) -> Vec<String> {
-    match mode {
-        "esplora" => vec![
-            "https://blockstream.info/api".into(),
-            "https://mempool.space/api".into(),
-        ],
-        "neutrino" => vec!["neutrino://bitcoin-p2p-mainnet".into()],
-        _ => vec![
-            "ssl://electrum.blockstream.info:50002".into(),
-            "ssl://electrum.emzy.de:50002".into(),
-            "ssl://electrum.bitaroo.net:50002".into(),
-            "tcp://electrum.blockstream.info:50001".into(),
-        ],
-    }
-}
-
-fn normalize_endpoint(raw: &str, mode: &str) -> Option<String> {
-    let mut s = raw.trim().trim_matches(',').trim().to_string();
-    if s.is_empty() || s.starts_with('#') { return None; }
-    if !s.contains("://") {
-        if mode == "esplora" || s.starts_with("http") {
-            if !s.starts_with("http") { s = format!("https://{s}"); }
-        } else {
-            s = format!("ssl://{s}");
-        }
-    }
-    Some(s)
-}
-
-fn parse_endpoint_list(raw: &str, mode: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for part in raw.split(|c| c == '\n' || c == ',' || c == ';') {
-        if let Some(ep) = normalize_endpoint(part, mode) {
-            if !out.contains(&ep) { out.push(ep); }
-        }
-    }
-    if out.is_empty() { default_btc_endpoints(mode) } else { out }
-}
-
-fn endpoint_host_port(endpoint: &str) -> Option<String> {
-    let ep = endpoint.trim();
-    if ep.starts_with("http://") || ep.starts_with("https://") || ep.starts_with("neutrino://") { return None; }
-    let ep = ep.strip_prefix("ssl://").or_else(|| ep.strip_prefix("tcp://")).unwrap_or(ep);
-    if ep.contains(':') { Some(ep.to_string()) } else { Some(format!("{ep}:50002")) }
-}
-
-fn test_endpoint_quick(endpoint: &str) -> EndpointHealth {
-    let started = std::time::Instant::now();
-    if endpoint.starts_with("https://") || endpoint.starts_with("http://") {
-        return EndpointHealth { endpoint: endpoint.into(), status: "configured".into(), latency_ms: None, note: "HTTP/Esplora endpoint saved. Full HTTP test is performed by the future BDK/Esplora module.".into() };
-    }
-    if endpoint.starts_with("neutrino://") {
-        return EndpointHealth { endpoint: endpoint.into(), status: "prepared".into(), latency_ms: None, note: "Neutrino/BIP157 mode prepared. BTC P2P compact-filter client is not bundled yet.".into() };
-    }
-    let Some(host_port) = endpoint_host_port(endpoint) else {
-        return EndpointHealth { endpoint: endpoint.into(), status: "unknown".into(), latency_ms: None, note: "Unsupported endpoint format".into() };
-    };
-    let timeout = Duration::from_millis(1200);
-    let addrs = match host_port.to_socket_addrs() {
-        Ok(a) => a.collect::<Vec<_>>(),
-        Err(e) => return EndpointHealth { endpoint: endpoint.into(), status: "dns-error".into(), latency_ms: None, note: e.to_string() },
-    };
-    for addr in addrs {
-        if TcpStream::connect_timeout(&addr, timeout).is_ok() {
-            return EndpointHealth { endpoint: endpoint.into(), status: "reachable".into(), latency_ms: Some(started.elapsed().as_millis()), note: "TCP connection succeeded. Electrum protocol handshake will be handled by the BTC module.".into() };
-        }
-    }
-    EndpointHealth { endpoint: endpoint.into(), status: "unreachable".into(), latency_ms: Some(started.elapsed().as_millis()), note: "No endpoint in this fallback entry accepted a quick TCP connection.".into() }
-}
-
-fn choose_active_endpoint(endpoints: &[String]) -> (String, Vec<EndpointHealth>) {
-    let mut health = Vec::new();
-    let mut active = endpoints.first().cloned().unwrap_or_else(|| "not-configured".into());
-    for ep in endpoints {
-        let h = test_endpoint_quick(ep);
-        let ok = h.status == "reachable" || h.status == "configured" || h.status == "prepared";
-        health.push(h);
-        if ok { active = ep.clone(); break; }
-    }
-    for ep in endpoints.iter().skip(health.len()) {
-        health.push(EndpointHealth { endpoint: ep.clone(), status: "fallback-standby".into(), latency_ms: None, note: "Not tested because an earlier endpoint was selected.".into() });
-    }
-    (active, health)
-}
-
 fn shared_btc_service<T: serde::de::DeserializeOwned>(app: &tauri::AppHandle, request: Value) -> Result<T, String> {
     let binary=resolve_binary(Some(app),"qrx-btc-wallet-service").map_err(|e|e.to_string())?;
     let mut child=Command::new(binary).arg("--data-dir").arg(app_data_dir().map_err(|e|e.to_string())?)
@@ -1562,23 +2120,6 @@ fn btc_start_neutrino(app:tauri::AppHandle) -> Result<BtcLightStatus, String> {
 }
 
 
-fn btc_wallet_dir() -> Result<PathBuf, String> {
-    let dir = app_data_dir().map_err(|e| e.to_string())?.join("btc-light");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
-}
-
-fn btc_wallet_file() -> Result<PathBuf, String> {
-    Ok(btc_wallet_dir()?.join("btc_wallet.json"))
-}
-
-fn btc_network() -> Network {
-    // Keep mainnet because the product is BTC Light. Add UI switch later for testnet/signet.
-    Network::Bitcoin
-}
-
-
-
 fn kraken_vault_file(network: &str, wallet: &str) -> Result<PathBuf, String> {
     Ok(wallet_settings_dir(network, wallet).map_err(|e| e.to_string())?.join("kraken_credentials.enc.json"))
 }
@@ -1605,6 +2146,23 @@ fn protect_private_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn derive_secret_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], String> {
+    // Shared Argon2id KDF for encrypted local secret vaults (e.g. Kraken credentials).
+    // This helper must remain even when the legacy embedded BTC wallet implementation is removed.
+    let params = Params::new(
+        64 * 1024, // 64 MiB
+        3,         // iterations
+        1,         // parallelism
+        Some(32),  // output length
+    ).map_err(|e| e.to_string())?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut key = [0u8; 32];
+    argon2
+        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
+        .map_err(|e| e.to_string())?;
+    Ok(key)
+}
+
 fn encrypt_kraken_credentials(api_key: &str, api_secret: &str, passphrase: &str) -> Result<KrakenCredentialVault, String> {
     if api_key.trim().is_empty() || api_secret.trim().is_empty() {
         return Err("Kraken API key and API secret are required".into());
@@ -1615,7 +2173,7 @@ fn encrypt_kraken_credentials(api_key: &str, api_secret: &str, passphrase: &str)
     let plain = KrakenCredentialPlain { api_key: api_key.trim().to_string(), api_secret: api_secret.trim().to_string() };
     let bytes = serde_json::to_vec(&plain).map_err(|e| e.to_string())?;
     let mut salt = [0u8; 16]; rand::thread_rng().fill_bytes(&mut salt);
-    let key = derive_btc_key(passphrase, &salt)?;
+    let key = derive_secret_key(passphrase, &salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
     let mut nonce_bytes = [0u8; 12]; rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -1640,7 +2198,7 @@ fn decrypt_kraken_credentials(vault: &KrakenCredentialVault, passphrase: &str) -
     let nonce_bytes = general_purpose::STANDARD.decode(&vault.nonce).map_err(|e| e.to_string())?;
     let ciphertext = general_purpose::STANDARD.decode(&vault.ciphertext).map_err(|e| e.to_string())?;
     if nonce_bytes.len() != 12 { return Err("Invalid Kraken vault nonce".into()); }
-    let key = derive_btc_key(passphrase, &salt)?;
+    let key = derive_secret_key(passphrase, &salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let mut plain = cipher.decrypt(nonce, ciphertext.as_ref()).map_err(|_| "Could not decrypt Kraken credentials. Check the wallet/session passphrase.".to_string())?;
@@ -1698,7 +2256,7 @@ fn run_python_json(app: &tauri::AppHandle, script_name: &str, args: &[String], i
 #[tauri::command]
 fn arbitrage_evaluate(app: tauri::AppHandle, network: Option<String>, wallet: Option<String>, payload: Value, paper: bool) -> Result<Value, String> {
     let network=network.unwrap_or_else(||"alpha".into()); let wallet=sanitize_wallet_name(wallet.unwrap_or_else(||"node1".into()).as_str()).map_err(String::from)?;
-    let state=arbitrage_state_dir(&network,&wallet)?; let mut args=vec![if paper{"--paper-json".into()}else{"--evaluate-json".into()},"--state-dir".into(),state.to_string_lossy().to_string()];
+    let state=arbitrage_state_dir(&network,&wallet)?; let args=vec![if paper{"--paper-json".into()}else{"--evaluate-json".into()},"--state-dir".into(),state.to_string_lossy().to_string()];
     run_python_json(&app,"qrx-arbitrage-engine.py",&args,Some(&payload))
 }
 
@@ -1903,209 +2461,6 @@ fn kraken_stop_gateway(state: tauri::State<KrakenGatewayState>, network: Option<
     kraken_gateway_status(state, network, wallet)
 }
 
-fn btc_password_file() -> Result<PathBuf, String> {
-    Ok(btc_wallet_dir()?.join(".dev_password_hint"))
-}
-
-fn btc_password(passphrase: Option<String>) -> Result<String, String> {
-    if let Some(p) = passphrase {
-        if !p.trim().is_empty() {
-            return Ok(p);
-        }
-    }
-    // Development fallback: keep the app usable if UI has not yet been wired to pass a BTC password.
-    // Production UI should always pass a user-chosen password.
-    let path = btc_password_file()?;
-    if path.exists() {
-        return fs::read_to_string(path).map(|s| s.trim().to_string()).map_err(|e| e.to_string());
-    }
-    let generated = format!("dev-btc-pass-{}", chrono_like_timestamp());
-    fs::write(&path, &generated).map_err(|e| e.to_string())?;
-    Ok(generated)
-}
-
-fn derive_btc_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], String> {
-    // Argon2id KDF for BTC seed encryption.
-    // Parameters are chosen for desktop UX; increase memory/time before public release testing if acceptable.
-    let params = Params::new(
-        64 * 1024, // 64 MiB
-        3,         // iterations
-        1,         // parallelism
-        Some(32),  // output length
-    ).map_err(|e| e.to_string())?;
-    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let mut key = [0u8; 32];
-    argon2.hash_password_into(passphrase.as_bytes(), salt, &mut key).map_err(|e| e.to_string())?;
-    Ok(key)
-}
-
-fn encrypt_btc_mnemonic(words: &str, passphrase: &str) -> Result<(String, String, String), String> {
-    let mut salt = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut salt);
-    let key = derive_btc_key(passphrase, &salt)?;
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
-
-    let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-
-    let encrypted = cipher.encrypt(nonce, words.as_bytes()).map_err(|e| e.to_string())?;
-    Ok((
-        general_purpose::STANDARD.encode(encrypted),
-        general_purpose::STANDARD.encode(nonce_bytes),
-        general_purpose::STANDARD.encode(salt),
-    ))
-}
-
-fn decrypt_btc_mnemonic(wallet: &BtcWalletFile, passphrase: &str) -> Result<String, String> {
-    let salt = general_purpose::STANDARD.decode(&wallet.kdf_salt).map_err(|e| e.to_string())?;
-    let key = derive_btc_key(passphrase, &salt)?;
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
-    let nonce_bytes = general_purpose::STANDARD.decode(&wallet.nonce).map_err(|e| e.to_string())?;
-    let encrypted = general_purpose::STANDARD.decode(&wallet.encrypted_mnemonic).map_err(|e| e.to_string())?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let decrypted = cipher.decrypt(nonce, encrypted.as_ref()).map_err(|_| "Could not decrypt BTC mnemonic. Check BTC password/passphrase.".to_string())?;
-    String::from_utf8(decrypted).map_err(|e| e.to_string())
-}
-
-fn btc_derivation_coin_type(network: Network) -> &'static str {
-    match network {
-        Network::Bitcoin => "0",
-        _ => "1",
-    }
-}
-
-fn normalize_electrum_url(endpoint: &str) -> String {
-    let ep = endpoint.trim();
-    if ep.starts_with("ssl://") || ep.starts_with("tcp://") {
-        ep.to_string()
-    } else if ep.starts_with("http://") || ep.starts_with("https://") || ep.starts_with("neutrino://") {
-        ep.to_string()
-    } else {
-        format!("ssl://{ep}")
-    }
-}
-
-fn descriptors_from_generated_mnemonic(mnemonic: Mnemonic, network: Network) -> Result<(String, String, String), String> {
-    let words = mnemonic.to_string();
-    let xkey: ExtendedKey = mnemonic.into_extended_key().map_err(|e| e.to_string())?;
-    let xprv = xkey.into_xprv(network).ok_or_else(|| "Mnemonic did not produce an xprv".to_string())?;
-    let coin = btc_derivation_coin_type(network);
-    let descriptor = format!("wpkh({xprv}/84h/{coin}h/0h/0/*)");
-    let change_descriptor = format!("wpkh({xprv}/84h/{coin}h/0h/1/*)");
-    Ok((words, descriptor, change_descriptor))
-}
-
-
-fn wallet_file_from_words(words: &str, passphrase: &str, note: &str) -> Result<BtcWalletFile, String> {
-    let mnemonic = Mnemonic::parse_in(Language::English, words).map_err(|e| e.to_string())?;
-    let network = btc_network();
-    let (_words, descriptor, change_descriptor) = descriptors_from_generated_mnemonic(mnemonic, network)?;
-    let (encrypted_mnemonic, nonce, kdf_salt) = encrypt_btc_mnemonic(words, passphrase)?;
-    Ok(BtcWalletFile {
-        network: "bitcoin".into(),
-        encrypted_mnemonic,
-        nonce,
-        kdf: "argon2id:v=19,m=65536,t=3,p=1".into(),
-        kdf_salt,
-        descriptor,
-        change_descriptor,
-        mnemonic_note: note.into(),
-    })
-}
-
-fn write_btc_wallet(wallet: &BtcWalletFile) -> Result<(), String> {
-    let path = btc_wallet_file()?;
-    fs::write(&path, serde_json::to_string_pretty(wallet).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
-}
-
-fn generate_btc_wallet_file(passphrase: &str) -> Result<BtcWalletFile, String> {
-    let generated: GeneratedKey<Mnemonic, Segwitv0> =
-        Mnemonic::generate((WordCount::Words12, Language::English)).map_err(|e| format!("{:?}", e))?;
-    let mnemonic = generated.into_key();
-    let network = btc_network();
-    let (words, descriptor, change_descriptor) = descriptors_from_generated_mnemonic(mnemonic, network)?;
-    let (encrypted_mnemonic, nonce, kdf_salt) = encrypt_btc_mnemonic(&words, passphrase)?;
-    Ok(BtcWalletFile {
-        network: "bitcoin".into(),
-        encrypted_mnemonic,
-        nonce,
-        kdf: "argon2id:v=19,m=65536,t=3,p=1".into(),
-        kdf_salt,
-        descriptor,
-        change_descriptor,
-        mnemonic_note: "BTC mnemonic is encrypted locally with the BTC password/passphrase. Do not lose your password or backup phrase.".into(),
-    })
-}
-
-fn ensure_btc_wallet_file(passphrase: &str) -> Result<BtcWalletFile, String> {
-    let path = btc_wallet_file()?;
-    if path.exists() {
-        let txt = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-
-        if let Ok(wallet) = serde_json::from_str::<BtcWalletFile>(&txt) {
-            // Verify password now, so wrong password fails early.
-            let _ = decrypt_btc_mnemonic(&wallet, passphrase)?;
-            return Ok(wallet);
-        }
-
-        if let Ok(_legacy_encrypted) = serde_json::from_str::<LegacyEncryptedBtcWalletFile>(&txt) {
-            return Err("Existing BTC wallet uses the previous SHA-256 KDF encryption format. For safety, export/backup funds with the old build, then create a new Argon2id wallet in this build.".into());
-        }
-
-        // Migration from previous dev build with plaintext mnemonic.
-        if let Ok(legacy) = serde_json::from_str::<LegacyBtcWalletFile>(&txt) {
-            let (encrypted_mnemonic, nonce, kdf_salt) = encrypt_btc_mnemonic(&legacy.mnemonic, passphrase)?;
-            let wallet = BtcWalletFile {
-                network: legacy.network,
-                encrypted_mnemonic,
-                nonce,
-                kdf: "argon2id:v=19,m=65536,t=3,p=1".into(),
-                kdf_salt,
-                descriptor: legacy.descriptor,
-                change_descriptor: legacy.change_descriptor,
-                mnemonic_note: "Migrated from plaintext dev wallet. BTC mnemonic is now encrypted locally.".into(),
-            };
-            fs::write(&path, serde_json::to_string_pretty(&wallet).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-            return Ok(wallet);
-        }
-
-        // If an old placeholder exists, replace it.
-        let wallet = generate_btc_wallet_file(passphrase)?;
-        fs::write(&path, serde_json::to_string_pretty(&wallet).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        return Ok(wallet);
-    }
-
-    let wallet = generate_btc_wallet_file(passphrase)?;
-    fs::write(&path, serde_json::to_string_pretty(&wallet).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    Ok(wallet)
-}
-
-fn open_bdk_wallet(endpoint: &str, passphrase: Option<String>) -> Result<(Wallet<MemoryDatabase>, ElectrumBlockchain), String> {
-    let pass = btc_password(passphrase)?;
-    let wallet_file = ensure_btc_wallet_file(&pass)?;
-    let _words = decrypt_btc_mnemonic(&wallet_file, &pass)?;
-    let network = btc_network();
-    let wallet = Wallet::new(
-        &wallet_file.descriptor,
-        Some(&wallet_file.change_descriptor),
-        network,
-        MemoryDatabase::default(),
-    ).map_err(|e| e.to_string())?;
-
-    let client = ElectrumClient::new(&normalize_electrum_url(endpoint)).map_err(|e| e.to_string())?;
-    let blockchain = ElectrumBlockchain::from(client);
-    Ok((wallet, blockchain))
-}
-
-fn active_btc_endpoint() -> Result<String, String> {
-    let mode = read_setting("btc_mode.txt", "electrum");
-    let raw = read_setting("btc_endpoints.txt", &default_btc_endpoints(&mode).join("\n"));
-    let endpoints = parse_endpoint_list(&raw, &mode);
-    let (active_endpoint, _) = choose_active_endpoint(&endpoints);
-    Ok(active_endpoint)
-}
-
 #[tauri::command]
 fn btc_init_wallet(app:tauri::AppHandle,passphrase: Option<String>) -> Result<BtcWalletInitResult, String> {
     shared_btc_service(&app,serde_json::json!({"operation":"init","passphrase":passphrase}))
@@ -2139,6 +2494,11 @@ fn btc_get_balance(app:tauri::AppHandle,passphrase: Option<String>) -> Result<Bt
 #[tauri::command]
 fn btc_new_address(app:tauri::AppHandle,passphrase: Option<String>) -> Result<BtcReceiveAddress, String> {
     shared_btc_service(&app,serde_json::json!({"operation":"new-address","passphrase":passphrase}))
+}
+
+#[tauri::command]
+fn btc_list_addresses(app:tauri::AppHandle,passphrase: Option<String>) -> Result<Vec<String>, String> {
+    shared_btc_service(&app,serde_json::json!({"operation":"list-addresses","passphrase":passphrase}))
 }
 
 #[tauri::command]
@@ -2795,6 +3155,116 @@ fn wallet_cli_execute(app:tauri::AppHandle,network:Option<String>,wallet:Option<
     run_cli(Some(&app),&network,&wallet,&refs,passphrase.as_deref()).map_err(|e|e.to_string())
 }
 
+
+#[tauri::command]
+fn generate_qr_svg(payload: String) -> Result<String, String> {
+    if payload.trim().is_empty() {
+        return Err("cannot generate a QR code for an empty address".to_string());
+    }
+    let code = qrcode::QrCode::new(payload.as_bytes()).map_err(|e| format!("QR generation failed: {e}"))?;
+    Ok(code.render::<qrcode::render::svg::Color>().min_dimensions(220, 220).build())
+}
+
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AddressBookEntry {
+    id: String,
+    label: String,
+    chain: String,
+    address: String,
+    note: String,
+    tags: Vec<String>,
+    created_unix: u64,
+    updated_unix: u64,
+}
+
+fn address_book_path() -> Result<PathBuf, String> {
+    Ok(app_data_dir().map_err(|e|e.to_string())?.join("addressbook.json"))
+}
+
+fn address_book_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d|d.as_secs()).unwrap_or(0)
+}
+
+fn read_address_book() -> Result<Vec<AddressBookEntry>, String> {
+    let path=address_book_path()?;
+    if !path.exists(){return Ok(Vec::new())}
+    let raw=fs::read_to_string(&path).map_err(|e|format!("Could not read address book: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e|format!("Address book JSON is invalid: {e}"))
+}
+
+fn write_address_book(entries:&[AddressBookEntry]) -> Result<(), String> {
+    let path=address_book_path()?;
+    if let Some(parent)=path.parent(){fs::create_dir_all(parent).map_err(|e|e.to_string())?;}
+    let tmp=path.with_extension(format!("tmp-{}",std::process::id()));
+    let data=serde_json::to_vec_pretty(entries).map_err(|e|e.to_string())?;
+    {
+        let mut options=OpenOptions::new();options.write(true).create(true).truncate(true);
+        #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+        let mut f=options.open(&tmp).map_err(|e|e.to_string())?;
+        f.write_all(&data).and_then(|_|f.sync_all()).map_err(|e|e.to_string())?;
+    }
+    #[cfg(windows)] { if path.exists(){fs::remove_file(&path).map_err(|e|e.to_string())?;} }
+    fs::rename(&tmp,&path).map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+fn validate_book_address(chain:&str,address:&str)->Result<(),String>{
+    let chain=chain.trim().to_ascii_uppercase();let address=address.trim();
+    if chain=="QUB" {
+        if !address.starts_with("qrx1") || address.len()<40 || !address.chars().all(|c|c.is_ascii_alphanumeric()) {
+            return Err("Invalid QUB address. Expected a qrx1… address.".into())
+        }
+        return Ok(())
+    }
+    if chain=="BTC" {
+        let parsed=Address::from_str(address).map_err(|e|format!("Invalid BTC address: {e}"))?;
+        parsed.require_network(Network::Bitcoin).map_err(|_|"BTC address is not a Bitcoin mainnet address".to_string())?;
+        return Ok(())
+    }
+    Err("Address book chain must be QUB or BTC".into())
+}
+
+#[tauri::command]
+fn address_book_list() -> Result<Vec<AddressBookEntry>,String>{
+    let mut v=read_address_book()?;v.sort_by(|a,b|a.label.to_lowercase().cmp(&b.label.to_lowercase()));Ok(v)
+}
+
+#[tauri::command]
+fn address_book_upsert(id:Option<String>,label:String,chain:String,address:String,note:Option<String>,tags:Option<String>)->Result<AddressBookEntry,String>{
+    let label=label.trim();if label.is_empty(){return Err("Contact name is required".into())}
+    let chain=chain.trim().to_ascii_uppercase();let address=address.trim().to_string();validate_book_address(&chain,&address)?;
+    let now=address_book_now();let mut entries=read_address_book()?;
+    if entries.iter().any(|e|e.address==address && e.chain==chain && id.as_deref()!=Some(e.id.as_str())) {return Err("This address is already saved in the address book".into())}
+    let tag_vec=tags.unwrap_or_default().split(',').map(str::trim).filter(|s|!s.is_empty()).map(str::to_string).collect::<Vec<_>>();
+    let note=note.unwrap_or_default().trim().to_string();
+    let entry=if let Some(idv)=id.filter(|x|!x.trim().is_empty()) {
+        let pos=entries.iter().position(|e|e.id==idv).ok_or_else(||"Address book entry not found".to_string())?;
+        if entries[pos].address!=address || entries[pos].chain!=chain {return Err("Changing a pinned contact address is blocked. Create a new contact instead.".into())}
+        entries[pos].label=label.to_string();entries[pos].note=note;entries[pos].tags=tag_vec;entries[pos].updated_unix=now;entries[pos].clone()
+    } else {
+        let e=AddressBookEntry{id:format!("contact-{now}-{}",rand::random::<u32>()),label:label.to_string(),chain,address,note,tags:tag_vec,created_unix:now,updated_unix:now};entries.push(e.clone());e
+    };
+    write_address_book(&entries)?;Ok(entry)
+}
+
+#[tauri::command]
+fn address_book_delete(id:String)->Result<String,String>{
+    let mut entries=read_address_book()?;let before=entries.len();entries.retain(|e|e.id!=id);if entries.len()==before{return Err("Address book entry not found".into())}write_address_book(&entries)?;Ok("Address book entry deleted".into())
+}
+
+#[tauri::command]
+fn address_book_export()->Result<String,String>{serde_json::to_string_pretty(&read_address_book()?).map_err(|e|e.to_string())}
+
+#[tauri::command]
+fn address_book_import_json(payload:String)->Result<usize,String>{
+    let incoming:Vec<AddressBookEntry>=serde_json::from_str(&payload).map_err(|e|format!("Invalid address-book JSON: {e}"))?;
+    let mut entries=read_address_book()?;let mut added=0usize;
+    for mut e in incoming {validate_book_address(&e.chain,&e.address)?;if entries.iter().any(|x|x.chain.eq_ignore_ascii_case(&e.chain)&&x.address==e.address){continue}e.id=format!("contact-{}-{}",address_book_now(),rand::random::<u32>());e.created_unix=address_book_now();e.updated_unix=e.created_unix;entries.push(e);added+=1;}
+    write_address_book(&entries)?;Ok(added)
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(DaemonState {
@@ -2810,6 +3280,12 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_context,
+            generate_qr_svg,
+            address_book_list,
+            address_book_upsert,
+            address_book_delete,
+            address_book_export,
+            address_book_import_json,
             kraken_credentials_status,
             kraken_store_credentials,
             kraken_delete_credentials,
@@ -2827,6 +3303,14 @@ fn main() {
             agent_manager_register,
             agent_manager_revoke,
             list_wallets,
+            list_legacy_gui_wallets,
+            import_legacy_gui_wallet,
+            inspect_wallet,
+            verify_wallet_passphrase,
+            change_wallet_passphrase,
+            lock_wallet_session,
+            import_key_set_directory,
+            prepare_existing_wallet,
             create_wallet,
             restore_wallet_from_recovery,
             import_wallet_directory,
@@ -2839,6 +3323,8 @@ fn main() {
             get_wallet_info,
             get_balance,
             get_new_address,
+            list_addresses,
+            get_wallet_address_set,
             get_history,
             get_staking_info,
             get_validators,
@@ -2860,6 +3346,7 @@ fn main() {
             btc_set_mode,
             btc_start_neutrino,
             btc_new_address,
+            btc_list_addresses,
             htlc_safety_status,
             htlc_set_safety,
             quantum_guard_audit_log,

@@ -6,6 +6,7 @@ authors = ["OpenAI"]
 license = "MIT"
 edition = "2021"
 rust-version = "1.75"
+default-run = "qrx-wallet"
 
 [build-dependencies]
 tauri-build = { version = "1.5", features = [] }
@@ -22,6 +23,8 @@ aes-gcm = "0.10"
 rand = "0.8"
 argon2 = "0.5"
 miniscript = { version = "10.2.3", features = ["std"] }
+qrcode = "0.14"
+openssl = "0.10"
 
 [features]
 default = ["custom-protocol"]

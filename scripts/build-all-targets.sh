@@ -105,6 +105,9 @@ QRX release plan: $TARGET
 EOF
 [[ "$PLAN_ONLY" -eq 1 ]] && exit 0
 
+echo "[0/7] Auditing GUI <-> Core/CLI compatibility"
+python3 "$ROOT/scripts/audit-gui-core-compat.py"
+
 actual_os="$(uname -s)"
 actual_arch="$(uname -m)"
 case "$HOST_OS" in
@@ -180,12 +183,15 @@ cp "$CORE/gateways/qrx-gateway-kraken.py" "$TARGET_OUT/tools/"
 echo "[3/7] Building shared Rust BTC wallet service"
 rustup target add "$RUST_TARGET"
 export CARGO_TARGET_DIR="$TAURI_TARGET_DIR"
-# Avoid empty-array expansion here: macOS still ships Bash 3.2, and with
-# `set -u` an empty `${array[@]}` can fail as an "unbound variable".
-if [[ -f "$WALLET/src-tauri/Cargo.lock" ]]; then
-  cargo build --locked --manifest-path "$WALLET/src-tauri/Cargo.toml" --bin qrx-btc-wallet-service --release --target "$RUST_TARGET"
+# Keep the BTC service outside src-tauri. Tauri v1 scans src/bin as bundle
+# candidates; placing the service there can make it become the macOS app's
+# main executable instead of qrx-wallet.
+BTC_SERVICE_MANIFEST="$WALLET/btc-wallet-service/Cargo.toml"
+[[ -f "$BTC_SERVICE_MANIFEST" ]] || { echo "BTC service manifest missing: $BTC_SERVICE_MANIFEST" >&2; exit 7; }
+if [[ -f "$WALLET/btc-wallet-service/Cargo.lock" ]]; then
+  cargo build --locked --manifest-path "$BTC_SERVICE_MANIFEST" --release --target "$RUST_TARGET"
 else
-  cargo build --manifest-path "$WALLET/src-tauri/Cargo.toml" --bin qrx-btc-wallet-service --release --target "$RUST_TARGET"
+  cargo build --manifest-path "$BTC_SERVICE_MANIFEST" --release --target "$RUST_TARGET"
 fi
 BTC_SERVICE="$TAURI_TARGET_DIR/$RUST_TARGET/release/qrx-btc-wallet-service$CORE_EXT"
 [[ -f "$BTC_SERVICE" ]] || { echo "BTC wallet service missing: $BTC_SERVICE" >&2; exit 7; }
@@ -209,6 +215,82 @@ echo "[5/7] Building Tauri desktop wallet after its Core dependencies"
 
 BUNDLE_DIR="$TAURI_TARGET_DIR/$RUST_TARGET/release/bundle"
 [[ -d "$BUNDLE_DIR" ]] || { echo "Tauri bundle directory missing: $BUNDLE_DIR" >&2; exit 8; }
+
+# Tauri 1.x uses Finder/AppleScript while laying out DMGs. That step is
+# fragile on current macOS releases and can fail even after the .app bundle
+# was produced successfully. Build the .app with Tauri, then create a plain,
+# deterministic DMG ourselves with hdiutil (no Finder automation required).
+if [[ "$TARGET" == macos-* ]]; then
+  APP_DIR="$BUNDLE_DIR/macos/GUI Wallet.app"
+  [[ -d "$APP_DIR" ]] || { echo "macOS app bundle missing: $APP_DIR" >&2; exit 8; }
+
+  # Tauri 1.x can occasionally create the .app shell while omitting the main
+  # executable when externalBin sidecars and an explicit Cargo target are used.
+  # Cargo has already built qrx-wallet successfully, so install that exact
+  # target binary into the bundle deterministically instead of accepting a
+  # non-launchable .app.
+  # Depending on Tauri/Cargo v1 bundle metadata the compiled main executable
+  # may be emitted as either the Cargo bin name (qrx-wallet) or product name
+  # (GUI Wallet). Prefer qrx-wallet, then fall back to the verified product
+  # binary. Both are copied into the final bundle as qrx-wallet so the plist
+  # and launch path stay deterministic.
+  BUILT_GUI_EXEC="$TAURI_TARGET_DIR/$RUST_TARGET/release/qrx-wallet"
+  if [[ ! -f "$BUILT_GUI_EXEC" ]]; then
+    ALT_GUI_EXEC="$TAURI_TARGET_DIR/$RUST_TARGET/release/GUI Wallet"
+    if [[ -f "$ALT_GUI_EXEC" ]]; then
+      BUILT_GUI_EXEC="$ALT_GUI_EXEC"
+    else
+      echo "Compiled macOS GUI executable missing. Checked:" >&2
+      echo "  $TAURI_TARGET_DIR/$RUST_TARGET/release/qrx-wallet" >&2
+      echo "  $TAURI_TARGET_DIR/$RUST_TARGET/release/GUI Wallet" >&2
+      exit 8
+    fi
+  fi
+  APP_EXEC="$APP_DIR/Contents/MacOS/qrx-wallet"
+  mkdir -p "$APP_DIR/Contents/MacOS"
+  cp "$BUILT_GUI_EXEC" "$APP_EXEC"
+  chmod +x "$APP_EXEC"
+
+  # Make LaunchServices start the binary we just installed. PlistBuddy can
+  # update an existing key or create it if Tauri emitted an unexpected value.
+  PLIST="$APP_DIR/Contents/Info.plist"
+  [[ -f "$PLIST" ]] || { echo "macOS Info.plist missing: $PLIST" >&2; exit 8; }
+  if [[ -x /usr/libexec/PlistBuddy ]]; then
+    /usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable qrx-wallet' "$PLIST" 2>/dev/null ||       /usr/libexec/PlistBuddy -c 'Add :CFBundleExecutable string qrx-wallet' "$PLIST"
+    BUNDLE_EXEC="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PLIST" 2>/dev/null || true)"
+    [[ "$BUNDLE_EXEC" == "qrx-wallet" ]] || { echo "Could not set CFBundleExecutable to qrx-wallet (got ${BUNDLE_EXEC:-<missing>})" >&2; exit 8; }
+  else
+    echo "Missing required macOS build tool: /usr/libexec/PlistBuddy" >&2
+    exit 8
+  fi
+
+  # We modify the bundle after Tauri's bundling pass. Apply an ad-hoc signature
+  # so modern macOS accepts the final local/test bundle consistently. A proper
+  # Developer ID signature/notarization can replace this for public releases.
+  if command -v codesign >/dev/null 2>&1; then
+    codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1 || {
+      echo "Warning: ad-hoc codesign failed; continuing with unsigned local bundle" >&2
+    }
+  fi
+
+  [[ -f "$APP_EXEC" && -x "$APP_EXEC" ]] || { echo "macOS GUI executable installation failed: $APP_EXEC" >&2; exit 8; }
+  command -v hdiutil >/dev/null 2>&1 || { echo "Missing macOS build dependency: hdiutil" >&2; exit 8; }
+
+  DMG_DIR="$BUNDLE_DIR/dmg"
+  DMG_STAGE="$TAURI_TARGET_DIR/dmg-stage-$RUST_TARGET"
+  DMG_ARCH="x64"; [[ "$TARGET" == "macos-arm64" ]] && DMG_ARCH="aarch64"
+  DMG_PATH="$DMG_DIR/GUI_Wallet_1.0.0_${DMG_ARCH}.dmg"
+  rm -rf -- "$DMG_STAGE"
+  mkdir -p "$DMG_STAGE" "$DMG_DIR"
+  cp -R "$APP_DIR" "$DMG_STAGE/GUI Wallet.app"
+  ln -s /Applications "$DMG_STAGE/Applications"
+  rm -f -- "$DMG_PATH"
+  hdiutil create -volname "QRX Wallet" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG_PATH"
+  rm -rf -- "$DMG_STAGE"
+  [[ -f "$DMG_PATH" ]] || { echo "Custom macOS DMG was not produced: $DMG_PATH" >&2; exit 8; }
+  echo "Created Finder-free macOS DMG: $DMG_PATH"
+fi
+
 cp -R "$BUNDLE_DIR"/. "$TARGET_OUT/wallet/"
 
 echo "[6/7] Verifying staged release"

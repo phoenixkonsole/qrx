@@ -2,8 +2,7 @@
   "tauri": {
     "bundle": {
       "targets": [
-        "app",
-        "dmg"
+        "app"
       ],
       "macOS": {
         "minimumSystemVersion": "11.0"

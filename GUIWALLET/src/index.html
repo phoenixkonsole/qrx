@@ -6,7 +6,7 @@
   <title>GUI Wallet</title>
   <style>
     :root{--bg:#050914;--panel:rgba(255,255,255,.075);--panel2:rgba(255,255,255,.11);--line:rgba(255,255,255,.12);--text:#f5f8ff;--muted:#9aabc7;--accent:#79c7ff;--violet:#9b8cff;--ok:#75efb7;--warn:#ffd27a;--bad:#ff8f9b;--shadow:0 30px 90px rgba(0,0,0,.42)}
-    *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,sans-serif;color:var(--text);background:radial-gradient(circle at 12% 0,#1b3b68 0,#07111f 38%,#02050b 100%)}body{overflow:auto;min-height:100dvh}button,input,textarea,select{font:inherit}h1,h2,h3,h4,p{margin:0}canvas#bg{position:fixed;inset:0;width:100%;height:100%;opacity:.9}.glass{background:linear-gradient(180deg,rgba(255,255,255,.085),rgba(255,255,255,.04));border:1px solid var(--line);box-shadow:var(--shadow);backdrop-filter:blur(26px);-webkit-backdrop-filter:blur(26px);border-radius:28px}.shell{position:relative;z-index:1;min-height:100dvh;padding:16px;display:grid;grid-template-columns:300px minmax(0,1fr);gap:18px;align-items:start}.sidebar{display:flex;flex-direction:column;gap:14px;padding:18px;max-height:calc(100dvh - 32px);overflow:auto;position:sticky;top:16px}.brand{display:flex;gap:14px;align-items:center}.orb{width:48px;height:48px;border-radius:50%;background:radial-gradient(circle at 30% 28%,#fff,#82d4ff 28%,#8e79ff 66%,rgba(142,121,255,.12));box-shadow:0 0 46px rgba(121,199,255,.46)}.small{font-size:12px;color:var(--muted)}.muted{color:var(--muted)}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.menu{display:grid;gap:8px}.menu button,.btn{appearance:none;cursor:pointer;border-radius:16px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:var(--text);padding:12px 14px;text-align:left;transition:.16s ease}.menu button.active,.menu button:hover,.btn:hover{transform:translateY(-1px);background:rgba(121,199,255,.13);border-color:rgba(121,199,255,.36)}.btn.primary{background:linear-gradient(135deg,rgba(121,199,255,.30),rgba(155,140,255,.23))}.btn.danger{border-color:rgba(255,143,155,.25)}.btn.center{text-align:center}.status{display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border-radius:999px;background:rgba(255,255,255,.06);color:var(--muted);font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:var(--bad);box-shadow:0 0 16px rgba(255,143,155,.45)}.dot.online{background:var(--ok);box-shadow:0 0 16px rgba(117,239,183,.5)}.sidebar-footer{margin-top:auto;display:grid;gap:10px}.main{display:grid;grid-template-rows:auto 1fr;gap:18px;min-width:0}.hero{padding:20px;display:flex;justify-content:space-between;gap:20px;align-items:center}.hero h2{font-size:clamp(26px,3vw,34px);margin-bottom:8px}.hero-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}.content{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(320px,.9fr);gap:18px;min-height:0;align-items:start}.left,.right{min-height:0;display:grid;gap:18px}.section{padding:18px;overflow:visible}.section h3{margin-bottom:14px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.metric{padding:16px;border-radius:20px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.075)}.metric .label{color:var(--muted);font-size:12px;margin-bottom:8px}.metric .value{font-size:25px;font-weight:750;letter-spacing:-.02em}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}.stack{display:grid;gap:12px}.rows{display:grid;gap:10px}.row,.tx,.wallet-chip,.feature-card{display:grid;gap:8px;padding:14px;border-radius:18px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08)}.row{grid-template-columns:1fr auto}.wallet-chip{grid-template-columns:1fr auto;align-items:center}.wallet-chip.active{border-color:rgba(121,199,255,.38);background:rgba(121,199,255,.11)}.feature-card{padding:18px;border-radius:22px;gap:12px}.form{display:grid;gap:12px}.field{display:grid;gap:8px}.actions{display:flex;flex-wrap:wrap;gap:10px}input,textarea,select{width:100%;color:var(--text);background:rgba(9,16,30,.64);border-radius:14px;border:1px solid rgba(255,255,255,.12);padding:13px 14px;outline:none}textarea{min-height:88px;resize:vertical}.banner{display:none;margin-bottom:12px;padding:12px 14px;border-radius:14px;font-size:13px}.banner.show{display:block}.banner.ok{color:#dffef0;background:rgba(117,239,183,.12);border:1px solid rgba(117,239,183,.25)}.banner.err{color:#ffeaea;background:rgba(255,143,155,.12);border:1px solid rgba(255,143,155,.25)}pre,.receive-box{margin:0;white-space:pre-wrap;word-break:break-word;border-radius:18px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.05);padding:14px;font-size:12px;line-height:1.55;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.fingerprint{border-radius:22px;display:grid;place-items:center;min-height:190px;background:radial-gradient(circle at 30% 30%,rgba(121,199,255,.18),rgba(155,140,255,.14),rgba(255,255,255,.03));border:1px solid rgba(255,255,255,.08)}.fingerprint canvas{width:168px;height:168px;image-rendering:pixelated;border-radius:18px}.tabs{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}.tabs button{border-radius:999px}.hidden{display:none!important}.pillrow{display:flex;flex-wrap:wrap;gap:8px}.pill{display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);color:var(--muted);font-size:12px}.pill.good{color:#dffef0;border-color:rgba(117,239,183,.24);background:rgba(117,239,183,.1)}.pill.warn{color:#fff1d1;border-color:rgba(255,210,122,.25);background:rgba(255,210,122,.1)}.notice{padding:14px;border-radius:18px;background:rgba(121,199,255,.08);border:1px solid rgba(121,199,255,.18);color:#dcefff;line-height:1.55}.legal{color:var(--muted);font-size:12px;line-height:1.65}.stage{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px;border-radius:16px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.07)}.stage span:last-child{color:var(--muted);font-size:12px}.timeline{display:grid;gap:10px}.timeline-item{display:grid;grid-template-columns:120px 1fr;gap:12px;padding:14px;border-radius:18px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.075)}.welcome{position:fixed;inset:0;z-index:5;padding:20px;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,rgba(3,7,14,.25),rgba(3,7,14,.86));backdrop-filter:blur(10px)}.welcome-card{width:min(980px,100%);padding:30px}.welcome-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:20px}.welcome-option{padding:20px;border-radius:20px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08)}.welcome-option p{color:var(--muted);margin:10px 0 16px;min-height:76px}.qguard-overlay{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.58);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}.qguard-overlay.show{display:flex}.qguard-modal{width:min(760px,100%);padding:24px;border-radius:28px;background:linear-gradient(180deg,rgba(12,20,38,.94),rgba(5,9,20,.94));border:1px solid rgba(255,255,255,.16);box-shadow:0 30px 120px rgba(0,0,0,.55)}.qguard-modal h3{font-size:26px;margin-bottom:10px}.qguard-risk{display:inline-flex;margin:8px 0 14px;padding:8px 12px;border-radius:999px;border:1px solid rgba(255,210,122,.35);background:rgba(255,210,122,.12);color:#fff1d1}.qguard-details{display:grid;gap:8px;margin:12px 0}.qguard-details div{padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.08);word-break:break-word}.qguard-confirm{margin-top:14px}.qguard-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-top:16px}.aura-topbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.hero-actions .aura-chip{height:48px}.aura-chip{height:48px;padding:0 14px;border-radius:18px;border:1px solid rgba(121,199,255,.38);background:linear-gradient(180deg,rgba(121,199,255,.22),rgba(155,140,255,.18));box-shadow:0 14px 50px rgba(0,0,0,.28);display:inline-flex;align-items:center;gap:10px;cursor:pointer;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);color:var(--text);font-weight:800}.aura-chip svg{width:23px;height:23px}.hero{position:relative}.aura-panel{position:fixed;right:22px;top:84px;z-index:13;width:min(500px,calc(100vw - 28px));height:min(720px,calc(100dvh - 110px));display:none;grid-template-rows:auto 1fr auto;border-radius:28px;overflow:hidden;background:linear-gradient(180deg,rgba(10,17,32,.96),rgba(4,7,16,.96));border:1px solid rgba(255,255,255,.16);box-shadow:0 30px 120px rgba(0,0,0,.55);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px)}.aura-panel.show{display:grid}.aura-panel.full{left:22px;right:22px;top:84px;width:auto;height:calc(100dvh - 108px)}.aura-head{padding:16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,.1)}.aura-title{display:flex;gap:12px;align-items:center}.aura-badge{width:38px;height:38px;border-radius:14px;display:grid;place-items:center;background:rgba(121,199,255,.12);border:1px solid rgba(121,199,255,.25)}.aura-messages{padding:16px;overflow:auto;display:grid;gap:12px;align-content:start}.aura-msg{max-width:88%;padding:12px 14px;border-radius:18px;line-height:1.45;white-space:pre-wrap;word-break:break-word}.aura-panel.full .aura-msg{max-width:min(880px,88%)}.aura-msg.user{justify-self:end;background:rgba(121,199,255,.18);border:1px solid rgba(121,199,255,.22)}.aura-msg.ai{justify-self:start;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1)}.aura-msg .src{font-size:11px;color:var(--muted);margin-top:8px}.aura-compose{padding:14px;border-top:1px solid rgba(255,255,255,.1);display:grid;gap:10px}.aura-compose textarea{min-height:74px}.aura-plan{font-size:12px;color:var(--muted);padding:10px 12px;border-radius:16px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08)}.aura-actions{display:flex;gap:8px;flex-wrap:wrap}.aura-close{border-radius:999px;padding:8px 10px}.aura-cloud{color:#fff1d1;border-color:rgba(255,210,122,.25);background:rgba(255,210,122,.1)}@media(max-width:1320px){.hero{padding-right:20px}.aura-topbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}}@media(max-width:700px){.aura-panel{right:14px;top:74px;height:calc(100dvh - 88px)}.aura-panel.full{left:14px;right:14px;top:74px;height:calc(100dvh - 88px)}.aura-chip{width:100%;justify-content:center}}@media(max-width:1220px){body{overflow:auto}.shell{grid-template-columns:1fr;min-height:auto}.sidebar{position:relative;top:auto;max-height:none}.content,.split,.metrics,.welcome-grid{grid-template-columns:1fr}.hero{flex-direction:column;align-items:flex-start}.hero-actions{justify-content:flex-start}}@media(max-height:850px){.shell{padding:12px}.sidebar{top:12px;max-height:calc(100dvh - 24px);padding:14px}.menu button,.btn{padding:10px 12px}.section{padding:16px}.metrics{grid-template-columns:repeat(2,1fr)}.brand .orb{width:42px;height:42px}}
+    *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,sans-serif;color:var(--text);background:radial-gradient(circle at 12% 0,#1b3b68 0,#07111f 38%,#02050b 100%)}body{overflow:auto;min-height:100dvh}button,input,textarea,select{font:inherit}h1,h2,h3,h4,p{margin:0}canvas#bg{position:fixed;inset:0;width:100%;height:100%;opacity:.9}.glass{background:linear-gradient(180deg,rgba(255,255,255,.085),rgba(255,255,255,.04));border:1px solid var(--line);box-shadow:var(--shadow);backdrop-filter:blur(26px);-webkit-backdrop-filter:blur(26px);border-radius:28px}.shell{position:relative;z-index:1;min-height:100dvh;padding:16px;display:grid;grid-template-columns:300px minmax(0,1fr);gap:18px;align-items:start}.sidebar{display:flex;flex-direction:column;gap:14px;padding:18px;max-height:calc(100dvh - 32px);overflow:auto;position:sticky;top:16px}.brand{display:flex;gap:14px;align-items:center}.orb{width:48px;height:48px;border-radius:50%;background:radial-gradient(circle at 30% 28%,#fff,#82d4ff 28%,#8e79ff 66%,rgba(142,121,255,.12));box-shadow:0 0 46px rgba(121,199,255,.46)}.small{font-size:12px;color:var(--muted)}.muted{color:var(--muted)}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.menu{display:grid;gap:8px}.menu button,.btn{appearance:none;cursor:pointer;border-radius:16px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:var(--text);padding:12px 14px;text-align:left;transition:.16s ease}.menu button.active,.menu button:hover,.btn:hover{transform:translateY(-1px);background:rgba(121,199,255,.13);border-color:rgba(121,199,255,.36)}.btn.primary{background:linear-gradient(135deg,rgba(121,199,255,.30),rgba(155,140,255,.23))}.btn.danger{border-color:rgba(255,143,155,.25)}.btn.center{text-align:center}.btn:disabled{opacity:.46;cursor:not-allowed;transform:none!important}.small.bad{color:#ffb8bf}.small.warn{color:#ffe0a3}.send-balance-metrics{grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:12px}.send-balance-metrics .metric .value.small{font-size:16px;word-break:break-word}.sidebar-balance{display:grid;gap:5px;padding:12px 14px;border-radius:18px;background:rgba(121,199,255,.08);border:1px solid rgba(121,199,255,.18)}.sidebar-balance .balance-value{font-size:21px;font-weight:800;letter-spacing:-.02em}.sidebar-balance .balance-sub{font-size:11px;color:var(--muted);line-height:1.45}.sidebar-balance.offline .balance-value{color:var(--muted)}.status{display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border-radius:999px;background:rgba(255,255,255,.06);color:var(--muted);font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:var(--bad);box-shadow:0 0 16px rgba(255,143,155,.45)}.dot.online{background:var(--ok);box-shadow:0 0 16px rgba(117,239,183,.5)}.sidebar-footer{margin-top:auto;display:grid;gap:10px}.main{display:grid;grid-template-rows:auto 1fr;gap:18px;min-width:0}.hero{padding:20px;display:flex;justify-content:space-between;gap:20px;align-items:center}.hero h2{font-size:clamp(26px,3vw,34px);margin-bottom:8px}.hero-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}.content{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(320px,.9fr);gap:18px;min-height:0;align-items:start}.left,.right{min-height:0;display:grid;gap:18px}.section{padding:18px;overflow:visible}.section h3{margin-bottom:14px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.metric{padding:16px;border-radius:20px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.075)}.metric .label{color:var(--muted);font-size:12px;margin-bottom:8px}.metric .value{font-size:25px;font-weight:750;letter-spacing:-.02em}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}.stack{display:grid;gap:12px}.rows{display:grid;gap:10px}.row,.tx,.wallet-chip,.feature-card{display:grid;gap:8px;padding:14px;border-radius:18px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08)}.row{grid-template-columns:1fr auto}.wallet-chip{grid-template-columns:1fr auto;align-items:center}.wallet-chip.active{border-color:rgba(121,199,255,.38);background:rgba(121,199,255,.11)}.feature-card{padding:18px;border-radius:22px;gap:12px}.form{display:grid;gap:12px}.field{display:grid;gap:8px}.actions{display:flex;flex-wrap:wrap;gap:10px}input,textarea,select{width:100%;color:var(--text);background:rgba(9,16,30,.64);border-radius:14px;border:1px solid rgba(255,255,255,.12);padding:13px 14px;outline:none}textarea{min-height:88px;resize:vertical}.banner{display:none;margin-bottom:12px;padding:12px 14px;border-radius:14px;font-size:13px}.banner.show{display:block}.banner.ok{color:#dffef0;background:rgba(117,239,183,.12);border:1px solid rgba(117,239,183,.25)}.banner.err{color:#ffeaea;background:rgba(255,143,155,.12);border:1px solid rgba(255,143,155,.25)}pre,.receive-box{margin:0;white-space:pre-wrap;word-break:break-word;border-radius:18px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.05);padding:14px;font-size:12px;line-height:1.55;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.fingerprint{border-radius:22px;display:grid;place-items:center;min-height:190px;background:radial-gradient(circle at 30% 30%,rgba(121,199,255,.18),rgba(155,140,255,.14),rgba(255,255,255,.03));border:1px solid rgba(255,255,255,.08)}.fingerprint canvas{width:168px;height:168px;image-rendering:pixelated;border-radius:18px}.tabs{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}.tabs button{border-radius:999px}.hidden{display:none!important}.pillrow{display:flex;flex-wrap:wrap;gap:8px}.pill{display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);color:var(--muted);font-size:12px}.pill.good{color:#dffef0;border-color:rgba(117,239,183,.24);background:rgba(117,239,183,.1)}.pill.warn{color:#fff1d1;border-color:rgba(255,210,122,.25);background:rgba(255,210,122,.1)}.notice{padding:14px;border-radius:18px;background:rgba(121,199,255,.08);border:1px solid rgba(121,199,255,.18);color:#dcefff;line-height:1.55}.legal{color:var(--muted);font-size:12px;line-height:1.65}.stage{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px;border-radius:16px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.07)}.stage span:last-child{color:var(--muted);font-size:12px}.timeline{display:grid;gap:10px}.timeline-item{display:grid;grid-template-columns:120px 1fr;gap:12px;padding:14px;border-radius:18px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.075)}.welcome{position:fixed;inset:0;z-index:5;padding:20px;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,rgba(3,7,14,.25),rgba(3,7,14,.86));backdrop-filter:blur(10px)}.welcome-card{width:min(980px,100%);padding:30px}.welcome-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:20px}.welcome-option{padding:20px;border-radius:20px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08)}.welcome-option p{color:var(--muted);margin:10px 0 16px;min-height:76px}.qguard-overlay{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.58);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}.qguard-overlay.show{display:flex}.qguard-modal{width:min(760px,100%);padding:24px;border-radius:28px;background:linear-gradient(180deg,rgba(12,20,38,.94),rgba(5,9,20,.94));border:1px solid rgba(255,255,255,.16);box-shadow:0 30px 120px rgba(0,0,0,.55)}.qguard-modal h3{font-size:26px;margin-bottom:10px}.qguard-risk{display:inline-flex;margin:8px 0 14px;padding:8px 12px;border-radius:999px;border:1px solid rgba(255,210,122,.35);background:rgba(255,210,122,.12);color:#fff1d1}.qguard-details{display:grid;gap:8px;margin:12px 0}.qguard-details div{padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.08);word-break:break-word}.qguard-confirm{margin-top:14px}.qguard-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-top:16px}.aura-topbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.hero-actions .aura-chip{height:48px}.aura-chip{height:48px;padding:0 14px;border-radius:18px;border:1px solid rgba(121,199,255,.38);background:linear-gradient(180deg,rgba(121,199,255,.22),rgba(155,140,255,.18));box-shadow:0 14px 50px rgba(0,0,0,.28);display:inline-flex;align-items:center;gap:10px;cursor:pointer;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);color:var(--text);font-weight:800}.aura-chip svg{width:23px;height:23px}.hero{position:relative}.aura-panel{position:fixed;right:22px;top:84px;z-index:13;width:min(500px,calc(100vw - 28px));height:min(720px,calc(100dvh - 110px));display:none;grid-template-rows:auto 1fr auto;border-radius:28px;overflow:hidden;background:linear-gradient(180deg,rgba(10,17,32,.96),rgba(4,7,16,.96));border:1px solid rgba(255,255,255,.16);box-shadow:0 30px 120px rgba(0,0,0,.55);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px)}.aura-panel.show{display:grid}.aura-panel.full{left:22px;right:22px;top:84px;width:auto;height:calc(100dvh - 108px)}.aura-head{padding:16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,.1)}.aura-title{display:flex;gap:12px;align-items:center}.aura-badge{width:38px;height:38px;border-radius:14px;display:grid;place-items:center;background:rgba(121,199,255,.12);border:1px solid rgba(121,199,255,.25)}.aura-messages{padding:16px;overflow:auto;display:grid;gap:12px;align-content:start}.aura-msg{max-width:88%;padding:12px 14px;border-radius:18px;line-height:1.45;white-space:pre-wrap;word-break:break-word}.aura-panel.full .aura-msg{max-width:min(880px,88%)}.aura-msg.user{justify-self:end;background:rgba(121,199,255,.18);border:1px solid rgba(121,199,255,.22)}.aura-msg.ai{justify-self:start;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1)}.aura-msg .src{font-size:11px;color:var(--muted);margin-top:8px}.aura-compose{padding:14px;border-top:1px solid rgba(255,255,255,.1);display:grid;gap:10px}.aura-compose textarea{min-height:74px}.aura-plan{font-size:12px;color:var(--muted);padding:10px 12px;border-radius:16px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.08)}.aura-actions{display:flex;gap:8px;flex-wrap:wrap}.aura-close{border-radius:999px;padding:8px 10px}.aura-cloud{color:#fff1d1;border-color:rgba(255,210,122,.25);background:rgba(255,210,122,.1)}@media(max-width:1320px){.hero{padding-right:20px}.aura-topbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}}@media(max-width:700px){.aura-panel{right:14px;top:74px;height:calc(100dvh - 88px)}.aura-panel.full{left:14px;right:14px;top:74px;height:calc(100dvh - 88px)}.aura-chip{width:100%;justify-content:center}}@media(max-width:1220px){body{overflow:auto}.shell{grid-template-columns:1fr;min-height:auto}.sidebar{position:relative;top:auto;max-height:none}.content,.split,.metrics,.welcome-grid{grid-template-columns:1fr}.hero{flex-direction:column;align-items:flex-start}.hero-actions{justify-content:flex-start}}@media(max-height:850px){.shell{padding:12px}.sidebar{top:12px;max-height:calc(100dvh - 24px);padding:14px}.menu button,.btn{padding:10px 12px}.section{padding:16px}.metrics{grid-template-columns:repeat(2,1fr)}.brand .orb{width:42px;height:42px}}
   
 /* --- QRX first-run onboarding + validator mode UX --- */
 .intro-overlay{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:18px;background:radial-gradient(circle at 20% 10%,rgba(121,199,255,.18),rgba(2,5,11,.92) 42%,rgba(2,5,11,.98));backdrop-filter:blur(24px)}
@@ -424,6 +424,112 @@
   100%{opacity:0;visibility:hidden;pointer-events:none}
 }
 
+
+/* QRX 0.0.7 responsive wide-layout pass
+   The application only has one primary content rail. Older CSS reserved a
+   second, mostly empty rail and made every menu look like a long table. */
+.content{
+  grid-template-columns:minmax(0,1fr);
+  width:100%;
+}
+.left,.right,.section,.view{min-width:0;width:100%}
+.section{padding:clamp(18px,1.6vw,28px)}
+
+/* Menu views become a responsive card canvas on wide windows. Direct cards
+   tile naturally; headings, notices, forms and existing split-groups retain
+   full width so workflows stay easy to follow. */
+.view:not(.hidden){
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(min(430px,100%),1fr));
+  gap:16px;
+  align-items:start;
+}
+.view > h1,.view > h2,.view > h3,.view > h4,
+.view > .notice,.view > .banner,.view > .metrics,.view > .split,
+.view > .form,.view > .tabs,.view > .timeline,.view > .rows,
+.view > .aura-dashboard-card,.view > pre,.view > .receive-box,
+.view > .legal,.view > details{
+  grid-column:1 / -1;
+}
+.view > .feature-card{min-width:0;height:100%;align-content:start}
+.view > div[style*="height:"]{display:none}
+
+/* Existing two-column groups should use the width that is actually available
+   instead of collapsing into narrow table-like columns. */
+.split{
+  grid-template-columns:repeat(auto-fit,minmax(min(330px,100%),1fr));
+  gap:16px;
+}
+.metrics{
+  grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:16px;
+}
+.metric{min-width:0}
+pre,.receive-box{max-width:100%;overflow:auto}
+
+/* More breathing room and a useful maximum sidebar size on desktop. */
+@media(min-width:1221px){
+  .shell{grid-template-columns:280px minmax(0,1fr);gap:20px;padding:20px}
+  .main{width:100%;max-width:none}
+  .hero{padding:22px 26px}
+  .content{max-width:none}
+}
+@media(min-width:1600px){
+  .shell{grid-template-columns:300px minmax(0,1fr);gap:24px;padding:24px}
+  .view:not(.hidden){grid-template-columns:repeat(auto-fit,minmax(min(470px,100%),1fr));gap:18px}
+  .section{padding:28px}
+}
+@media(max-width:1220px){
+  .view:not(.hidden){grid-template-columns:1fr}
+  .view > .feature-card{grid-column:1 / -1}
+}
+
+/* Send/receive wallet UX: full-width workspaces instead of narrow wallpaper-like forms. */
+#view-send > .send-panel{grid-column:1 / -1;width:100%;height:auto}
+.send-panel-head{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:2px}
+.send-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(260px,.7fr);gap:16px;align-items:end}
+.send-grid .field{min-width:0}
+.send-options{display:grid;gap:10px;align-self:center}
+.checkline{display:flex;align-items:center;gap:8px;line-height:1.35}
+.checkline input{width:auto;flex:0 0 auto}
+.send-primary-action{display:flex;justify-content:flex-end;align-items:end}
+.send-primary-action .btn{min-width:220px;text-align:center}
+.send-wide{grid-column:1 / -1}
+.btc-send-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+.btc-send-grid .send-recipient{grid-column:span 2}
+@media(max-width:1050px){.send-grid,.btc-send-grid{grid-template-columns:1fr 1fr}.btc-send-grid .send-recipient{grid-column:1 / -1}.send-primary-action{justify-content:stretch}.send-primary-action .btn{width:100%}}
+@media(max-width:720px){.send-grid,.btc-send-grid{grid-template-columns:1fr}.btc-send-grid .send-recipient,.send-wide{grid-column:1}.send-primary-action{justify-content:stretch}}
+
+/* 0.0.7 UX polish: real QR surface, compact swap workspace, roadmap and wallet manager. */
+.qr-surface{min-height:230px;padding:18px;background:rgba(255,255,255,.94);border-radius:22px;display:grid;place-items:center;border:1px solid rgba(255,255,255,.24)}
+.qr-surface svg{width:min(220px,100%);height:auto;display:block}
+.qr-placeholder{color:#43506a;text-align:center;font-size:13px;max-width:190px;line-height:1.45}
+.compact-tabs{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}
+.compact-tabs .btn.active{background:linear-gradient(135deg,rgba(121,199,255,.30),rgba(155,140,255,.23));border-color:rgba(121,199,255,.4)}
+.swap-panel{grid-column:1/-1}
+.swap-panel.hidden{display:none!important}
+.roadmap-grid,.wallet-manager-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.roadmap-card{padding:18px;border-radius:22px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);display:grid;gap:10px}
+.roadmap-card.current{border-color:rgba(117,239,183,.32);background:rgba(117,239,183,.07)}
+.roadmap-card.next{border-color:rgba(121,199,255,.3);background:rgba(121,199,255,.07)}
+.roadmap-version{font-size:12px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+.roadmap-card ul{margin:0;padding-left:18px;color:var(--muted);line-height:1.55}
+.wallet-list{display:grid;gap:10px}
+.wallet-entry{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:14px;border-radius:18px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08)}
+.wallet-entry.active{border-color:rgba(121,199,255,.4);background:rgba(121,199,255,.1)}
+.wallet-entry .meta{min-width:0;display:grid;gap:5px}
+.wallet-entry .addr{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:720px){.wallet-entry{grid-template-columns:1fr}.wallet-entry .actions{justify-content:flex-start}}
+
+
+/* 0.0.7 Receive wide-layout + legacy empty-passphrase UX fix */
+#view-receive > #receiveQubPanel,
+#view-receive > #receiveBtcPanel{grid-column:1 / -1;width:100%;min-width:0}
+#view-receive #receiveQubPanel > .split,
+#view-receive #receiveBtcPanel > .split{grid-template-columns:minmax(0,1.35fr) minmax(360px,.65fr);gap:20px;align-items:start}
+#view-receive .qr-surface{width:100%;min-width:0;align-self:start}
+#view-receive .feature-card{height:auto}
+@media(max-width:980px){#view-receive #receiveQubPanel > .split,#view-receive #receiveBtcPanel > .split{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -595,7 +701,7 @@
     <path d="M344 218l-78 44v96l78-45v-95Z" fill="#0052d8"/>
     <path d="M168 202l88 50 88-50M256 252v106" fill="none" stroke="#06101f" stroke-width="12" stroke-linejoin="round"/>
   </svg>
-</div><div><h1>GUI Wallet</h1><p class="muted">QUBITCOIN Core sidecar wallet with BTC Light, Quantum Swaps and Privacy preparation.</p></div></div><h2 style="margin:18px 0 8px;font-size:34px">Minimal, glassy, cross-chain ready.</h2><p class="muted">Create a local wallet, restore from <span class="mono">.qrxseed</span>, or import an existing wallet folder. QUB actions run locally through the bundled Core binaries.</p><div class="welcome-grid"><div class="welcome-option"><h3>Create wallet</h3><p>Create a local wallet profile and reveal the recovery phrase once.</p><div class="stack"><input id="welcomeCreateName" value="node1" placeholder="wallet name"><input id="welcomePassphrase" type="password" placeholder="wallet passphrase"><button class="btn primary" onclick="welcomeCreateWallet()">Create & open</button></div></div><div class="welcome-option"><h3>Restore</h3><p>Select a <span class="mono">.qrxseed</span> recovery file and restore.</p><div class="stack"><input id="welcomeRestoreName" value="restored1" placeholder="wallet name"><button class="btn" onclick="welcomeRestoreWallet()">Choose recovery file</button></div></div><div class="welcome-option"><h3>Import</h3><p>Import an existing QUBITCOIN wallet directory.</p><div class="stack"><input id="welcomeImportName" value="imported1" placeholder="wallet name"><button class="btn" onclick="welcomeImportWallet()">Choose wallet folder</button></div></div></div><div class="actions" style="margin-top:18px"><button class="btn" onclick="bootApp()">Skip to dashboard</button></div></div></div>
+</div><div><h1>GUI Wallet</h1><p class="muted">QUBITCOIN Core sidecar wallet with BTC Light, Quantum Swaps and Privacy preparation.</p></div></div><h2 style="margin:18px 0 8px;font-size:34px">Minimal, glassy, cross-chain ready.</h2><p class="muted">Create a local wallet, restore from <span class="mono">.qrxseed</span>, or import an existing wallet folder. QUB actions run locally through the bundled Core binaries.</p><div id="existingCoreWalletBox" class="notice hidden" style="margin-top:16px"></div><div class="welcome-grid"><div class="welcome-option"><h3>Create wallet</h3><p>Create a local wallet profile and reveal the recovery phrase once.</p><div class="stack"><input id="welcomeCreateName" value="node1" placeholder="wallet name"><input id="welcomePassphrase" type="password" placeholder="wallet passphrase"><button class="btn primary" onclick="welcomeCreateWallet()">Create & open</button></div></div><div class="welcome-option"><h3>Restore</h3><p>Select a <span class="mono">.qrxseed</span> recovery file and restore.</p><div class="stack"><input id="welcomeRestoreName" value="restored1" placeholder="wallet name"><button class="btn" onclick="welcomeRestoreWallet()">Choose recovery file</button></div></div><div class="welcome-option"><h3>Import</h3><p>Import an existing QUBITCOIN wallet directory.</p><div class="stack"><input id="welcomeImportName" value="imported1" placeholder="wallet name"><button class="btn" onclick="welcomeImportWallet()">Choose wallet folder</button></div></div></div><div class="actions" style="margin-top:18px"><button class="btn" onclick="bootApp()">Skip to dashboard</button></div></div></div>
   <div class="shell"><aside class="sidebar glass"><div class="brand"><div class="qrx-logo-mini" aria-hidden="true">
   <svg viewBox="0 0 512 512">
     <defs>
@@ -613,7 +719,7 @@
     <path d="M344 218l-78 44v96l78-45v-95Z" fill="#0052d8"/>
     <path d="M168 202l88 50 88-50M256 252v106" fill="none" stroke="#06101f" stroke-width="12" stroke-linejoin="round"/>
   </svg>
-</div><div><h1>GUI Wallet</h1><p class="small">QUB + BTC Light</p></div></div><div><div class="small" style="margin-bottom:10px">Current wallet</div><div id="currentWalletName" style="font-size:18px;font-weight:700">node1</div><div id="currentAddressShort" class="small mono" style="margin-top:6px">—</div></div><div class="stack"><div class="small">Session passphrase</div><input id="sessionPassphrase" type="password" placeholder="required for create/start/send/stake" oninput="syncPassphrase()"></div><div class="menu"><button class="active" data-view="dashboard">Dashboard</button><button data-view="send">Send</button><button data-view="receive">Receive</button><button data-view="staking">Staking</button><button data-view="validator">Validator Mode</button><button data-view="btc">BTC Light</button><button data-view="swaps">Quantum Swaps</button><button data-view="agents">Agents & Kraken</button><button data-view="privacy">Privacy</button><button data-view="roadmap">Roadmap</button><button data-view="wallets">Wallets</button></div><div class="sidebar-footer"><div class="status"><span id="daemonDot" class="dot"></span><span id="daemonText">Daemon offline</span></div><div class="small">Network: <span id="networkLabel">alpha</span></div><div class="small">Control socket: <span id="controlSocketLabel" class="mono">—</span></div><div class="small">Data dir: <span id="dataDirLabel" class="mono">—</span></div></div></aside>
+</div><div><h1>GUI Wallet</h1><p class="small">QUB + BTC Light</p></div></div><div><div class="small" style="margin-bottom:10px">Current wallet</div><div id="currentWalletName" style="font-size:18px;font-weight:700">node1</div><div id="currentAddressShort" class="small mono" style="margin-top:6px">—</div></div><div id="globalQubBalanceCard" class="sidebar-balance offline"><div class="small">QUB balance</div><div id="globalQubBalance" class="balance-value">— QUB</div><div id="globalQubBalanceSub" class="balance-sub">Waiting for wallet data…</div></div><div class="stack" id="walletSecurityBox"><div class="small">Wallet security</div><div id="walletLockState" style="font-weight:750">🔒 Checking wallet…</div><div id="walletUnlockControls" class="stack"><div class="actions" style="gap:8px;align-items:center"><input id="sessionPassphrase" type="password" placeholder="Wallet passphrase" oninput="syncPassphrase()" onkeydown="if(event.key==='Enter'){event.preventDefault();unlockWalletSession();}" style="min-width:0;flex:1"><button id="unlockWalletBtn" class="btn primary" onclick="unlockWalletSession()" title="Unlock wallet for this session">🔓 Unlock</button></div><div class="small muted">Press Enter or Unlock. The passphrase is kept in memory only for this app session.</div></div><button id="lockWalletBtn" class="btn hidden" onclick="lockWalletSession()" title="Forget the in-memory passphrase">🔒 Lock wallet</button><div id="passphraseStateLabel" class="small muted">Inspecting wallet key protection…</div></div><div class="menu"><button class="active" data-view="dashboard">Dashboard</button><button data-view="send">Send</button><button data-view="receive">Receive</button><button data-view="transactions">Transactions</button><button data-view="staking">Staking</button><button data-view="validator">Validator Mode</button><button data-view="btc">BTC Light</button><button data-view="swaps">Quantum Swaps</button><button data-view="agents">Agents & Kraken</button><button data-view="privacy">Privacy</button><button data-view="roadmap">Roadmap</button><button data-view="wallets">Wallets</button><button data-view="addressbook">Address Book</button></div><div class="sidebar-footer"><div class="status"><span id="daemonDot" class="dot"></span><span id="daemonText">Daemon offline</span></div><div class="small">Network: <span id="networkLabel">alpha</span></div><div class="small">RPC endpoint: <span id="controlSocketLabel" class="mono">—</span></div><div class="small">Data dir: <span id="dataDirLabel" class="mono">—</span></div></div></aside>
   <main class="main"><section class="hero glass"><div><h2>QUBITCOIN GUI Wallet</h2><p class="muted">QUBITCOIN core wallet, staking, BTC Light, Quantum Swaps UX and honest non-custodial disclaimers.</p></div><div class="hero-actions"><button class="aura-chip" onclick="toggleAura(true)" title="Chat with AURA AI"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5.8C4 4.25 5.25 3 6.8 3h10.4C18.75 3 20 4.25 20 5.8v7.4c0 1.55-1.25 2.8-2.8 2.8H9.2L5 20v-4.2A2.8 2.8 0 0 1 4 13.6V5.8Z" stroke="currentColor" stroke-width="1.7"/><path d="M8 8h8M8 11.5h5.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Chat with AURA AI</span></button><button class="btn primary" onclick="startDaemonWithMode()">Start node</button><button class="btn" onclick="refreshAll(true)">Refresh</button><button class="btn danger" onclick="stopDaemon()">Stop node</button></div></section><section class="content"><div class="left"><section class="section glass"><div id="banner" class="banner"></div>
     <div id="view-dashboard" class="view"><h3>Overview</h3><div class="metrics"><div class="metric"><div class="label">Balance</div><div id="metricBalance" class="value">0</div></div><div class="metric"><div class="label">Staked</div><div id="metricStaked" class="value">0</div></div><div class="metric"><div class="label">Validators</div><div id="metricValidators" class="value">0</div></div><div class="metric"><div class="label">Peers</div><div id="metricPeers" class="value">0</div></div></div><div style="height:18px"></div><div class="aura-dashboard-card">
   <h3>AURA Wallet AI Assistant</h3>
@@ -623,8 +729,8 @@
     <button class="btn" onclick="auraAskLocal()">Local Help</button>
   </div>
 </div><div style="height:18px"></div><div class="split"><div><h3>Wallet info</h3><pre id="walletInfoBox">Loading…</pre></div><div><h3>Node info</h3><pre id="nodeInfoBox">Loading…</pre></div></div><div style="height:12px"></div><div class="split"><div><h3>Tokenomics</h3><pre id="tokenomicsBox">Loading…</pre></div><div><h3>Daemon health</h3><pre id="daemonHealthBox">Loading…</pre></div></div></div>
-    <div id="view-send" class="view hidden"><h3>Send QUB</h3><div class="form"><div class="field"><label>Recipient address</label><input id="sendTo" placeholder="qrx1..."></div><div class="split"><div class="field"><label>Amount</label><input id="sendAmount" placeholder="1.0"></div><div class="field"><label>Memo</label><input id="sendMemo" placeholder="optional"></div></div><div class="actions"><button class="btn primary" onclick="sendTx()">Send transaction</button></div></div></div>
-    <div id="view-receive" class="view hidden"><h3>Receive QUB</h3><div class="split"><div class="stack"><div class="actions"><button class="btn primary" onclick="loadNewAddress()">Get receive address</button><button class="btn" onclick="copyReceiveAddress()">Copy address</button></div><div id="receiveAddress" class="receive-box">No address loaded yet.</div><div class="small">The fingerprint is generated locally and does not call an external QR service.</div></div><div class="fingerprint"><canvas id="addressFingerprint" width="168" height="168"></canvas></div></div></div>
+    <div id="view-send" class="view hidden"><h3>Send</h3><div class="tabs"><button class="btn primary" data-send-chain="QUB" onclick="setSendChain('QUB')">QUB</button><button class="btn" data-send-chain="BTC" onclick="setSendChain('BTC')">BTC</button></div><div id="sendQubPanel" class="feature-card send-panel"><div class="send-panel-head"><div class="pill good">QUB · QUBITCOIN</div><div class="small muted">Review recipient, amount and memo before signing.</div></div><div class="metrics send-balance-metrics"><div class="metric"><div class="label">Available balance</div><div id="sendQubBalance" class="value">—</div></div><div class="metric"><div class="label">After send</div><div id="sendQubAfter" class="value">—</div></div><div class="metric"><div class="label">Wallet</div><div id="sendQubWallet" class="value small">—</div></div></div><div id="sendQubStatus" class="notice send-wide">Enter a recipient and amount. The wallet will check balance and whether the recipient belongs to this wallet.</div><div class="send-grid"><div class="field send-recipient"><label>Recipient</label><input id="sendTo" placeholder="qrx1..." oninput="updateQubSendSafety()"><div id="sendRecipientHint" class="small muted">Recipient has not been checked yet.</div></div><div class="field"><label>Address book</label><select id="sendQubContact" onchange="useContactForSend('QUB',this.value);updateQubSendSafety()"><option value="">Choose QUB contact…</option></select></div><div class="field"><label>Amount QUB</label><div style="display:flex;gap:8px"><input id="sendAmount" placeholder="1.0" inputmode="decimal" oninput="updateQubSendSafety()"><button class="btn" type="button" onclick="useMaxQubBalance()">Max</button></div><div id="sendAmountHint" class="small muted">Available balance is loaded from the active wallet.</div></div><div class="field"><label>Memo</label><input id="sendMemo" placeholder="optional"></div><div class="send-options"><label class="small checkline"><input id="saveQubRecipient" type="checkbox"> Save recipient after successful send</label><div class="field hidden" id="saveQubRecipientNameWrap"><label>Contact name</label><input id="saveQubRecipientName" placeholder="e.g. Alice"></div></div><div class="send-primary-action"><button id="sendQubButton" class="btn primary center" onclick="sendTx()">Review & send QUB</button></div></div></div><div id="sendBtcPanel" class="feature-card send-panel hidden"><div class="send-panel-head"><div class="pill warn">BTC · Bitcoin mainnet</div><div class="small muted">BDK light wallet · confirm address and fee before broadcast.</div></div><div class="send-grid btc-send-grid"><div class="field send-recipient"><label>Recipient</label><input id="btcQuickSendTo" placeholder="bc1... / 1... / 3..."></div><div class="field"><label>Address book</label><select id="sendBtcContact" onchange="useContactForSend('BTC',this.value)"><option value="">Choose BTC contact…</option></select></div><div class="field"><label>Amount in sats</label><input id="btcQuickSendSats" placeholder="1000"></div><div class="field"><label>Fee rate sat/vB</label><input id="btcQuickFeeRate" value="5"></div><div class="field"><label>BTC wallet password</label><input id="btcQuickPassphrase" type="password" placeholder="BTC seed encryption password"></div><div class="send-options"><label class="small checkline"><input id="saveBtcRecipient" type="checkbox"> Save recipient after successful send</label><div class="field hidden" id="saveBtcRecipientNameWrap"><label>Contact name</label><input id="saveBtcRecipientName" placeholder="e.g. Exchange deposit"></div></div><div class="notice send-wide">BTC uses the shared BDK light-wallet service. Use tiny test amounts first.</div><div class="actions send-wide"><button class="btn primary" onclick="btcQuickSend()">Review & send BTC</button><button class="btn" onclick="btcSync()">Sync BTC first</button></div><div id="btcQuickSendResult" class="receive-box send-wide">No BTC transaction sent.</div></div></div></div>
+    <div id="view-receive" class="view hidden"><h3>Receive</h3><div class="tabs"><button class="btn primary" data-receive-chain="QUB" onclick="setReceiveChain('QUB')">QUB</button><button class="btn" data-receive-chain="BTC" onclick="setReceiveChain('BTC')">BTC</button></div><div id="receiveQubPanel"><div class="split"><div class="stack"><div class="pill good">QUB · QUBITCOIN</div><div class="small">Selected QUB address</div><div id="receiveAddress" class="receive-box">Loading wallet address…</div><div class="actions"><button class="btn" onclick="copyReceiveAddress()">⧉ Copy current address</button><button class="btn primary" onclick="loadNewAddress()">Generate additional QUB address</button></div><div class="feature-card"><h4>My QUB addresses</h4><div class="small muted">The primary wallet identity always comes from address.txt. Additional receive addresses are shown separately.</div><div id="receiveAddressList" class="wallet-list"><div class="muted">Open Receive to load addresses stored by this wallet.</div></div></div><div class="small">QR codes are generated locally. No address is sent to an external QR service.</div></div><div id="receiveQr" class="qr-surface"><div class="qr-placeholder">Loading the wallet's existing receive address…</div></div></div></div><div id="receiveBtcPanel" class="hidden"><div class="split"><div class="stack"><div class="pill warn">BTC · Bitcoin mainnet</div><div class="field"><label>BTC wallet password</label><input id="btcReceivePassphrase" type="password" placeholder="BTC seed encryption password"></div><div class="small">Current BTC receive address</div><div id="btcQuickReceiveAddress" class="receive-box">Unlock BTC wallet to load existing addresses.</div><div class="actions"><button class="btn primary" onclick="loadBtcReceiveAddresses()">Load my BTC addresses</button><button class="btn" onclick="btcQuickNewAddress()">Generate additional BTC address</button><button class="btn" onclick="copyText(document.getElementById('btcQuickReceiveAddress').textContent,'BTC address copied.')">⧉ Copy</button></div><div class="feature-card"><h4>My BTC addresses</h4><div id="btcQuickAddressList" class="wallet-list"><div class="muted">Enter the BTC wallet password to load descriptor addresses.</div></div></div></div><div id="btcQuickReceiveQr" class="qr-surface"><div class="qr-placeholder">Load a BTC address to show its QR code.</div></div></div></div></div>
     <div id="view-staking" class="view hidden">
       <h3>Staking</h3>
       <div class="notice"><strong>Delegator Mode is safe for home users.</strong> You can delegate QUB and close the wallet. Slashing/offline penalties apply to validators, not to normal wallet users. Self-staking makes this wallet a validator candidate and requires Validator Mode.</div>
@@ -667,8 +773,34 @@
       </div>
       <pre id="validatorModeBox">Not loaded.</pre>
     </div>
+    <div id="view-transactions" class="view hidden"><h3>Transactions & Ledger</h3><div class="notice"><strong>QUB + BTC activity in one place.</strong> History is read-only. Use filters to inspect activity; CSV export never exports seeds, private keys or passphrases.</div><div class="split" style="margin-top:14px"><div class="feature-card"><h4>Transaction history</h4><div class="actions"><button class="btn primary" onclick="loadUnifiedTransactions('ALL')">All</button><button class="btn" onclick="loadUnifiedTransactions('QUB')">QUB</button><button class="btn" onclick="loadUnifiedTransactions('BTC')">BTC</button><button class="btn" onclick="loadUnifiedTransactions(txChainFilter||'ALL')">Refresh</button></div><div class="field"><label>QUB history limit</label><select id="txLimit"><option>20</option><option>50</option><option>100</option><option>250</option><option>500</option></select></div><div id="transactionList" class="wallet-list"><div class="muted">Open Transactions to load history.</div></div></div><div class="feature-card"><h4>CSV / Ledger Export</h4><div class="notice">State-Root-verified Complete Ledger with bounded periods. The end date is inclusive.</div><div class="split"><div class="field"><label>CSV profile</label><select id="txLedgerProfile"><option value="de" selected>Germany · semicolon / decimal comma</option><option value="international">International · comma / decimal point</option></select></div><div class="field"><label>Period</label><select id="txLedgerPeriod" onchange="syncTxLedgerPeriod()"><option value="all">All time</option><option value="year" selected>Year</option><option value="quarter">Quarter</option><option value="custom">Custom from / to</option></select></div></div><div class="split"><div class="field"><label>Year</label><input id="txLedgerYear" inputmode="numeric"></div><div class="field"><label>Quarter</label><select id="txLedgerQuarter"><option value="1">Q1</option><option value="2">Q2</option><option value="3">Q3</option><option value="4">Q4</option></select></div></div><div class="split"><div class="field"><label>From (UTC)</label><input id="txLedgerFrom" type="date"></div><div class="field"><label>To inclusive (UTC)</label><input id="txLedgerTo" type="date"></div></div><div class="actions"><button class="btn primary" onclick="exportTransactionsLedger()">Export Complete CSV Ledger</button></div><pre id="txLedgerResult">No export created.</pre></div></div></div>
     <div id="view-btc" class="view hidden"><h3>BTC Light</h3><div class="notice"><strong>BTC Light is now wired:</strong> create/restore an encrypted local BTC wallet, generate receive addresses, sync balance via Electrum fallback endpoints, and broadcast BTC transactions. Use tiny test amounts first.</div><div style="height:14px"></div><div class="notice">BTC Light keeps the wallet easy: no Bitcoin full-node download and no huge local Bitcoin chain. Phase 1 is Electrum/Esplora-ready; Phase 2 can add Neutrino/BIP157 compact-filter verification.</div><div style="height:14px"></div><div class="metrics"><div class="metric"><div class="label">BTC mode</div><div id="btcModeMetric" class="value">—</div></div><div class="metric"><div class="label">BTC balance</div><div id="btcBalanceMetric" class="value">0</div></div><div class="metric"><div class="label">Privacy</div><div id="btcPrivacyMetric" class="value">—</div></div><div class="metric"><div class="label">Endpoint</div><div id="btcServerMetric" class="value">—</div></div></div><div style="height:18px"></div><div class="split"><div class="feature-card"><h4>Easy Mode</h4><p class="muted">Prepare BTC balance, receive and transaction monitoring through a light backend.</p><div class="field"><label>BTC wallet password</label><input id="btcPassphrase" type="password" placeholder="required for BTC seed encryption"><div class="small muted">Used to encrypt/decrypt the BTC mnemonic locally. Keep it safe; losing it can make BTC funds unrecoverable.</div></div><div class="field"><label>Electrum / Esplora fallback endpoints</label><textarea id="btcEndpoint" rows="5" placeholder="ssl://electrum.blockstream.info:50002&#10;ssl://electrum.emzy.de:50002&#10;ssl://electrum.bitaroo.net:50002"></textarea><div class="small muted">One endpoint per line. The wallet tests entries in order and uses the first reachable endpoint.</div></div><div class="actions"><button class="btn primary" onclick="setBtcMode('electrum')">Use BTC Light</button><button class="btn" onclick="testBtcEndpoints()">Test fallbacks</button><button class="btn" onclick="loadBtcStatus(true)">Refresh BTC status</button></div><div style="height:14px"></div><div class="feature-card"><h4>BTC Backup & Restore</h4><p class="muted">Backup your BTC recovery phrase immediately. Restore lets you import an existing BIP39 phrase and encrypt it with your local BTC password.</p><div class="actions"><button class="btn primary" onclick="btcShowBackup()">Show backup phrase</button><button class="btn" onclick="btcVerifyBackup()">Verify backup</button><button class="btn" onclick="btcToggleRestore()">Restore wallet</button></div><div id="btcBackupPanel" class="hidden stack" style="margin-top:12px"><div class="notice">Keep these words offline. Anyone with this phrase can spend the BTC wallet.</div><pre id="btcBackupPhrase">Locked.</pre><div class="small muted">Verification: write down the phrase, then click “Verify backup”.</div></div><div id="btcRestorePanel" class="hidden stack" style="margin-top:12px"><div class="field"><label>Recovery phrase</label><textarea id="btcRestoreMnemonic" rows="4" placeholder="twelve or twenty-four words"></textarea></div><label class="small"><input id="btcRestoreOverwrite" type="checkbox"> overwrite existing local BTC wallet</label><div class="actions"><button class="btn primary" onclick="btcRestoreWallet()">Restore & encrypt</button><button class="btn" onclick="btcResetWallet()">Reset local BTC wallet</button></div><pre id="btcRestoreResult">No restore action yet.</pre></div></div></div><div class="feature-card"><h4>Neutrino / BIP157</h4><p class="muted">Downloads compact filters and checks locally which Bitcoin blocks may be relevant.</p><div class="pillrow"><span class="pill good">No BTC full chain</span><span class="pill good">Local filter checks</span><span class="pill warn">Future module</span></div><button class="btn primary" onclick="startNeutrino()">Prepare Neutrino Mode</button></div></div><div style="height:18px"></div><div class="split"><div><h3>BTC receive</h3><div class="actions"><button class="btn primary" onclick="btcNewAddress()">Generate BTC address</button><button class="btn" onclick="btcInitWallet()">Init BTC wallet</button><button class="btn" onclick="btcSync()">Sync / refresh BTC</button><button class="btn" onclick="copyBtcAddress()">Copy</button></div><div id="btcReceiveAddress" class="receive-box" style="margin-top:12px">No BTC address loaded yet.</div></div><div><h3>BTC status</h3><div class="notice">Active endpoint: <span id="btcActiveEndpoint" class="mono">—</span></div><pre id="btcStatusBox">Not loaded.</pre></div></div><div style="height:18px"></div><div class="feature-card"><h3>BTC send</h3><p class="muted">Development build: real BDK transaction builder. Use tiny test amounts first. Mnemonic encryption still needs production hardening.</p><div class="split"><div class="field"><label>Recipient BTC address</label><input id="btcSendTo" placeholder="bc1..."></div><div class="field"><label>Amount in sats</label><input id="btcSendSats" placeholder="1000"></div></div><div class="split"><div class="field"><label>Fee rate sat/vB</label><input id="btcFeeRate" placeholder="5"></div><div class="field"><label>Result</label><div id="btcSendResult" class="receive-box">No BTC transaction sent.</div></div></div><div class="actions"><button class="btn primary" onclick="btcSync()">Sync BTC</button><button class="btn" onclick="btcSend()">Send BTC</button></div></div></div>
-    <div id="view-swaps" class="view hidden"><h3>Quantum Swaps</h3><div class="notice">Quantum Swaps is the QUB cross-chain swap UX. MVP: coordinator-ready swap drafts. Target: non-custodial HTLC swaps with hashlocks, timelocks, redeem and refund paths.</div><div style="height:14px"></div><div class="feature-card"><h4>Quantum Swaps Safety Mode</h4><div class="notice"><strong>Experimental HTLC warning:</strong> QUB HTLC support is a release-candidate feature. Mainnet is locked by default in the core. Use only small amounts until audited.</div><div class="split" style="margin-top:12px"><div><div class="small">Status</div><pre id="htlcSafetyBox">Not loaded.</pre><div style="height:10px"></div><div class="actions"><button class="btn" onclick="loadQuantumGuardAudit()">Load Quantum Guard audit</button></div><pre id="qguardAuditBox">No audit loaded.</pre></div><div class="stack"><div class="field"><label>Mainnet activation confirmation</label><input id="htlcConfirmation" placeholder="I UNDERSTAND EXPERIMENTAL HTLC RISK"></div><div class="actions"><button class="btn" onclick="loadHtlcSafety()">Refresh safety</button><button class="btn primary" onclick="setHtlcSafety(true)">Enable experimental HTLC</button><button class="btn" onclick="setHtlcSafety(false)">Disable HTLC</button></div><div class="small muted">If enabled for mainnet, the daemon is started with QRX_ENABLE_MAINNET_HTLC=I_UNDERSTAND_EXPERIMENTAL. Restart the daemon after changing this setting.</div></div></div></div><div style="height:14px"></div><div class="split"><div class="feature-card"><h4>BTC on the Rocks</h4><p class="muted">Put BTC into a controlled swap flow without giving custody to the app. Your keys remain local.</p><div class="field"><label>You send</label><input id="swapBtcAmount" placeholder="0.01 BTC"></div><div class="field"><label>You receive to QUBITCOIN address</label><input id="swapQrxAddress" placeholder="QUBITCOIN address"></div><div class="field"><label>Swap mode</label><select id="swapMode"><option value="coordinated">Fast coordinated MVP</option><option value="htlc">QUB Core HTLC</option></select></div><div class="field"><label>Hash algorithm</label><select id="swapHashAlgo"><option value="sha256" selected>SHA256 — BTC compatible / required for cross-chain swaps</option><option value="sha3" disabled>SHA3 — QUB native experimental / not BTC compatible yet</option></select><div class="small muted">QUBITCOIN can use SHA3 internally, but BTC atomic swaps require SHA256 hashlocks. Quantum Swaps v1 therefore uses SHA256 for BTC ↔ QUB compatibility.</div></div><div class="field"><label>Hashlock hex</label><input id="swapHashlock" placeholder="SHA256(secret) hex, 64 chars"></div><div class="field"><label>Timelock seconds</label><input id="swapTimelock" value="86400"></div><div class="field"><label>Swap ID / Secret</label><input id="swapIdInput" placeholder="swap_id for get/redeem/refund"><input id="swapSecretInput" placeholder="secret for redeem"></div><div class="actions"><button class="btn primary" onclick="createQuantumSwap()">Create UX draft</button><button class="btn primary" onclick="createCoreSwap()">Create QUB HTLC</button><button class="btn" onclick="getCoreSwap()">Get swap</button><button class="btn" onclick="listCoreSwaps()">List swaps</button><button class="btn" onclick="redeemCoreSwap()">Redeem</button><button class="btn" onclick="refundCoreSwap()">Refund</button></div></div><div class="feature-card"><h4>Swap safety model</h4><div class="stage"><strong>1. Quote</strong><span>Rate, fees and timeout shown</span></div><div class="stage"><strong>2. Lock</strong><span>Funds are time-locked</span></div><div class="stage"><strong>3. Redeem</strong><span>Secret unlocks counterparty tx</span></div><div class="stage"><strong>4. Refund</strong><span>Timeout enables recovery</span></div></div></div><div style="height:18px"></div><div class="split"><div><h3>Current swap</h3><pre id="swapStatusBox">No swap draft yet.</pre></div><div><h3>Disclaimer</h3><div class="legal">This wallet is non-custodial software. It does not hold user funds, does not operate as an exchange and does not guarantee swap execution. Experimental cross-chain swaps may use timelocked transactions and refund paths. Always verify amounts, addresses, fees and timeouts before signing.</div></div></div></div>
+    <div id="view-swaps" class="view hidden">
+      <h3>Quantum Swaps</h3>
+      <div class="notice">Non-custodial QUB cross-chain swap workspace. The normal view now shows only the controls you need; experimental safety/audit details are separated below.</div>
+      <div class="compact-tabs">
+        <button class="btn active" data-swap-panel="trade" onclick="setSwapPanel('trade')">Swap</button>
+        <button class="btn" data-swap-panel="safety" onclick="setSwapPanel('safety')">Safety & Audit</button>
+        <button class="btn" data-swap-panel="status" onclick="setSwapPanel('status')">Status & Legal</button>
+      </div>
+      <div id="swapPanelTrade" class="swap-panel">
+        <div class="split">
+          <div class="feature-card"><h4>BTC ↔ QUB</h4><p class="muted">Create a controlled swap flow without giving custody to the app. Your keys remain local.</p>
+            <div class="split"><div class="field"><label>You send</label><input id="swapBtcAmount" placeholder="0.01 BTC"></div><div class="field"><label>QUB destination</label><input id="swapQrxAddress" placeholder="QUBITCOIN address"></div></div>
+            <div class="split"><div class="field"><label>Swap mode</label><select id="swapMode"><option value="coordinated">Fast coordinated MVP</option><option value="htlc">QUB Core HTLC</option></select></div><div class="field"><label>Timelock seconds</label><input id="swapTimelock" value="86400"></div></div>
+            <details><summary>Advanced HTLC parameters</summary><div class="stack" style="margin-top:12px"><div class="field"><label>Hash algorithm</label><select id="swapHashAlgo"><option value="sha256" selected>SHA256 — BTC compatible</option><option value="sha3" disabled>SHA3 — experimental / not BTC compatible yet</option></select></div><div class="field"><label>Hashlock hex</label><input id="swapHashlock" placeholder="SHA256(secret) hex, 64 chars"></div><div class="field"><label>Swap ID / Secret</label><input id="swapIdInput" placeholder="swap_id for get/redeem/refund"><input id="swapSecretInput" placeholder="secret for redeem"></div></div></details>
+            <div class="actions"><button class="btn primary" onclick="createQuantumSwap()">Create draft</button><button class="btn primary" onclick="createCoreSwap()">Create QUB HTLC</button><button class="btn" onclick="getCoreSwap()">Get</button><button class="btn" onclick="listCoreSwaps()">List</button><button class="btn" onclick="redeemCoreSwap()">Redeem</button><button class="btn" onclick="refundCoreSwap()">Refund</button></div>
+          </div>
+          <div class="feature-card"><h4>Swap flow</h4><div class="stage"><strong>1. Quote</strong><span>Rate, fees and timeout</span></div><div class="stage"><strong>2. Lock</strong><span>Funds are time-locked</span></div><div class="stage"><strong>3. Redeem</strong><span>Secret unlocks counterparty tx</span></div><div class="stage"><strong>4. Refund</strong><span>Timeout enables recovery</span></div></div>
+        </div>
+      </div>
+      <div id="swapPanelSafety" class="swap-panel hidden">
+        <div class="split"><div class="feature-card"><h4>Experimental HTLC safety</h4><div class="notice"><strong>Release-candidate feature:</strong> Mainnet HTLC is locked by default. Use tiny test amounts until audited.</div><div class="small" style="margin-top:12px">Status</div><pre id="htlcSafetyBox">Not loaded.</pre><div class="actions"><button class="btn" onclick="loadHtlcSafety()">Refresh safety</button><button class="btn" onclick="loadQuantumGuardAudit()">Load Quantum Guard audit</button></div></div><div class="feature-card"><h4>Mainnet activation</h4><div class="field"><label>Confirmation</label><input id="htlcConfirmation" placeholder="I UNDERSTAND EXPERIMENTAL HTLC RISK"></div><div class="actions"><button class="btn primary" onclick="setHtlcSafety(true)">Enable experimental HTLC</button><button class="btn" onclick="setHtlcSafety(false)">Disable HTLC</button></div><div class="small muted">Restart the daemon after changing this setting.</div><pre id="qguardAuditBox">No audit loaded.</pre></div></div>
+      </div>
+      <div id="swapPanelStatus" class="swap-panel hidden">
+        <div class="split"><div class="feature-card"><h4>Current swap</h4><pre id="swapStatusBox">No swap draft yet.</pre></div><div class="feature-card"><h4>Non-custodial disclaimer</h4><div class="legal">This wallet does not hold user funds, operate as an exchange or guarantee swap execution. Experimental cross-chain swaps can use timelocked transactions and refund paths. Verify amounts, addresses, fees and timeouts before signing.</div></div></div>
+      </div>
+    </div>
     <div id="view-agents" class="view hidden"><h3>Agents & Kraken Spot</h3>
       <div class="notice"><strong>Real external execution gateway:</strong> QRX Agent intents can be routed to Kraken Spot. Kraken API credentials are entered here in the wallet and are never written to a plaintext config file.</div>
       <div style="height:14px"></div>
@@ -709,34 +841,131 @@
       <div style="height:14px"></div>
       <div class="feature-card"><h4>Safe wording</h4><div class="notice">Use: “optional privacy layer”, “enhanced privacy”, “shielded pool”. Avoid: “anonymous”, “untraceable”, “hide from authorities”, or “mixer”.</div></div>
     </div>
+
+    <div id="view-roadmap" class="view hidden"><h3>QRX Roadmap</h3><div class="notice">The wallet shows the public development direction through 0.0.9. Planned features are roadmap targets, not promises of activation on the current network.</div><div class="roadmap-grid"><div class="roadmap-card current"><div class="roadmap-version">Current · 0.0.7</div><h4>VELOCITY + AI Agent Foundation</h4><ul><li>Fast execution primitives and nonce lanes</li><li>Deterministic expiry and raw transactions</li><li>Agent identities, permissions and trading schemas</li><li>Native/cross-chain settlement foundations</li></ul></div><div class="roadmap-card next"><div class="roadmap-version">Next · 0.0.8</div><h4>Proof of Storage</h4><ul><li>Storage-provider registration and capability metadata</li><li>Storage contracts and cryptographic verification</li><li>QRX Drive and enterprise backup integration</li><li>Document, AI-artifact and versioned persistence</li></ul></div><div class="roadmap-card"><div class="roadmap-version">Planned · 0.0.9</div><h4>Distributed AI Compute Fabric</h4><ul><li>Windows, Linux and macOS; x86-64 and ARM64</li><li>CPU acceleration: AVX2/FMA, AVX-512/VNNI/AMX, NEON/SVE/SME and Apple Accelerate/BNNS paths</li><li>Benchmark-driven heterogeneous scheduling</li><li>Distributed Mixture-of-Experts inference with Kimi K3 as an early reference workload</li><li>SeaweedFS model distribution and QUB compute rewards</li></ul></div></div></div>
+    <div id="view-wallets" class="view hidden"><h3>Wallets</h3><div class="notice"><strong>Shared Core wallet store:</strong> GUI and CLI use the same QRX wallets. Existing wallets are opened in place; they are never silently overwritten. Legacy/older wallets require a verified pre-0.0.7 safety backup before first use.</div><div class="split"><div class="feature-card"><h4>Current wallet</h4><div class="small">Active profile</div><div id="walletManagerCurrent" style="font-size:24px;font-weight:750">—</div><div class="small muted">Primary wallet address · address.txt</div><div id="walletManagerAddress" class="mono small">—</div><div id="walletPassphraseSummary" class="pill">Inspecting key protection…</div><div class="actions"><button class="btn primary" onclick="refreshWalletManager()">Refresh wallets</button><button class="btn" onclick="inspectCurrentWallet()">Inspect wallet</button></div></div><div class="feature-card"><h4>Storage & runtime</h4><div class="small">Core store</div><div id="walletCoreStore" class="mono">~/.qrx/&lt;network&gt;/wallets/</div><div class="small" style="margin-top:8px">Safety backups</div><div class="mono">~/.qrx/backups/</div><div class="small" style="margin-top:8px">Data directory</div><div id="walletDataDir" class="mono">—</div><div class="small" style="margin-top:8px">Control socket</div><div id="walletControlSocket" class="mono">—</div></div></div><div class="feature-card"><h4>Wallet inspection</h4><pre id="walletInspectBox">Press Inspect wallet to check format, addresses, hybrid keys and passphrase protection. This is read-only.</pre></div><div class="feature-card"><h4>Available Core wallets</h4><div id="walletManagerList" class="wallet-list"><div class="muted">Open this view or press Refresh wallets.</div></div></div><div class="split"><div class="feature-card"><h4>Create additional wallet</h4><div class="field"><label>Wallet name</label><input id="additionalWalletName" placeholder="trading"></div><div class="field"><label>Passphrase (optional only if Core supports unencrypted creation)</label><input id="additionalWalletPassphrase" type="password" placeholder="wallet passphrase"></div><div class="actions"><button class="btn primary" onclick="createAdditionalWallet()">Create wallet</button></div><div class="small muted">Existing wallet names are never overwritten.</div></div><div class="feature-card"><h4>Import existing wallet folder</h4><div class="field"><label>New wallet name</label><input id="managedImportName" placeholder="imported2"></div><div class="actions"><button class="btn" onclick="importManagedWalletFolder()">Choose wallet folder…</button></div><div class="small muted">Copy-only import. Existing local Core wallets should normally be used in place instead.</div></div></div><div class="feature-card"><h4>Backup & Restore · Full Recovery Center</h4><div class="notice"><strong>0.0.6 wallets:</strong> use the existing wallet in place only after the automatic pre-0.0.7 safety backup. Recovery restore requires the matching <span class="mono">recovery.qrxseed</span> file <em>and</em> the recovery phrase printed when the wallet was created. A phrase alone is intentionally insufficient in the current Core format.</div><div class="split" style="margin-top:12px"><div class="field"><label>New wallet name</label><input id="recoveryWalletName" placeholder="recovered-006"></div><div class="field"><label>New wallet passphrase</label><input id="recoveryNewPassphrase" type="password" placeholder="new protection for restored private keys"></div></div><div class="field"><label>Recovery phrase / key shown by qrxd/qrx</label><textarea id="recoveryPhraseInput" rows="3" placeholder="Paste the recovery phrase exactly as originally shown"></textarea></div><div class="actions"><button class="btn primary" onclick="restoreFromRecoveryCenter()">Choose .qrxseed & restore as new wallet…</button><button class="btn" onclick="importManagedWalletFolder()">Import wallet directory instead…</button><button class="btn" onclick="exportCurrentWalletBackup()">Export current wallet directory…</button></div><pre id="recoveryCenterResult">No recovery action performed.</pre><div class="small muted">Restore is create-only: an existing wallet directory is never overwritten. Keep the original 0.0.6 wallet and its safety backup until the restored wallet has been verified.</div></div><div class="feature-card"><h4>Security · Set / Change wallet passphrase</h4><div class="notice">Before any key protection change, QRX creates and verifies a full copy-only wallet backup. Existing private keys are never modified until the backup and new encrypted key files have both been verified.</div><div id="securityPassphraseState" class="pill" style="margin-top:12px">Inspect wallet first.</div><div class="split" style="margin-top:12px"><div class="field"><label>Current passphrase</label><input id="currentWalletPassphrase" type="password" placeholder="leave empty for legacy empty-passphrase wallet"><div class="small muted">For an empty-passphrase legacy wallet, leave this field empty.</div></div><div class="field"><label>New passphrase</label><input id="newWalletPassphrase" type="password" placeholder="minimum 8 characters"></div></div><div class="field"><label>Confirm new passphrase</label><input id="confirmWalletPassphrase" type="password" placeholder="repeat new passphrase" onkeydown="if(event.key==='Enter'){event.preventDefault();changeWalletPassphrase();}"></div><div class="actions"><button id="changeWalletPassphraseBtn" class="btn primary" onclick="changeWalletPassphrase()">🔐 Set / Change passphrase</button></div><div class="small muted">The new passphrase is used for both Ed25519 and ML-DSA65 private keys. It is not written to configuration, localStorage, logs or wallet metadata.</div><pre id="securityPassphraseResult">No security change performed.</pre></div><div class="feature-card"><h4>Import QRX hybrid key set</h4><div class="notice">For advanced recovery/import. Select a folder containing <span class="mono">address.txt</span>, Ed25519 private/public PEM and ML-DSA65 private/public PEM. The key set is imported only into a <strong>new</strong> wallet name. Existing keys are never merged or overwritten.</div><div class="field" style="margin-top:12px"><label>New wallet name</label><input id="keySetWalletName" placeholder="imported-keys"></div><div class="actions"><button class="btn primary" onclick="importHybridKeySet()">Choose key-set folder…</button></div><pre id="keyImportBox">No key set imported.</pre></div></div>
+    <div id="view-addressbook" class="view hidden"><h3>Address Book</h3><div class="notice"><strong>Local contacts for QUB and BTC.</strong> Contacts contain names, public addresses, notes and tags only — never private keys. QUB and BTC entries are clearly labelled and cannot silently switch chain or address after being pinned.</div><div class="split" style="margin-top:14px"><div class="feature-card"><h4>Add contact</h4><div class="split"><div class="field"><label>Chain</label><select id="contactChain"><option value="QUB">QUB · QUBITCOIN</option><option value="BTC">BTC · Bitcoin</option></select></div><div class="field"><label>Name</label><input id="contactLabel" placeholder="Alice"></div></div><div class="field"><label>Address</label><input id="contactAddress" placeholder="qrx1... or bc1..."></div><div class="field"><label>Tags</label><input id="contactTags" placeholder="personal, exchange, validator"></div><div class="field"><label>Note</label><textarea id="contactNote" rows="3" placeholder="optional"></textarea></div><div class="actions"><button class="btn primary" onclick="saveAddressBookContact()">Save contact</button></div></div><div class="feature-card"><h4>Search & filter</h4><div class="field"><label>Search</label><input id="addressBookSearch" placeholder="name, address, tag" oninput="renderAddressBook()"></div><div class="tabs"><button class="btn primary" data-book-filter="ALL" onclick="setAddressBookFilter('ALL')">All</button><button class="btn" data-book-filter="QUB" onclick="setAddressBookFilter('QUB')">QUB</button><button class="btn" data-book-filter="BTC" onclick="setAddressBookFilter('BTC')">BTC</button></div><div class="actions"><button class="btn" onclick="exportAddressBook()">Export JSON</button><button class="btn" onclick="toggleAddressBookImport()">Import JSON</button></div><div id="addressBookImportPanel" class="hidden stack"><textarea id="addressBookImportJson" rows="7" placeholder="Paste exported QRX address-book JSON"></textarea><button class="btn primary" onclick="importAddressBook()">Import without overwriting</button></div></div></div><div class="feature-card"><h4>Contacts</h4><div id="addressBookList" class="wallet-list"><div class="muted">Loading contacts…</div></div></div></div>
     
 
 <script>
 const invoke = window.__TAURI__?.tauri?.invoke || (async (cmd,args)=>{ console.warn("Tauri invoke unavailable",cmd,args); return {}; });
-const appState = { network:"alpha", wallet:"node1", introIndex:0, validatorEnabled:false, arbitrageOrder:null, krakenBook:null, lastArbitrage:null };
+const appState = { network:"alpha", wallet:"node1", introIndex:0, validatorEnabled:false, arbitrageOrder:null, krakenBook:null, lastArbitrage:null, sessionPassphrase:"", walletKeyState:"unknown", walletUnlocked:false, addressBook:[], addressBookFilter:"ALL", sendChain:"QUB", receiveChain:"QUB", daemonMismatch:null, sendQubBalance:null, sendQubAddresses:[], sendQubPrimary:"", globalQubBalance:null, globalQubStaked:null, globalQubBalanceStatus:"loading" };
+
+function syncActiveWalletUi(address=null){
+  setText("currentWalletName",appState.wallet||"—");
+  setText("walletManagerCurrent",appState.wallet||"—");
+  if(address){
+    setText("currentAddressShort",address);
+    setText("walletManagerAddress",address);
+  }
+}
+function setActiveWalletName(name){
+  appState.sessionPassphrase=""; appState.walletUnlocked=false; appState.wallet=name; rememberWallet(name);
+  appState.globalQubBalance=null; appState.globalQubStaked=null; appState.globalQubBalanceStatus="loading"; appState.sendQubBalance=null;
+  syncActiveWalletUi(); renderGlobalQubBalance();
+}
 
 function $(id){ return document.getElementById(id); }
 function val(id){ return ($(id)?.value || "").trim(); }
 function setText(id, text){ const e=$(id); if(e) e.textContent = text; }
 function asJson(v){ try { return JSON.stringify(v,null,2); } catch { return String(v); } }
-function passphrase(){ return val("sessionPassphrase") || val("welcomePassphrase") || ""; }
+function passphrase(){ return appState.sessionPassphrase || ""; }
+function invokeWithTimeout(cmd,args,ms=7000){
+  return Promise.race([
+    invoke(cmd,args),
+    new Promise((_,reject)=>setTimeout(()=>reject(new Error(`${cmd} timed out after ${Math.round(ms/1000)}s`)),ms))
+  ]);
+}
+function renderWalletLockState(message=null,bad=false){
+  const encrypted=appState.walletKeyState==="passphrase-required-to-use-private-keys";
+  const emptyEncrypted=appState.walletKeyState==="encrypted-container-empty-passphrase-no-user-password";
+  const unencrypted=appState.walletKeyState==="no-passphrase-required-for-private-keys";
+  const lock=$("walletLockState"), controls=$("walletUnlockControls"), lockBtn=$("lockWalletBtn");
+  if(emptyEncrypted && appState.walletUnlocked){ if(lock) lock.textContent="🔓 Ready · legacy wallet · no password set"; controls?.classList.add("hidden"); lockBtn?.classList.remove("hidden"); return; }
+  if(appState.walletUnlocked){ if(lock) lock.textContent="🔓 Unlocked for this session"; controls?.classList.add("hidden"); lockBtn?.classList.remove("hidden"); return; }
+  if(emptyEncrypted){ if(lock) lock.textContent="⏳ Checking legacy wallet protection…"; controls?.classList.add("hidden"); lockBtn?.classList.add("hidden"); return; }
+  if(unencrypted){ if(lock) lock.textContent="🔓 Ready · no password required"; controls?.classList.add("hidden"); lockBtn?.classList.add("hidden"); return; }
+  if(lock) lock.textContent=message || (bad?"🔒 Unlock failed":"🔒 Locked · encrypted wallet");
+  controls?.classList.remove("hidden"); lockBtn?.classList.add("hidden");
+}
+function syncPassphrase(){
+  if(appState.walletUnlocked){ appState.sessionPassphrase=""; appState.walletUnlocked=false; }
+  if(appState.walletKeyState==="passphrase-required-to-use-private-keys") renderWalletLockState();
+}
+async function unlockWalletSession(){
+  if(appState.walletKeyState==="no-passphrase-required-for-private-keys"){ renderWalletLockState(); return; }
+  // Empty is a valid explicit candidate for 0.0.6-era encrypted PKCS#8 wallets.
+  // Never reject it in JavaScript; Rust/Core performs the actual key check.
+  const candidate=val("sessionPassphrase");
+  const btn=$("unlockWalletBtn"); if(btn){btn.disabled=true;btn.textContent="Checking…";}
+  try{
+    const dh=await invokeWithTimeout("daemon_health",{network:appState.network,wallet:appState.wallet,passphrase:null},4000).catch(()=>null);
+    if(dh?.running && (dh.wallet_mismatch || dh.data_root_mismatch)){
+      const actual=dh.actual_wallet||"unknown";
+      const path=dh.actual_wallet_dir||"unknown";
+      throw new Error(`Wallet/daemon mismatch: GUI selected '${appState.wallet}', but the running QRX node uses '${actual}' at ${path}. Stop that node and select/import the matching wallet before unlocking.`);
+    }
+    await invokeWithTimeout("verify_wallet_passphrase",{network:appState.network,wallet:appState.wallet,passphrase:candidate},8000);
+    appState.sessionPassphrase=candidate; appState.walletUnlocked=true;
+    if(candidate === "") appState.walletKeyState="encrypted-container-empty-passphrase-no-user-password";
+    if($("sessionPassphrase")) $("sessionPassphrase").value="";
+    renderWalletLockState();
+    showBanner("Wallet unlocked for this session. The passphrase is held in memory only.");
+    refreshAll(false);
+  }catch(e){
+    appState.sessionPassphrase=""; appState.walletUnlocked=false;
+    const detail=String(e||"");
+    const mismatch=/wallet\/daemon mismatch/i.test(detail);
+    renderWalletLockState(mismatch?"⚠ Wallet/node mismatch":"🔒 Unlock failed · incorrect passphrase",true);
+    showBanner(detail,true);
+  }finally{ if(btn){btn.disabled=false;btn.textContent="🔓 Unlock";} }
+}
+function lockWalletSession(){
+  const network=appState.network, wallet=appState.wallet;
+  appState.sessionPassphrase=""; appState.walletUnlocked=false;
+  invoke("lock_wallet_session",{network,wallet}).catch(()=>{});
+  if($("sessionPassphrase")) $("sessionPassphrase").value="";
+  renderWalletLockState();
+  showBanner("Wallet locked. The in-memory session passphrase was discarded.");
+}
 
-function syncPassphrase(){}
 function showBanner(msg, bad=false){ const b=$("banner"); if(!b) return; b.className = bad ? "banner notice" : "banner notice"; b.textContent = msg; }
+function showWelcomeStatus(msg, bad=false){
+  const box=$("existingCoreWalletStatus");
+  if(!box) return;
+  box.textContent=msg||"";
+  box.style.display=msg?"block":"none";
+  box.style.marginTop="10px";
+  box.style.padding="10px 12px";
+  box.style.borderRadius="12px";
+  box.style.background=bad?"rgba(255,143,155,.12)":"rgba(117,239,183,.10)";
+  box.style.border=bad?"1px solid rgba(255,143,155,.28)":"1px solid rgba(117,239,183,.24)";
+  box.style.color=bad?"#ffeaea":"#dffef0";
+}
+function rememberWallet(name){ try{ localStorage.setItem("qrx_last_wallet", name); }catch{} }
 function showView(view){
   document.querySelectorAll(".view").forEach(v=>v.classList.add("hidden"));
   const target=$("view-"+view); if(target) target.classList.remove("hidden");
   document.querySelectorAll(".menu button").forEach(b=>b.classList.toggle("active", b.dataset.view===view));
   if(view==="validator") loadValidatorMode();
   if(view==="agents"){ refreshKrakenGateway(); refreshAgents(); }
+  if(view==="wallets") refreshWalletManager();
+  if(view==="addressbook") loadAddressBook();
+  if(view==="send") { loadAddressBook(); setSendChain(appState.sendChain||"QUB"); }
+  if(view==="receive") { loadAddressBook(); setReceiveChain(appState.receiveChain||"QUB"); }
+  if(view==="transactions") loadUnifiedTransactions(txChainFilter||"ALL");
 }
 document.querySelectorAll(".menu button[data-view]").forEach(btn=>btn.addEventListener("click",()=>showView(btn.dataset.view)));
 
 function bootApp(){
   $("welcome")?.classList.add("hidden");
   document.querySelector(".shell")?.classList.remove("hidden");
+  syncActiveWalletUi();
   loadValidatorMode();
   refreshAll(false);
+  loadReceiveAddresses();
+  loadAddressBook();
+  inspectCurrentWallet().catch(()=>{});
 }
 function maybeShowIntro(){
   if(localStorage.getItem("qrx_intro_accepted_v1")==="1") return;
@@ -825,22 +1054,80 @@ async function delegateNow(){
   try{ const r=await invoke("delegate",{network:appState.network,wallet:appState.wallet,validator:val("delegateValidator"),amount:val("delegateAmount"),passphrase:passphrase()}); setText("stakingInfoBox",asJson(r)); }
   catch(e){ setText("stakingInfoBox",String(e)); }
 }
-async function refreshAll(noisy=false){
-  try{
-    const [dh, tok, st, vals] = await Promise.allSettled([
-      invoke("daemon_health",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()}),
-      invoke("get_tokenomics",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()}),
-      invoke("get_staking_info",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()}),
-      invoke("get_validators",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()})
-    ]);
-    if(dh.status==="fulfilled"){ setText("daemonHealthBox",asJson(dh.value)); if(dh.value.running){ setText("daemonText","Daemon online"); $("daemonDot")?.classList.add("online"); } }
-    if(tok.status==="fulfilled") setText("tokenomicsBox",asJson(tok.value));
-    if(st.status==="fulfilled") setText("stakingInfoBox",asJson(st.value));
-    if(vals.status==="fulfilled") setText("metricValidators", Array.isArray(vals.value)?vals.value.length:"—");
-    await loadValidatorMode();
-    if(noisy) showBanner("Refreshed.");
-  }catch(e){ if(noisy) showBanner(String(e), true); }
+function firstFiniteNumber(obj, keys){
+  for(const k of keys){const n=Number(obj?.[k]); if(Number.isFinite(n)) return n;}
+  return null;
 }
+function renderGlobalQubBalance(){
+  const card=$("globalQubBalanceCard");
+  const b=appState.globalQubBalance;
+  const st=appState.globalQubStaked;
+  if(Number.isFinite(b)){
+    setText("globalQubBalance",formatQubAmount(b));
+    const parts=[];
+    if(Number.isFinite(st)) parts.push(`${formatQubAmount(st)} staked`);
+    parts.push(appState.daemonMismatch?"wallet/node mismatch":"live wallet balance");
+    setText("globalQubBalanceSub",parts.join(" · "));
+    card?.classList.remove("offline");
+    return;
+  }
+  setText("globalQubBalance","— QUB");
+  const msg=appState.daemonMismatch
+    ? "Unavailable · wallet/node mismatch"
+    : appState.globalQubBalanceStatus==="offline"
+      ? "Unavailable · node offline"
+      : "Balance unavailable · refresh wallet";
+  setText("globalQubBalanceSub",msg);
+  card?.classList.add("offline");
+}
+async function refreshAll(noisy=false){
+  const args={network:appState.network,wallet:appState.wallet,passphrase:passphrase()||null};
+  setText("walletInfoBox","Loading public wallet data…");
+  setText("nodeInfoBox","Loading…");
+  const requests=[
+    ["dh","daemon_health",args,5000],
+    ["tok","get_tokenomics",args,7000],
+    ["st","get_staking_info",args,7000],
+    ["vals","get_validators",args,7000],
+    ["wi","get_wallet_info",args,7000],
+    ["ni","get_node_info",args,7000]
+  ];
+  const settled=await Promise.all(requests.map(async ([key,cmd,a,ms])=>{try{return [key,true,await invokeWithTimeout(cmd,a,ms)]}catch(e){return [key,false,e]}}));
+  const map=Object.fromEntries(settled.map(([k,ok,v])=>[k,{ok,v}]));
+  if(map.dh.ok){ const v=map.dh.v; appState.daemonMismatch=(v.running&&(v.wallet_mismatch||v.data_root_mismatch))?v:null; setText("daemonHealthBox",asJson(v)); setText("dataDirLabel",v.data_dir||"—"); setText("controlSocketLabel",v.control_socket||"—"); setText("walletDataDir",v.data_dir||"—"); setText("walletControlSocket",v.control_socket||"—"); if(appState.daemonMismatch){setText("daemonText",`Daemon mismatch · ${v.actual_wallet||"unknown"}`);$("daemonDot")?.classList.remove("online");showBanner(`WALLET/DAEMON MISMATCH: GUI selected '${appState.wallet}', but the running node uses '${v.actual_wallet||"unknown"}' at ${v.actual_wallet_dir||"unknown"}. Stop the old node, then select/import the matching wallet.`,true);}else if(v.running){setText("daemonText","Daemon online");$("daemonDot")?.classList.add("online");}else{setText("daemonText","Daemon offline");$("daemonDot")?.classList.remove("online");} } else { appState.daemonMismatch=null; setText("daemonHealthBox","Unavailable: "+String(map.dh.v)); }
+  setText("tokenomicsBox", map.tok.ok?asJson(map.tok.v):"Unavailable: "+String(map.tok.v));
+  setText("stakingInfoBox", map.st.ok?asJson(map.st.v):"Unavailable: "+String(map.st.v));
+  if(map.st.ok){
+    const st=firstFiniteNumber(map.st.v,["staked","staked_balance","stake","my_stake","delegated","delegated_balance"]);
+    appState.globalQubStaked=st;
+    setText("metricStaked",Number.isFinite(st)?formatQubAmount(st):"—");
+  } else { appState.globalQubStaked=null; setText("metricStaked","—"); }
+  if(map.vals.ok) setText("metricValidators",Array.isArray(map.vals.v)?map.vals.v.length:"—");
+  if(map.wi.ok && !appState.daemonMismatch){
+    setText("walletInfoBox",asJson(map.wi.v));
+    const b=firstFiniteNumber(map.wi.v,["balance","available_balance","confirmed_balance"]);
+    if(Number.isFinite(b)){
+      appState.globalQubBalance=b; appState.globalQubBalanceStatus="online"; appState.sendQubBalance=b;
+      setText("sendQubBalance",formatQubAmount(b)); setText("metricBalance",formatQubAmount(b));
+    } else {
+      appState.globalQubBalance=null; appState.globalQubBalanceStatus="unavailable"; appState.sendQubBalance=null;
+      setText("sendQubBalance","Unavailable"); setText("metricBalance","—");
+    }
+    updateQubSendSafety();
+  }
+  else {
+    appState.globalQubBalance=null; appState.sendQubBalance=null;
+    appState.globalQubBalanceStatus=appState.daemonMismatch?"mismatch":(map.dh.ok&&!map.dh.v?.running?"offline":"unavailable");
+    setText("sendQubBalance","Unavailable"); setText("metricBalance","—"); updateQubSendSafety();
+    if(appState.daemonMismatch) setText("walletInfoBox",`⚠ Wallet/node mismatch. GUI selected '${appState.wallet}', but the running node uses '${appState.daemonMismatch.actual_wallet||"unknown"}'. Public wallet data from that daemon is intentionally hidden to avoid showing the wrong balance/address.`);
+    else setText("walletInfoBox","Wallet info unavailable: "+String(map.wi.v));
+  }
+  renderGlobalQubBalance();
+  setText("nodeInfoBox",map.ni.ok?asJson(map.ni.v):"Node info unavailable: "+String(map.ni.v));
+  try{await invokeWithTimeout("get_validator_mode",{network:appState.network,wallet:appState.wallet},5000).then(s=>{appState.validatorEnabled=!!s.validator_enabled;const t=$("validatorModeToggle");if(t)t.checked=appState.validatorEnabled;});}catch{}
+  if(noisy) showBanner("Refresh completed. Unavailable RPCs are shown explicitly instead of loading forever.");
+}
+
 
 
 async function refreshKrakenGateway(){
@@ -911,12 +1198,372 @@ async function stopKrakenGateway(){
 }
 
 /* Existing action fallbacks */
+
+async function detectExistingCoreWallets(){
+  const box=$("existingCoreWalletBox");
+  if(!box) return;
+  try{
+    const wallets=await invoke("list_wallets",{network:appState.network});
+    if(!Array.isArray(wallets)||wallets.length===0){ box.classList.add("hidden"); return; }
+    box.innerHTML=`<strong>Existing QRX Core wallet${wallets.length>1?"s":""} detected.</strong><br><span class="small">The GUI and Core share the same wallet store. Selecting one uses the existing wallet in place; nothing is copied or overwritten. Legacy wallets are backed up before first use.</span><div class="actions" id="existingCoreWalletActions" style="margin-top:10px"></div><div id="existingCoreWalletStatus" style="display:none"></div>`;
+    const actions=box.querySelector("#existingCoreWalletActions");
+    const saved=(()=>{try{return localStorage.getItem("qrx_last_wallet")||"";}catch{return "";}})();
+
+    const openWallet=async(w,b,automatic=false)=>{
+      const original=b?.textContent||"";
+      try{
+        if(b){ b.disabled=true; b.textContent=w.legacy_or_unknown&&!w.safety_backup_exists?`Backing up ${w.name}…`:`Opening ${w.name}…`; }
+        showWelcomeStatus(w.legacy_or_unknown
+          ? `Preparing ${w.name}: the original wallet remains untouched while a pre-0.0.7 safety copy is created/verified…`
+          : `Opening existing wallet ${w.name}…`, false);
+        const prep=await invoke("prepare_existing_wallet",{network:appState.network,wallet:w.name});
+        setActiveWalletName(w.name);
+        showWelcomeStatus("");
+        bootApp();
+        if(prep?.backup_created){
+          showBanner(`Safety backup created before opening legacy wallet: ${prep.backup_path}. Original wallet was not modified.`);
+        }else if(prep?.legacy_or_unknown){
+          showBanner(`Using legacy wallet ${w.name}. A verified pre-0.0.7 safety backup exists; nothing was overwritten.`);
+        }else{
+          showBanner(`Using existing Core wallet ${w.name}. No wallet files were copied or overwritten.`);
+        }
+      }catch(e){
+        const msg=`${automatic?"Automatic wallet open failed":"Wallet was NOT opened"}: ${String(e)}`;
+        showWelcomeStatus(msg,true);
+        if(b){ b.disabled=false; b.textContent=original; }
+      }
+    };
+
+    wallets.forEach(w=>{
+      const b=document.createElement("button");
+      b.className="btn primary";
+      b.textContent=`Use ${w.name}${w.address?" · "+String(w.address).slice(0,16)+"…":""}`;
+      if(w.legacy_or_unknown){
+        const versionLabel = w.wallet_version == null ? "unknown/legacy format" : `wallet v${w.wallet_version}`;
+        b.textContent=`Use ${w.name} · ${versionLabel}${w.safety_backup_exists?" · backup exists":" · safety backup first"}`;
+      }
+      b.onclick=()=>openWallet(w,b,false);
+      actions.appendChild(b);
+    });
+    box.classList.remove("hidden");
+
+    // After a wallet has been explicitly chosen once, reopen it on future starts.
+    // Legacy wallets are only auto-opened after a verified safety backup exists.
+    const remembered=wallets.find(w=>w.name===saved && (!w.legacy_or_unknown || w.safety_backup_exists));
+    if(remembered){
+      const btn=[...actions.querySelectorAll("button")].find(x=>x.textContent?.startsWith(`Use ${remembered.name}`));
+      window.setTimeout(()=>openWallet(remembered,btn,true),80);
+    }
+  }catch(e){
+    console.error("Core wallet discovery failed",e);
+    box.classList.remove("hidden");
+    box.innerHTML='<strong>Could not scan existing QRX wallets.</strong><div id="existingCoreWalletStatus" style="margin-top:10px"></div>';
+    showWelcomeStatus(String(e),true);
+  }
+}
+
 function welcomeCreateWallet(){ bootApp(); }
 function welcomeRestoreWallet(){ bootApp(); }
-function welcomeImportWallet(){ bootApp(); }
-function loadNewAddress(){ invoke("get_new_address",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()}).then(r=>setText("receiveAddress", r.address || asJson(r))).catch(e=>setText("receiveAddress",String(e))); }
-function copyReceiveAddress(){ navigator.clipboard?.writeText($("receiveAddress")?.textContent||""); }
-function sendTx(){ invoke("send_to_address",{network:appState.network,wallet:appState.wallet,to:val("sendTo"),amount:val("sendAmount"),memo:val("sendMemo"),passphrase:passphrase()}).then(r=>showBanner("Transaction sent: "+asJson(r))).catch(e=>showBanner(String(e),true)); }
+async function welcomeImportWallet(){
+  const wallet = val("welcomeImportName") || "imported1";
+  const dialogOpen = window.__TAURI__?.dialog?.open;
+  if(typeof dialogOpen !== "function"){
+    showBanner("Native folder picker is unavailable in this build.", true);
+    return;
+  }
+
+  try{
+    // Tauri's dialog API is asynchronous. Do not enter the dashboard or start
+    // daemon/status refresh work until the user has actually selected a folder.
+    const source = await dialogOpen({
+      directory: true,
+      multiple: false,
+      title: "Select QUBITCOIN wallet folder"
+    });
+    if(!source) return; // user cancelled
+
+    showBanner("Importing wallet directory…");
+    const result = await invoke("import_wallet_directory", {
+      network: appState.network,
+      wallet,
+      sourceDir: source
+    });
+    setActiveWalletName(result?.wallet?.wallet || wallet);
+    bootApp();
+    showBanner(`Wallet ${appState.wallet} imported (${result?.imported_files?.length ?? 0} files).`);
+  }catch(e){
+    showBanner(`Wallet import failed: ${String(e)}`, true);
+  }
+}
+async function renderReceiveAddress(address){
+  const clean=String(address||"").trim();
+  if(!clean) return;
+  setText("receiveAddress",clean);
+  const svg=await invoke("generate_qr_svg",{payload:clean});
+  const box=$("receiveQr"); if(box) box.innerHTML=svg;
+}
+function extractAddressArray(r){
+  if(Array.isArray(r)) return r.map(String).filter(Boolean);
+  if(r&&Array.isArray(r.addresses)) return r.addresses.map(String).filter(Boolean);
+  if(r&&r.result&&Array.isArray(r.result.addresses)) return r.result.addresses.map(String).filter(Boolean);
+  return [];
+}
+async function loadReceiveAddresses(preferred=null){
+  const list=$("receiveAddressList");
+  if(list) list.innerHTML='<div class="muted">Loading wallet addresses…</div>';
+  try{
+    const info=await invoke("get_wallet_address_set",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()});
+    const primary=String(info?.primary_address||"").trim();
+    const addresses=Array.isArray(info?.addresses)?info.addresses.map(String).filter(Boolean):[];
+    const additional=Array.isArray(info?.additional_addresses)?info.additional_addresses.map(String).filter(Boolean):[];
+    if(primary) syncActiveWalletUi(primary);
+
+    const receivePanel=$("receiveQubPanel");
+    let warning=$("walletAddressMismatchWarning");
+    if(info?.address_mismatch){
+      if(!warning){ warning=document.createElement("div"); warning.id="walletAddressMismatchWarning"; warning.className="notice"; receivePanel?.prepend(warning); }
+      warning.innerHTML='<strong>⚠ WALLET ADDRESS MISMATCH</strong><br><span class="small">address.txt and wallet.json disagree. address.txt is being treated as canonical. Do not sign transactions until the wallet has been inspected.</span>';
+      warning.classList.remove("hidden");
+    }else if(warning){ warning.classList.add("hidden"); }
+
+    if(!primary && addresses.length===0){
+      setText("receiveAddress","No canonical address.txt found. Inspect this wallet before generating another address.");
+      if(list) list.innerHTML='<div class="notice"><strong>No canonical wallet address.</strong> This wallet has no readable address.txt. Inspect/recover it before use.</div>';
+      return;
+    }
+    const selected=(preferred&&addresses.includes(preferred))?preferred:(primary||addresses[0]);
+    await renderReceiveAddress(selected);
+    if(list){
+      list.innerHTML="";
+      if(primary){
+        const row=document.createElement("div"); row.className="wallet-entry"+(primary===selected?" active":"");
+        const meta=document.createElement("div"); meta.className="meta";
+        meta.innerHTML='<strong>Primary wallet address</strong><div class="small muted">Canonical identity from address.txt</div><div class="addr mono small">'+primary+'</div>';
+        const actions=document.createElement("div"); actions.className="actions";
+        const show=document.createElement("button"); show.className="btn"; show.textContent="Show QR"; show.onclick=()=>{renderReceiveAddress(primary);loadReceiveAddresses(primary);};
+        const copy=document.createElement("button"); copy.className="btn"; copy.textContent="⧉"; copy.title="Copy primary wallet address"; copy.onclick=()=>copyText(primary,"Primary wallet address copied.");
+        actions.append(show,copy); row.append(meta,actions); list.appendChild(row);
+      }
+      additional.forEach((addr,i)=>{
+        const row=document.createElement("div"); row.className="wallet-entry"+(addr===selected?" active":"");
+        const meta=document.createElement("div"); meta.className="meta";
+        meta.innerHTML='<strong>Additional receive address '+(i+1)+'</strong><div class="small muted">Stored receive address · not the wallet identity</div><div class="addr mono small">'+String(addr)+'</div>';
+        const actions=document.createElement("div"); actions.className="actions";
+        const show=document.createElement("button"); show.className="btn"; show.textContent="Show QR"; show.onclick=()=>{renderReceiveAddress(addr);loadReceiveAddresses(addr);};
+        const copy=document.createElement("button"); copy.className="btn"; copy.textContent="⧉"; copy.title="Copy additional receive address"; copy.onclick=()=>copyText(addr,"Receive address copied.");
+        actions.append(show,copy); row.append(meta,actions); list.appendChild(row);
+      });
+      if(additional.length===0 && primary){
+        const n=document.createElement("div"); n.className="small muted"; n.textContent="No additional QUB receive addresses have been generated for this wallet."; list.appendChild(n);
+      }
+    }
+  }catch(e){
+    setText("receiveAddress",String(e));
+    if(list) list.innerHTML='<div class="notice">Could not load wallet addresses: '+String(e).replace(/[<>]/g,"")+'</div>';
+  }
+}
+async function loadNewAddress(){
+  try{
+    const r=await invoke("get_new_address",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()});
+    const address=(r&&typeof r==="object"&&r.address)?String(r.address):String(r||"");
+    if(!address) throw new Error("No address returned.");
+    await loadReceiveAddresses(address);
+    showBanner("New receive address generated. Existing addresses were kept.");
+  }catch(e){
+    showBanner("Could not generate receive address: "+String(e),true);
+  }
+}
+async function copyText(text,ok="Copied."){
+  const clean=String(text||"").trim(); if(!clean) return;
+  try{await navigator.clipboard.writeText(clean);showBanner(ok);}catch(e){showBanner("Clipboard copy failed: "+String(e),true);}
+}
+function copyReceiveAddress(){ copyText($("receiveAddress")?.textContent||"","Receive address copied."); }
+function setSwapPanel(name){
+  ["trade","safety","status"].forEach(n=>$("swapPanel"+n[0].toUpperCase()+n.slice(1))?.classList.toggle("hidden",n!==name));
+  document.querySelectorAll("[data-swap-panel]").forEach(b=>b.classList.toggle("active",b.dataset.swapPanel===name));
+}
+async function inspectCurrentWallet(){
+  try{
+    const r=await invoke("inspect_wallet",{network:appState.network,wallet:appState.wallet});
+    setText("walletInspectBox",asJson(r));
+    const state=r.passphrase_state||"unknown";
+    appState.walletKeyState=state;
+    // Inspection is read-only and must never revoke an already verified GUI session.
+    // In particular, legacy encrypted PKCS#8 wallets with an empty passphrase used to
+    // flash "Unlocked" and immediately become locked again here.
+    if(state==="no-passphrase-required-for-private-keys"){
+      appState.sessionPassphrase="";
+      appState.walletUnlocked=true;
+    }
+    const human=state==="encrypted-container-empty-passphrase-no-user-password"?"Legacy encrypted PKCS#8 keys · no user password set · automatically ready after local verification":state==="no-passphrase-required-for-private-keys"?"Private keys are unencrypted · no wallet password required":state==="passphrase-required-to-use-private-keys"?"Private keys encrypted · password required only for signing":state==="no-private-keys-detected"?"No private keys detected · watch-only/incomplete":"Key protection mixed/unknown · inspect before signing";
+    setText("passphraseStateLabel",human); setText("walletPassphraseSummary",human); setText("securityPassphraseState",human); renderWalletLockState();
+    if(state==="encrypted-container-empty-passphrase-no-user-password" && !appState.walletUnlocked){
+      try{
+        await invoke("verify_wallet_passphrase",{network:appState.network,wallet:appState.wallet,passphrase:""});
+        appState.sessionPassphrase="";
+        appState.walletUnlocked=true;
+        renderWalletLockState();
+      }catch(e){
+        appState.walletUnlocked=false;
+        console.warn("Could not synchronize empty-passphrase wallet session",e);
+      }
+    }
+    if(r.address) syncActiveWalletUi(r.address);
+    if(r.address_mismatch){
+      showBanner("WALLET ADDRESS MISMATCH: address.txt differs from wallet.json. address.txt remains canonical. Inspect this wallet before signing.",true);
+    }
+    return r;
+  }catch(e){setText("walletInspectBox",String(e));setText("passphraseStateLabel","Could not inspect wallet key protection");throw e;}
+}
+async function changeWalletPassphrase(){
+  const current=$("currentWalletPassphrase")?.value ?? "";
+  const next=$("newWalletPassphrase")?.value ?? "";
+  const confirmNext=$("confirmWalletPassphrase")?.value ?? "";
+  if(next.length<8){showBanner("New wallet passphrase must be at least 8 characters.",true);return;}
+  if(next!==confirmNext){showBanner("New wallet passphrase confirmation does not match.",true);return;}
+  const btn=$("changeWalletPassphraseBtn"); if(btn){btn.disabled=true;btn.textContent="Creating backup & re-encrypting…";}
+  try{
+    const r=await invokeWithTimeout("change_wallet_passphrase",{network:appState.network,wallet:appState.wallet,currentPassphrase:current,newPassphrase:next},30000);
+    appState.sessionPassphrase=next; appState.walletUnlocked=true; appState.walletKeyState="passphrase-required-to-use-private-keys";
+    ["currentWalletPassphrase","newWalletPassphrase","confirmWalletPassphrase"].forEach(id=>{if($(id))$(id).value="";});
+    setText("securityPassphraseResult",`Passphrase changed safely. Backup: ${r.backup_path||"created"}`);
+    renderWalletLockState();
+    showBanner("Wallet passphrase changed. A verified pre-change backup was created first; the new passphrase is active for this session.");
+    await inspectCurrentWallet();
+  }catch(e){setText("securityPassphraseResult",String(e));showBanner("Passphrase change failed: "+String(e),true);}
+  finally{if(btn){btn.disabled=false;btn.textContent="🔐 Set / Change passphrase";}}
+}
+
+async function createAdditionalWallet(){
+  const wallet=val("additionalWalletName"), pp=val("additionalWalletPassphrase");
+  if(!wallet){showBanner("Enter a new wallet name.",true);return;}
+  if(!pp){showBanner("This Core build currently requires a passphrase when creating a new wallet. Existing unencrypted legacy wallets can still be inspected and used.",true);return;}
+  try{const r=await invoke("create_wallet",{network:appState.network,wallet,passphrase:pp});showBanner("Created wallet "+wallet+". Back up its recovery material before funding it.");await refreshWalletManager();setText("walletInspectBox",asJson(r));}catch(e){showBanner(String(e),true);}
+}
+async function importManagedWalletFolder(){
+  const wallet=val("managedImportName"); if(!wallet){showBanner("Enter a new wallet name.",true);return;}
+  const open=window.__TAURI__?.dialog?.open; if(typeof open!=="function"){showBanner("Native folder picker unavailable.",true);return;}
+  try{const source=await open({directory:true,multiple:false,title:"Select existing QRX wallet folder"});if(!source)return;const r=await invoke("import_wallet_directory",{network:appState.network,wallet,sourceDir:source});showBanner("Imported wallet "+wallet+" without overwriting existing data.");setText("walletInspectBox",asJson(r));await refreshWalletManager();}catch(e){showBanner(String(e),true);}
+}
+async function importHybridKeySet(){
+  const wallet=val("keySetWalletName"); if(!wallet){showBanner("Enter a new wallet name for the imported keys.",true);return;}
+  const open=window.__TAURI__?.dialog?.open; if(typeof open!=="function"){showBanner("Native folder picker unavailable.",true);return;}
+  try{const source=await open({directory:true,multiple:false,title:"Select QRX hybrid key-set folder"});if(!source)return;if(!confirm("Import this hybrid key set into NEW wallet '"+wallet+"'? Existing wallets and keys will not be modified."))return;const r=await invoke("import_key_set_directory",{network:appState.network,wallet,sourceDir:source});setText("keyImportBox",asJson(r));showBanner("Hybrid key set imported into new wallet "+wallet+". Verify the displayed address before use.");await refreshWalletManager();}catch(e){setText("keyImportBox",String(e));showBanner(String(e),true);}
+}
+async function refreshWalletManager(){
+  syncActiveWalletUi();
+  try{await inspectCurrentWallet();}catch{}
+  const list=$("walletManagerList"); if(!list) return;
+  list.innerHTML='<div class="muted">Scanning shared Core wallet store…</div>';
+  try{
+    const [walletsRaw,legacyRaw]=await Promise.all([invoke("list_wallets",{network:appState.network}),invoke("list_legacy_gui_wallets",{network:appState.network}).catch(()=>[])]);
+    const wallets=Array.isArray(walletsRaw)?walletsRaw:[];
+    const legacy=Array.isArray(legacyRaw)?legacyRaw:[];
+    list.innerHTML="";
+    if(wallets.length===0) list.innerHTML='<div class="notice">No wallets found in the shared Core store for this network.</div>';
+    wallets.forEach(w=>{
+      const row=document.createElement("div"); row.className="wallet-entry"+(w.name===appState.wallet?" active":"");
+      const version=w.wallet_version==null?"legacy / unknown":"v"+w.wallet_version;
+      const safety=w.legacy_or_unknown?(w.safety_backup_exists?"safety backup verified":"backup required before use"):"current format";
+      row.innerHTML='<div class="meta"><strong>'+String(w.name)+'</strong><div class="small muted">'+(w.address?'Primary wallet address · address.txt':'Canonical address not loaded')+'</div><div class="addr mono small">'+String(w.address||"address not loaded")+'</div><div class="small">'+version+' · '+safety+'</div></div><div class="actions"></div>';
+      const actions=row.querySelector(".actions");
+      if(w.address){const c=document.createElement("button");c.className="btn";c.textContent="⧉";c.title="Copy wallet address";c.setAttribute("aria-label","Copy wallet address");c.onclick=()=>copyText(w.address,"Wallet address copied.");actions.appendChild(c);}
+      if(w.name!==appState.wallet){const b=document.createElement("button");b.className="btn primary";b.textContent="Use wallet";b.onclick=async()=>{try{showBanner("Preparing "+w.name+" safely…");await invoke("prepare_existing_wallet",{network:appState.network,wallet:w.name});lockWalletSession();setActiveWalletName(w.name);await refreshWalletManager();await refreshAll(false);await loadReceiveAddresses();showBanner("Using existing wallet "+w.name+". No wallet data was overwritten.");}catch(e){showBanner("Wallet not opened: "+String(e),true);}};actions.appendChild(b);}
+      list.appendChild(row);
+    });
+    const migratable=legacy.filter(w=>!w.already_in_shared_store);
+    if(migratable.length){
+      const h=document.createElement("div");h.className="notice";h.innerHTML='<strong>Older GUI wallet store detected.</strong><br><span class="small">These wallets are still in the former GUI-only data directory. Import copies them into the shared <span class="mono">~/.qrx</span> store; the original remains untouched.</span>';list.appendChild(h);
+      migratable.forEach(w=>{const row=document.createElement("div");row.className="wallet-entry";row.innerHTML='<div class="meta"><strong>'+String(w.name)+'</strong><div class="small muted">Legacy GUI location</div><div class="addr mono small">'+String(w.address||"address not loaded")+'</div><div class="small mono">'+String(w.path)+'</div></div><div class="actions"></div>';const a=row.querySelector(".actions");const b=document.createElement("button");b.className="btn primary";b.textContent="Import safely";b.onclick=async()=>{try{if(!confirm(`Copy legacy wallet '${w.name}' into the shared ~/.qrx store? The source is not modified.`))return;const r=await invoke("import_legacy_gui_wallet",{network:appState.network,wallet:w.name,sourceDir:w.path});showBanner(`Legacy wallet ${w.name} copied safely into the shared store. Original kept at ${w.path}.`);setActiveWalletName(w.name);await refreshWalletManager();await inspectCurrentWallet();await refreshAll(false);}catch(e){showBanner("Legacy wallet import failed: "+String(e),true);}};a.appendChild(b);list.appendChild(row);});
+    }
+  }catch(e){list.innerHTML='<div class="notice">Wallet scan failed: '+String(e).replace(/[<>]/g,"")+'</div>';}
+}
+function parseQubAmount(raw){
+  const n=Number(String(raw??"").replace(",","."));
+  return Number.isFinite(n)?n:NaN;
+}
+function formatQubAmount(n){
+  if(!Number.isFinite(n)) return "—";
+  return `${n.toLocaleString(undefined,{maximumFractionDigits:8})} QUB`;
+}
+async function loadQubSendContext(){
+  setText("sendQubWallet",appState.wallet||"—");
+  try{
+    const [wi,aset]=await Promise.all([
+      invoke("get_wallet_info",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()||null}),
+      invoke("get_wallet_address_set",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()}).catch(()=>null)
+    ]);
+    const balance=Number(wi?.balance ?? wi?.available_balance ?? wi?.confirmed_balance);
+    appState.sendQubBalance=Number.isFinite(balance)?balance:null;
+    if(Number.isFinite(balance)){appState.globalQubBalance=balance;appState.globalQubBalanceStatus="online";renderGlobalQubBalance();}
+    const addrs=[];
+    const primary=String(aset?.primary_address||wi?.address||"").trim();
+    if(primary)addrs.push(primary);
+    if(Array.isArray(aset?.addresses)) addrs.push(...aset.addresses.map(String));
+    if(Array.isArray(aset?.additional_addresses)) addrs.push(...aset.additional_addresses.map(String));
+    appState.sendQubPrimary=primary;
+    appState.sendQubAddresses=[...new Set(addrs.map(a=>a.trim()).filter(Boolean))];
+    setText("sendQubBalance",appState.sendQubBalance==null?"Unavailable":formatQubAmount(appState.sendQubBalance));
+  }catch(e){
+    appState.sendQubBalance=null; appState.sendQubAddresses=[]; appState.sendQubPrimary="";
+    setText("sendQubBalance","Unavailable");
+  }
+  updateQubSendSafety();
+}
+function updateQubSendSafety(){
+  const to=val("sendTo");
+  const amount=parseQubAmount(val("sendAmount"));
+  const balance=appState.sendQubBalance;
+  const own=!!to && appState.sendQubAddresses.includes(to);
+  const amountValid=Number.isFinite(amount)&&amount>0;
+  const insufficient=amountValid&&Number.isFinite(balance)&&amount>balance;
+  const after=amountValid&&Number.isFinite(balance)?balance-amount:null;
+  setText("sendQubAfter",after==null?"—":formatQubAmount(Math.max(0,after)));
+  const recipientHint=$("sendRecipientHint");
+  if(recipientHint){
+    if(!to){recipientHint.textContent="Recipient has not been checked yet.";recipientHint.className="small muted";}
+    else if(own){recipientHint.textContent=to===appState.sendQubPrimary?"⚠ This is this wallet's primary address.":"⚠ This address belongs to this wallet.";recipientHint.className="small warn";}
+    else{recipientHint.textContent="Recipient is not one of the addresses currently indexed for this wallet.";recipientHint.className="small muted";}
+  }
+  const amountHint=$("sendAmountHint");
+  if(amountHint){
+    if(insufficient){amountHint.textContent=`Insufficient balance: ${formatQubAmount(balance)} available, ${formatQubAmount(amount)} requested.`;amountHint.className="small bad";}
+    else if(amountValid&&Number.isFinite(balance)){amountHint.textContent=`Available ${formatQubAmount(balance)} · remaining ${formatQubAmount(after)}`;amountHint.className="small muted";}
+    else{amountHint.textContent=Number.isFinite(balance)?`Available ${formatQubAmount(balance)}`:"Balance unavailable — refresh/start the active node before sending.";amountHint.className="small muted";}
+  }
+  const status=$("sendQubStatus");
+  if(status){
+    if(own) status.innerHTML='<strong>⚠ Sending to your own wallet.</strong><br><span class="small">The recipient is one of the active wallet\'s addresses. Continue only if this self-transfer is intentional.</span>';
+    else if(insufficient) status.innerHTML='<strong>✕ Insufficient QUB balance.</strong><br><span class="small">Reduce the amount before reviewing the transaction.</span>';
+    else if(amountValid&&to) status.innerHTML='<strong>Ready for review.</strong><br><span class="small">Balance and wallet-address checks passed. You will still get a final confirmation before broadcast.</span>';
+    else status.textContent='Enter a recipient and amount. The wallet will check balance and whether the recipient belongs to this wallet.';
+  }
+  const btn=$("sendQubButton"); if(btn) btn.disabled=!to||!amountValid||insufficient||appState.daemonMismatch;
+}
+function useMaxQubBalance(){
+  if(!Number.isFinite(appState.sendQubBalance)){showBanner("QUB balance is unavailable. Refresh the wallet first.",true);return;}
+  const input=$("sendAmount"); if(input) input.value=String(appState.sendQubBalance);
+  updateQubSendSafety();
+}
+async function sendTx(){
+  const to=val("sendTo"), amountRaw=val("sendAmount"), memo=val("sendMemo");
+  const amount=parseQubAmount(amountRaw);
+  if(!to||!Number.isFinite(amount)||amount<=0){showBanner("Valid QUB recipient and amount are required.",true);return;}
+  if(appState.daemonMismatch){showBanner("Cannot send while the selected wallet and running daemon do not match.",true);return;}
+  if(Number.isFinite(appState.sendQubBalance)&&amount>appState.sendQubBalance){showBanner(`Insufficient QUB balance: ${formatQubAmount(appState.sendQubBalance)} available.`,true);updateQubSendSafety();return;}
+  const own=appState.sendQubAddresses.includes(to);
+  if(own&&!confirm(`WARNING: SELF-TRANSFER\n\nThe recipient belongs to the currently active wallet${to===appState.sendQubPrimary?" (primary address)":""}.\n\nRecipient: ${to}\nAmount: ${amount} QUB\n\nContinue to transaction review?`))return;
+  const contact=findAddressBookByAddress("QUB",to);const who=contact?`${contact.label} · ${to}`:to;
+  const balanceLine=Number.isFinite(appState.sendQubBalance)?`\nAvailable before send: ${formatQubAmount(appState.sendQubBalance)}\nRemaining before fees: ${formatQubAmount(appState.sendQubBalance-amount)}`:"";
+  if(!confirm(`Review QUB transaction\n\nRecipient: ${who}\nAmount: ${amount} QUB${balanceLine}\nMemo: ${memo||"—"}${own?"\n\n⚠ Recipient belongs to this wallet.":""}\n\nBroadcast this transaction?`))return;
+  try{
+    const r=await invoke("send_to_address",{network:appState.network,wallet:appState.wallet,to,amount:String(amount),memo,passphrase:passphrase()});
+    showBanner("QUB transaction sent: "+asJson(r));
+    if($("saveQubRecipient")?.checked&&!contact){const name=val("saveQubRecipientName")||"QUB recipient";await saveContactDirect(name,"QUB",to,"Saved after successful QUB send","");}
+    await loadQubSendContext();
+    await refreshAll(false);
+  }catch(e){showBanner(String(e),true);}
+}
 
 function ensureAuraWelcome(){
   const box=$("auraMessages");
@@ -977,8 +1624,52 @@ function auraClearLocal(){
 
 
 /* --- BTC Light: real UI wiring --- */
+
+function setSendChain(chain){
+  appState.sendChain=chain;$("sendQubPanel")?.classList.toggle("hidden",chain!=="QUB");$("sendBtcPanel")?.classList.toggle("hidden",chain!=="BTC");if(chain==="QUB")loadQubSendContext();
+  document.querySelectorAll("[data-send-chain]").forEach(b=>{b.classList.toggle("primary",b.dataset.sendChain===chain);});populateSendContacts();
+}
+function setReceiveChain(chain){
+  appState.receiveChain=chain;$("receiveQubPanel")?.classList.toggle("hidden",chain!=="QUB");$("receiveBtcPanel")?.classList.toggle("hidden",chain!=="BTC");
+  document.querySelectorAll("[data-receive-chain]").forEach(b=>{b.classList.toggle("primary",b.dataset.receiveChain===chain);});
+  if(chain==="QUB")loadReceiveAddresses();
+}
+function findAddressBookByAddress(chain,address){return (appState.addressBook||[]).find(e=>e.chain===chain&&e.address===String(address||"").trim())||null;}
+function populateSendContacts(){
+  [["QUB","sendQubContact"],["BTC","sendBtcContact"]].forEach(([chain,id])=>{const sel=$(id);if(!sel)return;const keep=sel.value;sel.innerHTML='<option value="">Address book…</option>';appState.addressBook.filter(e=>e.chain===chain).forEach(e=>{const o=document.createElement("option");o.value=e.id;o.textContent=`${e.label} · ${e.address.slice(0,16)}…`;sel.appendChild(o);});sel.value=keep;});
+}
+function useContactForSend(chain,id){const e=appState.addressBook.find(x=>x.id===id&&x.chain===chain);if(!e)return;if(chain==="QUB")$("sendTo").value=e.address;else $("btcQuickSendTo").value=e.address;}
+async function loadAddressBook(){
+  try{appState.addressBook=await invoke("address_book_list",{});renderAddressBook();populateSendContacts();}catch(e){showBanner("Could not load address book: "+String(e),true);}
+}
+function setAddressBookFilter(filter){appState.addressBookFilter=filter;document.querySelectorAll("[data-book-filter]").forEach(b=>b.classList.toggle("primary",b.dataset.bookFilter===filter));renderAddressBook();}
+function renderAddressBook(){
+  const box=$("addressBookList");if(!box)return;const q=(val("addressBookSearch")||"").toLowerCase();const filter=appState.addressBookFilter||"ALL";
+  const rows=(appState.addressBook||[]).filter(e=>(filter==="ALL"||e.chain===filter)&&(!q||`${e.label} ${e.address} ${e.note||""} ${(e.tags||[]).join(" ")}`.toLowerCase().includes(q)));
+  box.innerHTML="";if(!rows.length){box.innerHTML='<div class="muted">No matching contacts.</div>';return;}
+  rows.forEach(e=>{const row=document.createElement("div");row.className="wallet-entry";const meta=document.createElement("div");meta.className="meta";const badge=e.chain==="QUB"?"good":"warn";meta.innerHTML=`<div class="pillrow"><span class="pill ${badge}">${e.chain}</span><strong>${escapeHtml(e.label)}</strong></div><div class="mono small addr">${escapeHtml(e.address)}</div>${e.note?`<div class="small muted">${escapeHtml(e.note)}</div>`:""}${e.tags?.length?`<div class="small muted">${escapeHtml(e.tags.join(" · "))}</div>`:""}`;
+    const actions=document.createElement("div");actions.className="actions";const copy=document.createElement("button");copy.className="btn";copy.textContent="⧉";copy.title="Copy address";copy.onclick=()=>copyText(e.address,`${e.chain} address copied.`);const send=document.createElement("button");send.className="btn primary";send.textContent="Send";send.onclick=()=>{showView("send");setSendChain(e.chain);if(e.chain==="QUB")$("sendTo").value=e.address;else $("btcQuickSendTo").value=e.address;};const del=document.createElement("button");del.className="btn danger";del.textContent="Delete";del.onclick=()=>deleteAddressBookContact(e.id,e.label);actions.append(copy,send,del);row.append(meta,actions);box.appendChild(row);});
+}
+function escapeHtml(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+async function saveContactDirect(label,chain,address,note="",tags=""){const e=await invoke("address_book_upsert",{id:null,label,chain,address,note,tags});await loadAddressBook();return e;}
+async function saveAddressBookContact(){try{await saveContactDirect(val("contactLabel"),val("contactChain"),val("contactAddress"),val("contactNote"),val("contactTags"));["contactLabel","contactAddress","contactNote","contactTags"].forEach(id=>{if($(id))$(id).value="";});showBanner("Contact saved locally.");}catch(e){showBanner(String(e),true);}}
+async function deleteAddressBookContact(id,label){if(!confirm(`Delete contact ${label}? The wallet and blockchain are not affected.`))return;try{await invoke("address_book_delete",{id});await loadAddressBook();showBanner("Contact deleted.");}catch(e){showBanner(String(e),true);}}
+async function exportAddressBook(){try{const json=await invoke("address_book_export",{});await navigator.clipboard.writeText(json);showBanner("Address book JSON copied to clipboard.");}catch(e){showBanner(String(e),true);}}
+function toggleAddressBookImport(){$("addressBookImportPanel")?.classList.toggle("hidden");}
+async function importAddressBook(){try{const n=await invoke("address_book_import_json",{payload:val("addressBookImportJson")});await loadAddressBook();showBanner(`Imported ${n} new contact(s). Existing addresses were not overwritten.`);}catch(e){showBanner(String(e),true);}}
+async function renderBtcQuickAddress(address){const a=String(address||"").trim();if(!a)return;setText("btcQuickReceiveAddress",a);try{$("btcQuickReceiveQr").innerHTML=await invoke("generate_qr_svg",{payload:a});}catch(e){showBanner(String(e),true);}}
+async function loadBtcReceiveAddresses(preferred=null){
+  if(!btcPassphrase()){showBanner("Enter the BTC wallet password to load BTC addresses.",true);return;}const box=$("btcQuickAddressList");if(box)box.innerHTML='<div class="muted">Loading BTC addresses…</div>';
+  try{const addresses=await invoke("btc_list_addresses",{passphrase:btcPassphrase()});const selected=preferred&&addresses.includes(preferred)?preferred:addresses[0];if(selected)await renderBtcQuickAddress(selected);if(box){box.innerHTML="";addresses.forEach((a,i)=>{const row=document.createElement("div");row.className="wallet-entry";row.innerHTML=`<div class="meta"><strong>${i===0?"Primary BTC address":"BTC receive address "+(i+1)}</strong><div class="mono small addr">${escapeHtml(a)}</div></div>`;const actions=document.createElement("div");actions.className="actions";const show=document.createElement("button");show.className="btn";show.textContent="Show QR";show.onclick=()=>renderBtcQuickAddress(a);const copy=document.createElement("button");copy.className="btn";copy.textContent="⧉";copy.onclick=()=>copyText(a,"BTC address copied.");actions.append(show,copy);row.appendChild(actions);box.appendChild(row);});}}catch(e){if(box)box.innerHTML=`<div class="notice">${escapeHtml(String(e))}</div>`;showBanner(String(e),true);}
+}
+async function btcQuickNewAddress(){if(!btcPassphrase()){showBanner("Enter the BTC wallet password first.",true);return;}try{const r=await invoke("btc_new_address",{passphrase:btcPassphrase()});await loadBtcReceiveAddresses(r.address);showBanner("Additional BTC receive address generated.");}catch(e){showBanner(String(e),true);}}
+async function btcQuickSend(){
+  const to=val("btcQuickSendTo"),sats=Number(val("btcQuickSendSats")),fee=Number(val("btcQuickFeeRate")||"5"),pp=btcPassphrase();if(!pp){showBanner("BTC wallet password is required.",true);return;}if(!to||!Number.isFinite(sats)||sats<=0){showBanner("Valid BTC recipient and amount in sats are required.",true);return;}const contact=findAddressBookByAddress("BTC",to);const who=contact?`${contact.label} · ${to}`:to;if(!confirm(`Review BTC transaction\n\nRecipient: ${who}\nAmount: ${Math.trunc(sats)} sats\nFee rate: ${fee} sat/vB\n\nBroadcast this real Bitcoin transaction?`))return;
+  try{const r=await invoke("btc_send",{toAddress:to,amountSats:Math.trunc(sats),feeRateSatVb:fee,passphrase:pp});setText("btcQuickSendResult",asJson(r));showBanner("BTC transaction broadcast: "+(r.txid||""));if($("saveBtcRecipient")?.checked&&!contact){await saveContactDirect(val("saveBtcRecipientName")||"BTC recipient","BTC",to,"Saved after successful BTC send","");}await loadBtcStatus(false);}catch(e){setText("btcQuickSendResult",String(e));showBanner(String(e),true);}
+}
+
 function btcPassphrase(){
-  return val("btcPassphrase") || passphrase();
+  return val("btcQuickPassphrase") || val("btcReceivePassphrase") || val("btcPassphrase");
 }
 function parseBtcEndpointText(){
   return val("btcEndpoint");
@@ -1167,9 +1858,25 @@ async function loadWalletCliCapabilities(){
   catch(e){setText("walletCliOutput",String(e));}
 }
 
+let txChainFilter="ALL";
+function escHtml(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function txRowsFromValue(v,chain){let a=Array.isArray(v)?v:(Array.isArray(v?.transactions)?v.transactions:Array.isArray(v?.history)?v.history:[]);return a.map(x=>({chain,...(typeof x==="object"&&x?x:{raw:String(x)})}));}
+async function loadUnifiedTransactions(filter="ALL"){
+ txChainFilter=filter; const host=$("transactionList"); if(host)host.innerHTML='<div class="muted">Loading transaction history…</div>';
+ try{let rows=[];if(filter!=="BTC"){const q=await invoke("get_history",{network:appState.network,wallet:appState.wallet,limit:Number(val("txLimit")||20),passphrase:passphrase()||null});rows.push(...txRowsFromValue(q,"QUB"));}
+ if(filter!=="QUB"){try{const b=await invoke("btc_get_status",{});const raw=b?.transactions||b?.history||b?.recent_transactions||[];rows.push(...txRowsFromValue(raw,"BTC"));}catch(e){if(filter==="BTC")rows.push({chain:"BTC",status:"BTC wallet status unavailable",detail:String(e)});}}
+ if(!rows.length){host.innerHTML='<div class="notice">No transactions returned yet. QUB history comes from the current Core wallet; BTC history appears when the BTC Light service exposes synced transaction records.</div>';return;}
+ host.innerHTML=rows.map(x=>{const id=x.txid||x.tx_id||x.hash||x.id||"—",amount=x.amount??x.value??x.amount_sats??"—",status=x.status||x.state||x.confirmations||"—",when=x.time||x.timestamp||x.created_at||x.height||"—",addr=x.address||x.to||x.from||x.recipient||"—";return `<div class="wallet-row"><div><span class="pill">${escHtml(x.chain)}</span> <strong>${escHtml(amount)}</strong><div class="small mono">${escHtml(id)}</div><div class="small">${escHtml(when)} · ${escHtml(status)} · ${escHtml(addr)}</div></div><button class="btn" onclick='navigator.clipboard.writeText(${JSON.stringify(String(id))})'>Copy TXID</button></div>`}).join("");
+ }catch(e){host.innerHTML=`<div class="notice">${escHtml(String(e))}</div>`;}
+}
+function syncTxLedgerPeriod(){const m=val("txLedgerPeriod");["txLedgerYear","txLedgerQuarter","txLedgerFrom","txLedgerTo"].forEach(id=>$(id).disabled=false);if(m==="all")["txLedgerYear","txLedgerQuarter","txLedgerFrom","txLedgerTo"].forEach(id=>$(id).disabled=true);if(m==="year")["txLedgerQuarter","txLedgerFrom","txLedgerTo"].forEach(id=>$(id).disabled=true);if(m==="quarter")["txLedgerFrom","txLedgerTo"].forEach(id=>$(id).disabled=true);if(m==="custom")["txLedgerYear","txLedgerQuarter"].forEach(id=>$(id).disabled=true);}
+async function exportTransactionsLedger(){try{const m=val("txLedgerPeriod"),y=Number(val("txLedgerYear"));const a={network:appState.network,wallet:appState.wallet,profile:val("txLedgerProfile"),fromDate:null,toDate:null,year:null,quarter:null};if(m==="year"||m==="quarter"){if(!Number.isInteger(y)||y<1970)throw new Error("Enter a valid year.");a.year=y;if(m==="quarter")a.quarter=Number(val("txLedgerQuarter"));}else if(m==="custom"){a.fromDate=val("txLedgerFrom")||null;a.toDate=val("txLedgerTo")||null;if(!a.fromDate&&!a.toDate)throw new Error("Enter From and/or To.");}const r=await invoke("export_complete_ledger",a);setText("txLedgerResult",asJson(r));showBanner("Complete CSV ledger exported.");}catch(e){setText("txLedgerResult",String(e));showBanner(String(e),true);}}
+async function restoreFromRecoveryCenter(){try{const wallet=val("recoveryWalletName").trim(),phrase=val("recoveryPhraseInput"),pw=val("recoveryNewPassphrase");if(!wallet)throw new Error("Enter a new wallet name.");if(!phrase.trim())throw new Error("Paste the recovery phrase first.");const open=window.__TAURI__?.dialog?.open;if(typeof open!=="function")throw new Error("Native file picker unavailable.");const selected=await open({directory:false,multiple:false,title:"Select recovery.qrxseed",filters:[{name:"QRX recovery",extensions:["qrxseed"]}]});if(!selected)return;const r=await invoke("restore_wallet_from_recovery",{network:appState.network,wallet,recoveryFile:selected,recoveryPhrase:phrase,passphrase:pw});setText("recoveryCenterResult",asJson(r));showBanner("Wallet restored as a new wallet. Verify its address before use.");await refreshWalletManager();}catch(e){setText("recoveryCenterResult",String(e));showBanner(String(e),true);}}
+async function exportCurrentWalletBackup(){try{const open=window.__TAURI__?.dialog?.open;if(typeof open!=="function")throw new Error("Native folder picker unavailable.");const destinationDir=await open({directory:true,multiple:false,title:"Choose backup destination"});if(!destinationDir)return;const r=await invoke("export_wallet_directory",{network:appState.network,wallet:appState.wallet,destinationDir});setText("recoveryCenterResult",asJson(r));}catch(e){setText("recoveryCenterResult",String(e));showBanner(String(e),true);}}
 document.addEventListener("DOMContentLoaded",()=>{
   try{
     if($("ledgerYear"))$("ledgerYear").value=String(new Date().getUTCFullYear());
+    if($("txLedgerYear"))$("txLedgerYear").value=String(new Date().getUTCFullYear()); syncTxLedgerPeriod();
     const menu=document.querySelector(".menu");
     if(menu&&!$("walletCliMenu")){
       const button=document.createElement("button");button.id="walletCliMenu";button.dataset.view="advanced";button.textContent="Advanced CLI";button.addEventListener("click",()=>showView("advanced"));menu.appendChild(button);
@@ -1195,12 +1902,15 @@ document.addEventListener("DOMContentLoaded",()=>{
     hideQrxSplash(5000);
     window.setTimeout(()=>{ try{ maybeShowIntro(); }catch(e){ console.error("intro failed", e); } }, 5100);
     try{ loadValidatorMode(); }catch(e){ console.error("validator mode failed", e); }
+    try{ detectExistingCoreWallets(); }catch(e){ console.error("wallet discovery failed", e); }
   }catch(e){
     console.error("startup failed", e);
     $("qrxSplash")?.classList.add("hidden");
   }
 });
 window.setTimeout(()=>{$("qrxSplash")?.classList.add("hidden");}, 6500);
+
+document.addEventListener("change",e=>{if(e.target?.id==="saveQubRecipient")$("saveQubRecipientNameWrap")?.classList.toggle("hidden",!e.target.checked);if(e.target?.id==="saveBtcRecipient")$("saveBtcRecipientNameWrap")?.classList.toggle("hidden",!e.target.checked);});
 </script>
 
 
