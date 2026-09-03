@@ -484,6 +484,53 @@ pre,.receive-box{max-width:100%;overflow:auto}
   .view > .feature-card{grid-column:1 / -1}
 }
 
+/* Wallet manager is a workflow, not a dashboard tile canvas. Keep the
+   migration/recovery/security sections full width and prevent long QUB
+   addresses from forcing neighboring cards or controls to overlap. */
+#view-wallets:not(.hidden){
+  grid-template-columns:minmax(0,1fr);
+  gap:18px;
+}
+#view-wallets > .feature-card,
+#view-wallets > .split,
+#view-wallets > .notice,
+#view-wallets > h3{
+  grid-column:1 / -1;
+  min-width:0;
+  width:100%;
+}
+#view-wallets .feature-card,
+#view-wallets .wallet-entry,
+#view-wallets .meta,
+#view-wallets .actions{min-width:0}
+#view-wallets .mono,
+#view-wallets .addr{overflow-wrap:anywhere;word-break:break-word}
+.legacy-migration-group{
+  display:grid;
+  gap:14px;
+  padding:16px;
+  border-radius:18px;
+  background:rgba(255,255,255,.035);
+  border:1px solid rgba(255,255,255,.08);
+}
+.legacy-migration-candidate{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(220px,320px);
+  gap:14px;
+  align-items:center;
+  padding:14px;
+  border-radius:16px;
+  background:rgba(255,255,255,.04);
+  border:1px solid rgba(255,255,255,.07);
+}
+.legacy-migration-candidate .candidate-meta{min-width:0;line-height:1.5}
+.legacy-migration-candidate .candidate-address{display:block;margin:4px 0;overflow-wrap:anywhere;word-break:break-word}
+.legacy-migration-controls{display:grid;gap:9px;min-width:0}
+.legacy-migration-controls input,.legacy-migration-controls button{width:100%;min-width:0}
+@media(max-width:760px){
+  .legacy-migration-candidate{grid-template-columns:1fr}
+}
+
 /* Send/receive wallet UX: full-width workspaces instead of narrow wallpaper-like forms. */
 #view-send > .send-panel{grid-column:1 / -1;width:100%;height:auto}
 .send-panel-head{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:2px}
@@ -1485,17 +1532,17 @@ function renderLegacyNetworkMigrationWizard(groups){
   if(!relevant.length){box.innerHTML='<div class="notice">✓ No unresolved legacy network-wallet conflicts detected.</div>';return;}
   box.innerHTML="";
   relevant.forEach(g=>{
-    const wrap=document.createElement("div");wrap.className="wallet-entry";
+    const wrap=document.createElement("div");wrap.className="legacy-migration-group";
     const title=document.createElement("div");title.className="meta";
     const addresses=(g.unique_addresses||[]).map(a=>`<div class="addr mono small">${String(a)}</div>`).join("");
     title.innerHTML=`<strong>${String(g.name)}</strong><div class="small ${g.conflict?'notice':''}">${g.conflict?'⚠ Different QUB identities use the same legacy wallet name. Choose explicitly; nothing will be overwritten.':'Legacy per-network identity available for migration.'}</div>${addresses}${g.shared_exists?`<div class="small muted">Shared identity already exists: ${String(g.shared_address||'address unavailable')}</div>`:''}`;
     wrap.appendChild(title);
     const choices=document.createElement("div");choices.className="stack";choices.style.width="100%";
     (g.candidates||[]).forEach(c=>{
-      const row=document.createElement("div");row.className="actions";row.style.justifyContent="space-between";row.style.alignItems="center";row.style.flexWrap="wrap";
-      const meta=document.createElement("div");meta.className="small";meta.innerHTML=`<strong>${String(c.network).toUpperCase()}</strong> · <span class="mono">${String(c.address||'address unavailable')}</span><br><span class="muted">${c.hybrid_ready?'hybrid keys complete':'incomplete key set'} · ${c.has_recovery_file?'recovery.qrxseed present':'no recovery.qrxseed'}</span>`;
-      const actions=document.createElement("div");actions.className="actions";
-      const target=document.createElement("input");target.value=migrationTargetDefault(g,c);target.placeholder="Shared wallet name";target.style.minWidth="180px";
+      const row=document.createElement("div");row.className="legacy-migration-candidate";
+      const meta=document.createElement("div");meta.className="small candidate-meta";meta.innerHTML=`<strong>${String(c.network).toUpperCase()}</strong><span class="candidate-address mono">${String(c.address||'address unavailable')}</span><span class="muted">${c.hybrid_ready?'hybrid keys complete':'incomplete key set'} · ${c.has_recovery_file?'recovery.qrxseed present':'no recovery.qrxseed'}</span>`;
+      const actions=document.createElement("div");actions.className="legacy-migration-controls";
+      const target=document.createElement("input");target.value=migrationTargetDefault(g,c);target.placeholder="Shared wallet name";
       const b=document.createElement("button");b.className="btn primary";b.textContent=g.shared_exists?"Import as new wallet":"Use this identity";
       b.onclick=async()=>{const targetName=target.value.trim();if(!targetName){showBanner("Enter a target wallet name.",true);return;}const msg=g.conflict?`Use the ${c.network.toUpperCase()} identity ${c.address||''} and copy it into shared wallet '${targetName}'? Other legacy network wallets remain untouched.`:`Copy this legacy identity into shared wallet '${targetName}'? Source files remain untouched.`;if(!confirm(msg))return;try{const r=await invoke("migrate_legacy_network_wallet",{sourceNetwork:c.network,wallet:g.name,targetWallet:targetName});showBanner(`Copied ${c.network} legacy identity into shared wallet ${targetName}. Original preserved.`);setActiveWalletName(targetName);setText("walletInspectBox",asJson(r));await refreshWalletManager();await inspectCurrentWallet();await refreshAll(false);}catch(e){showBanner("Migration failed: "+String(e),true);}};
       actions.appendChild(target);actions.appendChild(b);row.appendChild(meta);row.appendChild(actions);choices.appendChild(row);
