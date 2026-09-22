@@ -283,6 +283,11 @@ if [[ "$NODE_ONLY" -eq 0 && "$TARGET" == linux-* ]] && command -v apt-get >/dev/
     add_linux_pkg librsvg2-dev
     add_linux_pkg libayatana-appindicator3-dev
   fi
+  # ARM64 builds the pinned AI runtime from source rather than a portable binary.
+  if [[ "$TARGET" == "linux-arm64" ]]; then
+    pkg-config --exists vulkan >/dev/null 2>&1 || add_linux_pkg libvulkan-dev
+    command -v glslangValidator >/dev/null 2>&1 || add_linux_pkg glslang-tools
+  fi
   if (( ${#linux_apt_missing[@]} > 0 )); then
     command -v sudo >/dev/null 2>&1 || { echo "Missing Linux desktop build packages: ${linux_apt_missing[*]}; sudo is unavailable." >&2; exit 4; }
     echo "Installing Linux desktop build dependencies: ${linux_apt_missing[*]}"
