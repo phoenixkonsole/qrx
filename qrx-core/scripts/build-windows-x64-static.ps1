@@ -122,9 +122,14 @@ if (-not (Test-Path $Crypto)) { throw "Static OpenSSL crypto library missing" }
 # The Windows preflight already requires the VS 2022 C++ toolchain, so use its
 # generator deterministically for dependency and Core builds.
 $CMakeGenerator="Visual Studio 17 2022"
-function CMakeInstall([string]$Source,[string]$Build,[string[]]$Args) {
+function CMakeInstall([string]$Source,[string]$Build,[string[]]$CMakeOptions) {
   if (Test-Path $Build) { Remove-Item -Recurse -Force $Build }
-  & cmake -S $Source -B $Build -G $CMakeGenerator -A x64 @Args
+  # Upstream packages may embed these path values in generated CMake files.
+  # Use CMake separators so C:\Users is not parsed as an invalid \U escape.
+  $CMakeOptions=@($CMakeOptions | ForEach-Object { $_.Replace('\','/') })
+  # $args is an automatic PowerShell variable; using it as a parameter loses
+  # the dependency options, including the explicit ZLIB library/header paths.
+  & cmake -S $Source -B $Build -G $CMakeGenerator -A x64 @CMakeOptions
   if ($LASTEXITCODE -ne 0) { throw "CMake configure failed: $Source" }
   & cmake --build $Build --config Release --parallel $Jobs
   if ($LASTEXITCODE -ne 0) { throw "CMake build failed: $Source" }
@@ -145,9 +150,12 @@ function Resolve-ZlibStatic([string]$Build,[string]$Source,[string]$Prefix) {
 
   $preferred=@(
     (Join-Path $destLib "zlibstatic.lib"),
+    (Join-Path $destLib "zs.lib"),
     (Join-Path $destLib "z.lib"),
     (Join-Path $Build "Release\zlibstatic.lib"),
     (Join-Path $Build "zlibstatic.lib"),
+    (Join-Path $Build "Release\zs.lib"),
+    (Join-Path $Build "zs.lib"),
     (Join-Path $Build "Release\z.lib"),
     (Join-Path $Build "z.lib")
   )
@@ -158,22 +166,23 @@ function Resolve-ZlibStatic([string]$Build,[string]$Source,[string]$Prefix) {
     $manifest=Join-Path $Build "install_manifest.txt"
     if (Test-Path $manifest) {
       $candidate=Get-Content $manifest | Where-Object {
-        $_ -match '\.(lib)$' -and (Split-Path $_ -Leaf) -match '^(zlibstatic|zlib|z)\.lib$'
+        $_ -match '\.(lib)$' -and (Split-Path $_ -Leaf) -match '^(zlibstatic|zs|zlib|z)\.lib$'
       } | Where-Object { Test-Path $_ } | Select-Object -First 1
     }
   }
   if (-not $candidate) {
     $candidate=(Get-ChildItem $Build -Recurse -File -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -match '^(zlibstatic|zlib|z)\.lib$' } |
-      Sort-Object @{Expression={ if ($_.Name -eq 'zlibstatic.lib') {0} else {1} }},FullName |
+      Where-Object { $_.Name -match '^(zlibstatic|zs|zlib|z)\.lib$' } |
+      Sort-Object @{Expression={ if ($_.Name -match '^(zlibstatic|zs)\.lib$') {0} else {1} }},FullName |
       Select-Object -First 1).FullName
   }
   if (-not $candidate -or -not (Test-Path $candidate)) { return $null }
 
   # Prefer an explicitly static archive.  A bare z.lib next to z.dll can be an
-  # import library, so if zlibstatic.lib exists anywhere in this build it wins.
-  if ((Split-Path $candidate -Leaf) -ne 'zlibstatic.lib') {
-    $explicit=(Get-ChildItem $Build -Recurse -File -Filter 'zlibstatic.lib' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+  # import library. zlib 1.3.2 names its static archive zs.lib, so prefer either
+  # explicitly static name over an ambiguous z.lib/zlib.lib from this build.
+  if ((Split-Path $candidate -Leaf) -notmatch '^(zlibstatic|zs)\.lib$') {
+    $explicit=(Get-ChildItem $Build -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(zlibstatic|zs)\.lib$' } | Sort-Object FullName | Select-Object -First 1).FullName
     if ($explicit) { $candidate=$explicit }
   }
 
@@ -238,6 +247,8 @@ if (-not (Test-Path $CurlStatic)) { throw "Static libcurl missing" }
 
 if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
 $cmakeArgs=@("-S",$Core,"-B",$BuildDir,"-G",$CMakeGenerator,"-A","x64","-DCMAKE_BUILD_TYPE=Release","-DQRX_REQUIRE_PQC=ON","-DQRX_REQUIRE_BUNDLED_DEPS=ON","-DQRX_DEPS_PREFIX=$DepsPrefix","-DOPENSSL_ROOT_DIR=$DepsPrefix","-DOPENSSL_USE_STATIC_LIBS=TRUE","-DOPENSSL_CRYPTO_LIBRARY=$Crypto","-DZLIB_ROOT=$DepsPrefix","-DZLIB_LIBRARY=$ZlibStatic","-DZLIB_INCLUDE_DIR=$DepsPrefix\include","-DPNG_PNG_INCLUDE_DIR=$DepsPrefix\include","-DPNG_LIBRARY=$PngStatic","-DCURL_ROOT=$DepsPrefix","-DCURL_USE_STATIC_LIBS=TRUE","-DCURL_LIBRARY=$CurlStatic","-DCURL_INCLUDE_DIR=$DepsPrefix\include")
+# Match dependency-export paths and QRX's prefix checks on Windows as well.
+$cmakeArgs=@($cmakeArgs | ForEach-Object { $_.Replace('\','/') })
 & cmake @cmakeArgs; if ($LASTEXITCODE -ne 0) { throw "QRX CMake configure failed" }
 & cmake --build $BuildDir --config Release --parallel $Jobs; if ($LASTEXITCODE -ne 0) { throw "QRX build failed" }
 $expected=@("qrx.exe","qrx-cli.exe","qrxd.exe","qrx-upscaler.exe","qrxdb_verify.exe","qrxdb_salvage.exe","qrxdb_compact.exe","qrxdb_snapshot.exe")

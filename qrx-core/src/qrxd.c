@@ -57,6 +57,9 @@
   #ifndef PATH_MAX
     #define PATH_MAX MAX_PATH
   #endif
+  #ifndef R_OK
+    #define R_OK 4
+  #endif
   #define strtok_r strtok_s
   #define strdup _strdup
   #define sleep(sec) Sleep((DWORD)((sec) * 1000))
@@ -2192,12 +2195,13 @@ static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
         return 0;
     }
     if(!strcmp(args[0], "getwalletinfo")){
-        char addr[512], out[8192], balance[8192], ajs[1024]={0};
+        char addr[512], out[8192], balance[8192], ajs[1024]={0}, wallet_json[PATH_MAX*6+3];
         if(qrx_get_wallet_address(g_wdir, addr, sizeof(addr)) != 0){ json_error(resp, resp_sz, "getwalletinfo", "address unavailable"); return 0; }
         char *argv[] = { g_backend_path, "balance", g_cdir, addr, NULL };
         if(run_capture(argv, balance, sizeof(balance)) != 0){ json_error(resp, resp_sz, "getwalletinfo", "balance failed"); return 0; }
         trim_ws_right(balance); json_string(ajs,sizeof(ajs),addr);
-        snprintf(out,sizeof(out),"{\"ok\":true,\"method\":\"getwalletinfo\",\"result\":{\"wallet_dir\":\"%s\",\"address\":%s,\"balance\":%lld}}\n", g_wdir, ajs, atoll(balance));
+        json_string(wallet_json,sizeof(wallet_json),g_wdir);
+        snprintf(out,sizeof(out),"{\"ok\":true,\"method\":\"getwalletinfo\",\"result\":{\"wallet_dir\":%s,\"address\":%s,\"balance\":%lld}}\n", wallet_json, ajs, atoll(balance));
         snprintf(resp, resp_sz, "%s", out);
         return 0;
     }

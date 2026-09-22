@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#if defined(_MSC_VER) && !defined(S_ISREG)
+#define S_ISREG(mode) (((mode) & _S_IFMT) == _S_IFREG)
+#endif
 #include <ctype.h>
 #ifdef _WIN32
 #include <process.h>

@@ -5,11 +5,20 @@
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 typedef struct {QrxErasureSet *encoded;size_t calls[14];} Fixture;
 static int fetch_cb(void *v,const QrxShardProviderSource *src,const uint8_t oid[64],uint64_t off,size_t want,uint8_t **out,size_t *out_len){
     (void)oid;Fixture*f=v;unsigned i=src->source.shard_index;if(i==1)return -1; /* dead provider */
-    if(i==2){struct timespec t={0,220000000L};nanosleep(&t,NULL);} /* force hedge */
+    if(i==2){ /* force hedge */
+#ifdef _WIN32
+        Sleep(220);
+#else
+        struct timespec t={0,220000000L};nanosleep(&t,NULL);
+#endif
+    }
     if(off>=f->encoded->shard_size)return -1;size_t n=f->encoded->shard_size-(size_t)off;if(n>want)n=want;if(n>37)n=37; /* force resume */
     *out=malloc(n);assert(*out);memcpy(*out,f->encoded->shards[i]+off,n);*out_len=n;f->calls[i]++;return 0;
 }

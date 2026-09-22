@@ -1164,8 +1164,18 @@ function lockWalletSession(){
 
 function showBanner(msg, bad=false){ const b=$("banner"); if(!b) return; b.className = bad ? "banner notice" : "banner notice"; b.textContent = msg; }
 function showWelcomeStatus(msg, bad=false){
-  const box=$("existingCoreWalletStatus");
-  if(!box) return;
+  // A fresh installation has no existing-wallet status element. Keep action
+  // feedback outside the discovery box, which may be hidden or refreshed.
+  let box=$("welcomeActionStatus");
+  if(!box){
+    const anchor=$("existingCoreWalletBox");
+    if(!anchor) return;
+    box=document.createElement("div");
+    box.id="welcomeActionStatus";
+    box.setAttribute("role","status");
+    box.setAttribute("aria-live","polite");
+    anchor.insertAdjacentElement("afterend",box);
+  }
   box.textContent=msg||"";
   box.style.display=msg?"block":"none";
   box.style.marginTop="10px";

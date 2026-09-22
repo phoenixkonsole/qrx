@@ -298,7 +298,7 @@ static int qrx_hex_encode_text(const char *in,char *out,size_t out_sz){
 int main(int argc,char **argv){
     char detected_network[64];
     const char *network=NULL, *datadir=NULL, *wallet="default"; int cmdi=-1;
-    char base[PATH_MAX], cdir[PATH_MAX], wdir[PATH_MAX], ndir[PATH_MAX], sock[PATH_MAX];
+    char base[PATH_MAX], cdir[PATH_MAX], sock[PATH_MAX];
     for(int i=1;i<argc;++i){
         if(!strcmp(argv[i],"--network")&&i+1<argc){network=argv[++i]; continue;}
         if(!strcmp(argv[i],"--datadir")&&i+1<argc){datadir=argv[++i]; continue;}
@@ -315,7 +315,12 @@ int main(int argc,char **argv){
     if(!network || !*network) {
         network = qrx_detect_network(detected_network, sizeof(detected_network));
     }
-    if(qrx_ensure_node(network,datadir,wallet,NULL,NULL,0,base,sizeof(base),cdir,sizeof(cdir),wdir,sizeof(wdir),ndir,sizeof(ndir))!=0){ fprintf(stderr,"qrx-cli: failed to initialize\n"); return 1; }
+    /* An RPC client must not initialize chain/wallet state while polling an
+     * offline daemon. Initialization belongs to qrxd; concurrent status calls
+     * otherwise race with startup and can enter interactive key generation. */
+    if(!qrx_profile_by_name(network)){ fprintf(stderr,"qrx-cli: unknown network\n"); return 1; }
+    qrx_default_datadir(network,datadir,base,sizeof(base));
+    snprintf(cdir,sizeof(cdir),"%s/chain",base);
     { char tp[PATH_MAX]; snprintf(tp,sizeof(tp),"%s/rpc.token",cdir); qrx_read_file_first_line(tp,g_rpc_token,sizeof(g_rpc_token)); }
     snprintf(sock, sizeof(sock), "http://127.0.0.1:%d/rpc", qrx_control_port_for_network(network));
     char cmd[131072] = {0};

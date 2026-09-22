@@ -160,6 +160,13 @@ foreach($a in 'audit-gui-core-compat.py','audit-gui-interactions.py','audit-gui-
 
 Write-Host '[1/8] Building Core and native command-line tools with MSVC'
 & (Join-Path $Core 'scripts\build-windows-x64-static.ps1') -BuildDir $CoreBuild -DepsPrefix $Deps -Jobs $Jobs
+# Rust's openssl-sys does not read CMake's OPENSSL_ROOT_DIR. Point the Windows
+# target at the same verified static libraries instead of relying on vcpkg or
+# an unrelated system OpenSSL installation.
+$env:X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR=$Deps
+$env:X86_64_PC_WINDOWS_MSVC_OPENSSL_LIB_DIR=Join-Path $Deps 'lib'
+$env:X86_64_PC_WINDOWS_MSVC_OPENSSL_INCLUDE_DIR=Join-Path $Deps 'include'
+$env:X86_64_PC_WINDOWS_MSVC_OPENSSL_STATIC='1'
 $CoreBin=Join-Path $CoreBuild 'Release'
 $bins='qrx','qrx-cli','qrxd','qrx-upscaler','qrxdb_verify','qrxdb_salvage','qrxdb_compact','qrxdb_snapshot'
 foreach($b in $bins){$p=Join-Path $CoreBin "$b.exe"; if(-not(Test-Path $p)){throw "Core output missing: $p"}; Copy-Item $p (Join-Path $Out "core\$b.exe") -Force}
@@ -192,10 +199,19 @@ if($env:QRX_AURA_RUNTIME_CATALOG -and $env:QRX_AURA_RUNTIME_PUBLISHER_KEY){Copy-
 $aiDest=Join-Path $Wallet 'src-tauri\resources\upscaler'
 try { & (Join-Path $Repo 'scripts\prepare-upscaler-ai-bundle-windows.ps1') -Destination $aiDest; if($LASTEXITCODE -ne 0){throw 'AI staging failed'} } catch { if($env:QRX_ALLOW_AI_PENDING -ne '1'){throw}; Remove-Item $aiDest -Recurse -Force -ErrorAction SilentlyContinue; Write-Warning 'QRX_ALLOW_AI_PENDING=1: AI Upscaler unavailable in this developer build.' }
 if(Test-Path $aiDest){Run-Python @((Join-Path $Repo 'scripts\verify-upscaler-ai-bundle.py'),$aiDest,'windows-x64')}
+$WalletConfig=Join-Path $Wallet 'src-tauri\tauri.windows.conf.json'
+if($env:QRX_ALLOW_AI_PENDING -eq '1' -and -not(Test-Path $aiDest)){
+    # Tauri rejects an unmatched resource glob even for an explicitly allowed
+    # developer build. Keep the release config intact and omit only absent AI assets.
+    $developmentConfig=Get-Content $WalletConfig -Raw | ConvertFrom-Json
+    $developmentConfig.tauri.bundle.resources=@($developmentConfig.tauri.bundle.resources | Where-Object {$_ -ne 'resources/upscaler/**/*'})
+    $WalletConfig=Join-Path ([IO.Path]::GetFullPath($BuildRoot)) 'tauri.windows.development.json'
+    [IO.File]::WriteAllText($WalletConfig, ($developmentConfig | ConvertTo-Json -Depth 20), (New-Object System.Text.UTF8Encoding($false)))
+}
 
 Write-Host '[7/8] Building Tauri MSI + NSIS wallet'
 Push-Location $Wallet
-try{$env:CARGO_TARGET_DIR=$CargoTarget; if((Test-Path 'package-lock.json') -or (Test-Path 'npm-shrinkwrap.json')){& npm ci --no-audit --no-fund}else{Write-Warning 'No npm lock file: build is not reproducible'; & npm install --no-audit --no-fund}; if($LASTEXITCODE -ne 0){throw 'npm dependency install failed'}; & npx tauri build --target $RustTarget --config 'src-tauri/tauri.windows.conf.json'; if($LASTEXITCODE -ne 0){throw 'Tauri Windows build failed'}} finally{Pop-Location}
+try{$env:CARGO_TARGET_DIR=$CargoTarget; if((Test-Path 'package-lock.json') -or (Test-Path 'npm-shrinkwrap.json')){& npm ci --no-audit --no-fund}else{Write-Warning 'No npm lock file: build is not reproducible'; & npm install --no-audit --no-fund}; if($LASTEXITCODE -ne 0){throw 'npm dependency install failed'}; & npx tauri build --target $RustTarget --config $WalletConfig; if($LASTEXITCODE -ne 0){throw 'Tauri Windows build failed'}} finally{Pop-Location}
 $Bundle=Join-Path $CargoTarget "$RustTarget\release\bundle"; if(-not(Test-Path $Bundle)){throw "Tauri bundle missing: $Bundle"}
 $msi=Get-ChildItem $Bundle -Recurse -File -Filter *.msi -ErrorAction SilentlyContinue|Select-Object -First 1; $installer=Get-ChildItem $Bundle -Recurse -File -Filter *.exe -ErrorAction SilentlyContinue|Where-Object{$_.Name -match 'setup|installer|nsis'}|Select-Object -First 1
 if(-not $msi){throw 'Windows MSI missing after Tauri bundle'}; if(-not $installer){throw 'Windows NSIS installer EXE missing after Tauri bundle'}

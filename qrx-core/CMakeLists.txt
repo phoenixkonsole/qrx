@@ -263,6 +263,7 @@ endif()
 # -----------------------------
 if(MSVC)
     target_compile_options(qrxcore PRIVATE /W4)
+    target_compile_definitions(qrxcore PUBLIC strtok_r=strtok_s)
 else()
     target_compile_options(qrxcore PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -360,7 +361,9 @@ endif()
 # Executables
 # -----------------------------
 set(QRX_OPENSSL_APPLINK_SRC "")
-if(WIN32)
+if(WIN32 AND EXISTS "${OPENSSL_INCLUDE_DIR}/openssl/applink.c")
+    # OpenSSL installs this only when uplink support is enabled. The pinned
+    # no-shared/no-asm build has uplink disabled and does not supply applink.c.
     set(QRX_OPENSSL_APPLINK_SRC src/openssl_applink.c)
 endif()
 
@@ -372,6 +375,15 @@ target_link_libraries(qrxd PRIVATE qrxcore Threads::Threads ${QRX_OPENSSL_LINK_L
 
 add_executable(qrx-cli src/qrx_cli.c ${QRX_OPENSSL_APPLINK_SRC})
 target_link_libraries(qrx-cli PRIVATE qrxcore ${QRX_OPENSSL_LINK_LIBS})
+if(MSVC)
+    # Core commands use bounded stack buffers exceeding Windows' default 1 MiB.
+    foreach(frontend qrx qrxd qrx-cli)
+        target_link_options(${frontend} PRIVATE /STACK:8388608)
+    endforeach()
+    # MSVC currently allocates about 9 MiB for handle_command alone, plus its
+    # HTTP caller. Reserve headroom for that frame before the first RPC call.
+    target_link_options(qrxd PRIVATE /STACK:16777216)
+endif()
 
 add_executable(qrx-aura-model-seed src/qrx_aura_model_seed.c ${QRX_OPENSSL_APPLINK_SRC})
 target_link_libraries(qrx-aura-model-seed PRIVATE qrxcore ${QRX_OPENSSL_LINK_LIBS})
@@ -506,7 +518,9 @@ target_include_directories(qrx-upscaler PRIVATE src)
 if(CMAKE_DL_LIBS)
   target_link_libraries(qrx-upscaler PRIVATE ${CMAKE_DL_LIBS})
 endif()
-target_link_libraries(qrx-upscaler PRIVATE m)
+if(NOT MSVC)
+  target_link_libraries(qrx-upscaler PRIVATE m)
+endif()
 if(QRX_UPSCALER_PNG)
   target_compile_definitions(qrx-upscaler PRIVATE QRX_HAVE_PNG)
   target_link_libraries(qrx-upscaler PRIVATE PNG::PNG)
@@ -515,6 +529,10 @@ endif()
 
 if(QRX_BUILD_TESTS)
     enable_testing()
+    add_executable(qrx_platform_threads_test tests/platform_threads.c)
+    target_include_directories(qrx_platform_threads_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(qrx_platform_threads_test PRIVATE Threads::Threads)
+    add_test(NAME platform_threads COMMAND qrx_platform_threads_test)
     add_executable(qrx_velocity_engine_test tests/velocity_phase4_engine.c)
     target_include_directories(qrx_velocity_engine_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${OPENSSL_INCLUDE_DIR})
     target_link_libraries(qrx_velocity_engine_test PRIVATE qrxcore Threads::Threads ${QRX_OPENSSL_LINK_LIBS})
@@ -718,6 +736,11 @@ if(QRX_BUILD_TESTS)
     target_include_directories(qrx_storage_multifetch_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${OPENSSL_INCLUDE_DIR})
     target_link_libraries(qrx_storage_multifetch_test PRIVATE qrxcore Threads::Threads ${QRX_OPENSSL_LINK_LIBS})
     add_test(NAME storage_phase098_multifetch COMMAND qrx_storage_multifetch_test)
+    if(MSVC)
+        # These release-mode tests must execute their assertion-based checks.
+        target_compile_options(qrx_storage_transport_test PRIVATE /UNDEBUG)
+        target_compile_options(qrx_storage_multifetch_test PRIVATE /UNDEBUG)
+    endif()
 
     if(NOT MSVC)
         foreach(test_tgt qrx_velocity_engine_test qrx_velocity_mvcc_test qrx_velocity_stateful_mvcc_test qrx_velocity_dynamic_mvcc_test qrx_velocity_speculative_mvcc_test qrx_velocity_block_scheduler_test qrx_btc_spv_hardening_test qrx_resource_foundation_test qrx_storage_filesystem_test qrx_storage_capacity_test qrx_capacity_proof_test qrx_drive_pq_crypto_test qrx_drive_manifest_test qrx_erasure_test qrx_storage_placement_test qrx_postor_test qrx_storage_market_test qrx_storage_repair_test qrx_storage_atlas_test qrx_storage_transport_test qrx_net_name_test qrx_net_registry_test qrx_net_resolver_test qrx_net_site_test qrx_net_permissions_test qrx_storage_consensus_test qrx_net_consensus_test qrx_storage_attestation_test qrx_storage_p2p_test qrx_storage_large_object_test qrx_storage_multifetch_test qrx_storage_discovery_test)

@@ -7,7 +7,7 @@ int qrx_storage_range_serialize(const QrxShardRangeRequest *r,uint8_t out[88]){i
 int qrx_storage_range_parse(const uint8_t in[88],QrxShardRangeRequest *r){if(!in||!r||memcmp(in,"QRXSRNG1",8)!=0)return -1;memset(r,0,sizeof(*r));memcpy(r->object_id,in+8,64);r->shard_index=g32(in+72);r->offset=g64(in+76);r->length=g32(in+84);return r->length?0:-1;}
 
 #include "storage/qrx_erasure.h"
-#include <pthread.h>
+#include "platform/qrx_threads.h"
 #include <stdlib.h>
 #include <time.h>
 
@@ -16,7 +16,7 @@ typedef struct {QrxFetchShared *s;size_t source_pos;} QrxFetchWorker;
 struct QrxFetchShared {
     const QrxShardProviderSource *sources; size_t source_count; uint8_t object_id[64]; size_t shard_size;
     QrxMultiFetchOptions opt; QrxShardFetchRangeFn fetch; QrxShardVerifyFn verify; void *ctx;
-    pthread_mutex_t mu; pthread_cond_t cv; int stop; size_t successes; size_t completed;
+    qrx_mutex_t mu; qrx_cond_t cv; int stop; size_t successes; size_t completed;
     uint8_t **shards; uint8_t *present; QrxMultiFetchStats stats;
 };
 static void *fetch_worker(void *arg){
@@ -24,20 +24,20 @@ static void *fetch_worker(void *arg){
     uint32_t si=src->source.shard_index; uint8_t *whole=NULL; size_t have=0; int failed=0; size_t retries=0;
     whole=(uint8_t*)malloc(s->shard_size?s->shard_size:1); if(!whole) failed=1;
     while(!failed&&have<s->shard_size){
-        pthread_mutex_lock(&s->mu); int stop=s->stop; pthread_mutex_unlock(&s->mu); if(stop){free(whole);whole=NULL;break;}
+        qrx_mutex_lock(&s->mu); int stop=s->stop; qrx_mutex_unlock(&s->mu); if(stop){free(whole);whole=NULL;break;}
         size_t want=s->shard_size-have; if(want>s->opt.range_bytes)want=s->opt.range_bytes;
         uint8_t *part=NULL; size_t got=0; int rc=s->fetch(s->ctx,src,s->object_id,have,want,&part,&got);
         if(rc!=0||!part||got==0||got>want){free(part);if(++retries>s->opt.max_range_retries){failed=1;break;}continue;}
         memcpy(whole+have,part,got);free(part);
-        pthread_mutex_lock(&s->mu);s->stats.bytes_received+=got;if(have>0||got<want)s->stats.resumed_ranges++;pthread_mutex_unlock(&s->mu);
+        qrx_mutex_lock(&s->mu);s->stats.bytes_received+=got;if(have>0||got<want)s->stats.resumed_ranges++;qrx_mutex_unlock(&s->mu);
         have+=got; retries=0;
     }
     if(!failed&&whole&&have==s->shard_size&&s->verify&&s->verify(s->ctx,si,whole,have)!=0)failed=1;
-    pthread_mutex_lock(&s->mu);
+    qrx_mutex_lock(&s->mu);
     if(!s->stop&&!failed&&whole&&si<s->source_count&&!s->present[si]){s->shards[si]=whole;whole=NULL;s->present[si]=1;s->successes++;s->stats.successful_shards=s->successes;if(s->successes>=s->opt.required_successes)s->stop=1;}
     else if(failed)s->stats.sources_failed++;
     else if(s->stop)s->stats.cancelled_sources++;
-    s->completed++;s->stats.sources_completed=s->completed;pthread_cond_broadcast(&s->cv);pthread_mutex_unlock(&s->mu);free(whole);return NULL;
+    s->completed++;s->stats.sources_completed=s->completed;qrx_cond_broadcast(&s->cv);qrx_mutex_unlock(&s->mu);free(whole);return NULL;
 }
 static void deadline_after_ms(struct timespec *ts,uint32_t ms){timespec_get(ts,TIME_UTC);ts->tv_sec+=ms/1000;ts->tv_nsec+=(long)(ms%1000)*1000000L;if(ts->tv_nsec>=1000000000L){ts->tv_sec++;ts->tv_nsec-=1000000000L;}}
 int qrx_storage_multi_provider_fetch(const QrxShardProviderSource *sources,size_t n,const uint8_t object_id[64],size_t shard_size,unsigned k,unsigned m,size_t original_size,const QrxMultiFetchOptions *options,QrxShardFetchRangeFn fetch,QrxShardVerifyFn verify,void *ctx,uint8_t **data_out,size_t *data_len_out,QrxMultiFetchStats *stats_out){
@@ -46,15 +46,15 @@ int qrx_storage_multi_provider_fetch(const QrxShardProviderSource *sources,size_
     QrxShardSource metrics[QRX_STORAGE_MAX_FETCH_SOURCES];for(size_t i=0;i<n;i++){if(sources[i].source.shard_index>=k+m)return -1;metrics[i]=sources[i].source;for(size_t j=0;j<i;j++)if(metrics[j].shard_index==metrics[i].shard_index)return -1;}
     QrxShardFetchPlan plan;if(qrx_storage_fetch_plan(metrics,n,o.required_successes,o.hedge_extra,&plan)!=0)return -1;
     QrxShardProviderSource ordered[QRX_STORAGE_MAX_FETCH_SOURCES];for(size_t p=0;p<n;p++){size_t found=n;for(size_t i=0;i<n;i++)if(sources[i].source.shard_index==plan.ordered_shards[p]){found=i;break;}if(found==n)return -1;ordered[p]=sources[found];}
-    QrxFetchShared s;memset(&s,0,sizeof(s));s.sources=ordered;s.source_count=k+m;memcpy(s.object_id,object_id,64);s.shard_size=shard_size;s.opt=o;s.fetch=fetch;s.verify=verify;s.ctx=ctx;s.shards=calloc(k+m,sizeof(uint8_t*));s.present=calloc(k+m,1);if(!s.shards||!s.present){free(s.shards);free(s.present);return -1;}pthread_mutex_init(&s.mu,NULL);pthread_cond_init(&s.cv,NULL);
-    pthread_t threads[QRX_STORAGE_MAX_FETCH_SOURCES];QrxFetchWorker workers[QRX_STORAGE_MAX_FETCH_SOURCES];size_t launched=0,joined=0;size_t initial=o.initial_parallel; if(initial>n)initial=n;
-    while(launched<initial){workers[launched]=(QrxFetchWorker){&s,launched};if(pthread_create(&threads[launched],NULL,fetch_worker,&workers[launched])!=0)break;launched++;s.stats.sources_started++;}
-    while(1){pthread_mutex_lock(&s.mu);if(s.successes>=o.required_successes||s.completed>=n||(s.completed==launched&&launched>=n)){pthread_mutex_unlock(&s.mu);break;}size_t before=s.completed;struct timespec ts;deadline_after_ms(&ts,o.hedge_delay_ms);pthread_cond_timedwait(&s.cv,&s.mu,&ts);int need_hedge=!s.stop&&s.successes<o.required_successes&&launched<n&&(s.completed>before||s.completed==launched||1);pthread_mutex_unlock(&s.mu);
-        if(need_hedge){size_t add=o.hedge_extra?o.hedge_extra:1;while(add--&&launched<n){workers[launched]=(QrxFetchWorker){&s,launched};if(pthread_create(&threads[launched],NULL,fetch_worker,&workers[launched])!=0)break;launched++;pthread_mutex_lock(&s.mu);s.stats.sources_started++;s.stats.hedges_started++;pthread_mutex_unlock(&s.mu);}}
+    QrxFetchShared s;memset(&s,0,sizeof(s));s.sources=ordered;s.source_count=k+m;memcpy(s.object_id,object_id,64);s.shard_size=shard_size;s.opt=o;s.fetch=fetch;s.verify=verify;s.ctx=ctx;s.shards=calloc(k+m,sizeof(uint8_t*));s.present=calloc(k+m,1);if(!s.shards||!s.present){free(s.shards);free(s.present);return -1;}qrx_mutex_init(&s.mu,NULL);qrx_cond_init(&s.cv,NULL);
+    qrx_thread_t threads[QRX_STORAGE_MAX_FETCH_SOURCES];QrxFetchWorker workers[QRX_STORAGE_MAX_FETCH_SOURCES];size_t launched=0,joined=0;size_t initial=o.initial_parallel; if(initial>n)initial=n;
+    while(launched<initial){workers[launched]=(QrxFetchWorker){&s,launched};if(qrx_thread_create(&threads[launched],NULL,fetch_worker,&workers[launched])!=0)break;launched++;s.stats.sources_started++;}
+    while(1){qrx_mutex_lock(&s.mu);if(s.successes>=o.required_successes||s.completed>=n||(s.completed==launched&&launched>=n)){qrx_mutex_unlock(&s.mu);break;}size_t before=s.completed;struct timespec ts;deadline_after_ms(&ts,o.hedge_delay_ms);qrx_cond_timedwait(&s.cv,&s.mu,&ts);int need_hedge=!s.stop&&s.successes<o.required_successes&&launched<n&&(s.completed>before||s.completed==launched||1);qrx_mutex_unlock(&s.mu);
+        if(need_hedge){size_t add=o.hedge_extra?o.hedge_extra:1;while(add--&&launched<n){workers[launched]=(QrxFetchWorker){&s,launched};if(qrx_thread_create(&threads[launched],NULL,fetch_worker,&workers[launched])!=0)break;launched++;qrx_mutex_lock(&s.mu);s.stats.sources_started++;s.stats.hedges_started++;qrx_mutex_unlock(&s.mu);}}
     }
-    pthread_mutex_lock(&s.mu);if(s.successes>=o.required_successes)s.stop=1;pthread_cond_broadcast(&s.cv);pthread_mutex_unlock(&s.mu);for(joined=0;joined<launched;joined++)pthread_join(threads[joined],NULL);
+    qrx_mutex_lock(&s.mu);if(s.successes>=o.required_successes)s.stop=1;qrx_cond_broadcast(&s.cv);qrx_mutex_unlock(&s.mu);for(joined=0;joined<launched;joined++)qrx_thread_join(threads[joined],NULL);
     int rc=-1;if(s.successes>=k){QrxErasureSet es;memset(&es,0,sizeof(es));es.data_shards=k;es.parity_shards=m;es.shard_size=shard_size;es.original_size=original_size;es.shards=s.shards;es.present=s.present;if(qrx_erasure_reconstruct(&es)==0&&qrx_erasure_join(&es,data_out,data_len_out)==0)rc=0;qrx_erasure_free(&es);s.shards=NULL;s.present=NULL;}
-    if(stats_out)*stats_out=s.stats;for(size_t i=0;s.shards&&i<k+m;i++)free(s.shards[i]);free(s.shards);free(s.present);pthread_cond_destroy(&s.cv);pthread_mutex_destroy(&s.mu);return rc;
+    if(stats_out)*stats_out=s.stats;for(size_t i=0;s.shards&&i<k+m;i++)free(s.shards[i]);free(s.shards);free(s.present);qrx_cond_destroy(&s.cv);qrx_mutex_destroy(&s.mu);return rc;
 }
 
 
