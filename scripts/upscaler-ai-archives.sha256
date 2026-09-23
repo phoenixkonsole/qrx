@@ -9,4 +9,7 @@
 # dynamically during a build.
 e5aa6eb131234b87c0c51f82b89390f5e3e642b7b70f2b9bbe95b6a285a40c96  realesrgan-ncnn-vulkan-20220424-ubuntu.zip
 e0ad05580abfeb25f8d8fb55aaf7bedf552c375b5b4d9bd3c8d59764d2cc333a  realesrgan-ncnn-vulkan-20220424-macos.zip
-# Windows remains fail-closed until QRX records and reviews its exact digest.
+# The Windows digest was verified against two independently downloaded copies:
+# the canonical GitHub release asset and the SourceForge exact-project mirror.
+# Both were 45,474,481 bytes, had identical ZIP contents, and matched this hash.
+abc02804e17982a3be33675e4d471e91ea374e65b70167abc09e31acb412802d  realesrgan-ncnn-vulkan-20220424-windows.zip

@@ -7,7 +7,7 @@ int qrx_storage_range_serialize(const QrxShardRangeRequest *r,uint8_t out[88]){i
 int qrx_storage_range_parse(const uint8_t in[88],QrxShardRangeRequest *r){if(!in||!r||memcmp(in,"QRXSRNG1",8)!=0)return -1;memset(r,0,sizeof(*r));memcpy(r->object_id,in+8,64);r->shard_index=g32(in+72);r->offset=g64(in+76);r->length=g32(in+84);return r->length?0:-1;}
 
 #include "storage/qrx_erasure.h"
-#include <pthread.h>
+#include "qrx_thread_compat.h"
 #include <stdlib.h>
 #include <time.h>
 

@@ -57,6 +57,9 @@
   #ifndef PATH_MAX
     #define PATH_MAX MAX_PATH
   #endif
+  #ifndef R_OK
+    #define R_OK 4
+  #endif
   #define strtok_r strtok_s
   #define strdup _strdup
   #define sleep(sec) Sleep((DWORD)((sec) * 1000))
@@ -178,6 +181,7 @@ static char g_validator_wallet_names[QRX_MAX_VALIDATOR_FLEET][128];
 static int g_validator_wallet_count = 0;
 static char g_backend_path[PATH_MAX];
 static char g_network[64];
+static char g_primary_wallet[128];
 static char g_base[PATH_MAX], g_cdir[PATH_MAX], g_wdir[PATH_MAX], g_ndir[PATH_MAX], g_sock[PATH_MAX];
 static char g_rpc_bind[128] = "127.0.0.1";
 static int g_allow_remote_rpc = 0;
@@ -586,6 +590,17 @@ static int run_capture_signer(char *const argv[],const char*wallet_name,char*out
  SetEnvironmentVariableA("QRX_PASSPHRASE",ss->secret);int rc=run_capture(argv,out,out_sz);SetEnvironmentVariableA("QRX_PASSPHRASE",NULL);return rc;
 #endif
 }
+
+/* Bootstrap signs its HELLO in the qrx child process.  A GUI may start qrxd
+ * while the wallet is locked and establish an in-memory signer session later;
+ * in that case the original daemon environment has no QRX_PASSPHRASE.  Pass
+ * the verified session secret only to the bootstrap child, just as validator
+ * signing already does, so unlocking a running wallet also enables discovery. */
+static int run_capture_bootstrap(char *const argv[],char*out,size_t out_sz){
+    QrxSignerSession*ss=signer_session(g_primary_wallet,0);
+    if(ss&&ss->unlocked)return run_capture_signer(argv,g_primary_wallet,out,out_sz);
+    return run_capture(argv,out,out_sz);
+}
 static int copy_file_local(const char *src, const char *dst){
     FILE *in=fopen(src,"rb"); if(!in) return -1;
     FILE *out=fopen(dst,"wb"); if(!out){ fclose(in); return -1; }
@@ -700,12 +715,14 @@ static void *maint_loop(void *arg){
         char *process[] = { g_backend_path, "node-process-inbox", g_ndir, NULL };
         char *decay[] = { g_backend_path, "decay-bans", g_ndir, "1", NULL };
         run_capture(discover, buf, sizeof(buf));
-        run_capture(bootstrap, buf, sizeof(buf));
+        run_capture_bootstrap(bootstrap, buf, sizeof(buf));
         run_capture(process, buf, sizeof(buf));
         char *generals_offline[] = { g_backend_path, "generals-offline-process", g_cdir, NULL };
         run_capture(generals_offline, buf, sizeof(buf));
         run_capture(decay, buf, sizeof(buf));
-        for(int i=0;i<5 && g_running;i++) sleep(1);
+        /* Peer discovery performs signed HELLO + GETPEERS exchanges. Running it
+           every five seconds trips the peers' one-minute abuse limits. */
+        for(int i=0;i<60 && g_running;i++) sleep(1);
     }
 #ifdef _WIN32
     return 0;
@@ -919,27 +936,6 @@ static void json_lines_array(char *dst, size_t dst_sz, const char *text){
     strncat(dst, "]", dst_sz - strlen(dst) - 1);
 }
 
-static void json_peer_lines_array(char *dst, size_t dst_sz, const char *text){
-    snprintf(dst, dst_sz, "[");
-    int first = 1;
-    char *copy = strdup(text ? text : "");
-    if(!copy){ strncat(dst, "]", dst_sz - strlen(dst) - 1); return; }
-    char *save = NULL; char *line = strtok_r(copy, "\n", &save);
-    while(line){
-        trim_ws_right(line);
-        while(*line == ' ' || *line == '\t' || *line == '\r') line++;
-        if(*line && strcmp(line,"[peers]") && strcmp(line,"[known]") && strcmp(line,"no peers")){
-            char js[4096]={0}; json_string(js,sizeof(js),line);
-            if(!first) strncat(dst, ",", dst_sz - strlen(dst) - 1);
-            strncat(dst, js, dst_sz - strlen(dst) - 1);
-            first = 0;
-        }
-        line = strtok_r(NULL, "\n", &save);
-    }
-    free(copy);
-    strncat(dst, "]", dst_sz - strlen(dst) - 1);
-}
-
 static long long count_regular_files(const char *dirpath){
 #ifdef _WIN32
     char search[MAX_PATH];
@@ -1061,29 +1057,21 @@ static void qrx_best_block_info(long long *height, char *hash, size_t hash_sz, l
     if(block_time) *block_time = best_ts;
 }
 
-static long long qrx_count_lines_in_file(const char *path){
-    FILE *f = fopen(path, "rb");
-    if(!f) return 0;
-    long long n = 0;
-    char line[1024];
-    while(fgets(line, sizeof(line), f)){
-        char *p = line;
-        while(*p == ' ' || *p == '\t') p++;
-        if(*p && *p != '\r' && *p != '\n' && *p != '[' && strncmp(p, "no peers", 8)) n++;
-    }
-    fclose(f);
-    return n;
-}
-
 static long long qrx_connection_count(void){
     char p[PATH_MAX];
-    snprintf(p, sizeof(p), "%s/peers.txt", g_ndir);
-    long long n = qrx_count_lines_in_file(p);
-    if(n <= 0){
-        snprintf(p, sizeof(p), "%s/known_peers.txt", g_ndir);
-        n = qrx_count_lines_in_file(p);
+    snprintf(p, sizeof(p), "%s/peer_state.db", g_ndir);
+    char *txt=read_text_file_local(p);if(!txt)return 0;
+    const long long cutoff=(long long)time(NULL)-180;
+    long long n=0;char *save=NULL,*line=strtok_r(txt,"\n",&save);
+    while(line){
+        char *eq=strchr(line,'=');
+        if(eq){
+            *eq=0;size_t klen=strlen(line);long long seen=parse_ll_safe(eq+1,0);
+            if(klen>10&&!strcmp(line+klen-10,"_last_seen")&&seen>=cutoff&&strcmp(line,"0_0_0_0_last_seen"))n++;
+        }
+        line=strtok_r(NULL,"\n",&save);
     }
-    return n;
+    free(txt);return n;
 }
 
 static long long qrx_best_peer_height(long long local_height){
@@ -2072,7 +2060,7 @@ static int handle_command(const char *cmdline, char *resp, size_t resp_sz){
         char *argv1[] = { g_backend_path, "list-peers", g_ndir, NULL };
         char *argv2[] = { g_backend_path, "peer-status", g_ndir, NULL };
         if(run_capture(argv1, out1, sizeof(out1)) != 0 || run_capture(argv2, out2, sizeof(out2)) != 0) json_error(resp, resp_sz, "getpeerinfo", "backend failed");
-        else { json_peer_lines_array(arr1,sizeof(arr1),out1); json_keyval_object(obj2,sizeof(obj2),out2); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getpeerinfo\",\"result\":{\"peers\":%s,\"peer_state\":%s}}\n", arr1, obj2); }
+        else { json_lines_array(arr1,sizeof(arr1),out1); json_keyval_object(obj2,sizeof(obj2),out2); snprintf(resp, resp_sz, "{\"ok\":true,\"method\":\"getpeerinfo\",\"result\":{\"lines\":%s,\"connections\":%lld,\"peer_state\":%s}}\n", arr1, qrx_connection_count(), obj2); }
         return 0;
     }
     if(!strcmp(args[0], "peerstatus") || !strcmp(args[0], "banscores")){
@@ -2565,6 +2553,7 @@ int main(int argc, char **argv){
         else { fprintf(stderr,"unknown arg: %s\n",argv[i]); usage(); return 1; }
     }
     snprintf(g_network, sizeof(g_network), "%s", network);
+    snprintf(g_primary_wallet, sizeof(g_primary_wallet), "%s", wallet);
     parse_rpc_bind_default(network);
     if(rpc_bind_arg && parse_rpc_bind_arg(rpc_bind_arg)!=0){ fprintf(stderr,"bad --rpc-bind, expected IPv4-host:port\n"); return 1; }
     if(validate_rpc_exposure()!=0) return 1;

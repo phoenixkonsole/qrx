@@ -7,6 +7,7 @@ checks=[
  'install_manifest.txt',
  "Get-ChildItem $Build -Recurse",
  'zlibstatic.lib',
+ 'zs.lib',
  'ZLIB_BUILD_SHARED=OFF',
  'ZLIB_BUILD_STATIC=ON',
  'Adopting zlib artifact from current build',

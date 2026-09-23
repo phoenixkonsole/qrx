@@ -164,6 +164,14 @@ $CoreBin=Join-Path $CoreBuild 'Release'
 $bins='qrx','qrx-cli','qrxd','qrx-upscaler','qrxdb_verify','qrxdb_salvage','qrxdb_compact','qrxdb_snapshot'
 foreach($b in $bins){$p=Join-Path $CoreBin "$b.exe"; if(-not(Test-Path $p)){throw "Core output missing: $p"}; Copy-Item $p (Join-Path $Out "core\$b.exe") -Force}
 
+# Cargo crates such as openssl-sys cannot discover QRX's private Windows
+# dependency prefix through CMake. Point every later Rust/Tauri build at the
+# same verified static OpenSSL installation used by the native Core.
+$env:OPENSSL_DIR=$Deps
+$env:OPENSSL_LIB_DIR=Join-Path $Deps 'lib'
+$env:OPENSSL_INCLUDE_DIR=Join-Path $Deps 'include'
+$env:OPENSSL_STATIC='1'
+
 Write-Host '[2/8] Staging complete CLI and Python tool set'
 Copy-Item (Join-Path $Core 'tools\qrx-wallet-cli.py'),(Join-Path $Core 'tools\qrx-complete-ledger-export.py'),(Join-Path $Core 'gateways\qrx-arbitrage-engine.py'),(Join-Path $Core 'gateways\qrx-gateway-kraken.py') (Join-Path $Out 'tools') -Force
 

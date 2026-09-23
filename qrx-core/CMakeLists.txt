@@ -253,6 +253,8 @@ if(WIN32)
     target_link_libraries(qrxcore PUBLIC ws2_32)
     target_compile_definitions(qrxcore PUBLIC
         _CRT_SECURE_NO_WARNINGS
+        strtok_r=strtok_s
+        strdup=_strdup
         WIN32_LEAN_AND_MEAN
         NOMINMAX
     )
@@ -506,7 +508,9 @@ target_include_directories(qrx-upscaler PRIVATE src)
 if(CMAKE_DL_LIBS)
   target_link_libraries(qrx-upscaler PRIVATE ${CMAKE_DL_LIBS})
 endif()
-target_link_libraries(qrx-upscaler PRIVATE m)
+if(UNIX)
+  target_link_libraries(qrx-upscaler PRIVATE m)
+endif()
 if(QRX_UPSCALER_PNG)
   target_compile_definitions(qrx-upscaler PRIVATE QRX_HAVE_PNG)
   target_link_libraries(qrx-upscaler PRIVATE PNG::PNG)
@@ -1028,7 +1032,9 @@ if(QRX_BUILD_TESTS)
   # accelerated PoUC mode depends on, so they are regression-gated.
   add_executable(apps_phase187_upscaler tests/apps_phase187_upscaler.c src/apps/qrx_upscaler.c)
   target_include_directories(apps_phase187_upscaler PRIVATE src)
-  target_link_libraries(apps_phase187_upscaler PRIVATE m)
+  if(UNIX)
+    target_link_libraries(apps_phase187_upscaler PRIVATE m)
+  endif()
   if(QRX_UPSCALER_PNG)
     target_compile_definitions(apps_phase187_upscaler PRIVATE QRX_HAVE_PNG)
     target_link_libraries(apps_phase187_upscaler PRIVATE PNG::PNG)
@@ -1064,6 +1070,14 @@ if(QRX_BUILD_TESTS)
   add_test(NAME genesis_phase185_remote_malformed_tx_survival
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/genesis_phase185_remote_malformed_tx_survival.py $<TARGET_FILE:qrx>)
   set_tests_properties(genesis_phase185_remote_malformed_tx_survival PROPERTIES TIMEOUT 900)
+
+  add_test(NAME p2p_bootstrap_dns_dedup_self_filter
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/p2p_bootstrap_regression.py $<TARGET_FILE:qrx>)
+  set_tests_properties(p2p_bootstrap_dns_dedup_self_filter PROPERTIES TIMEOUT 30)
+
+  add_test(NAME p2p_daemon_post_unlock_signed_bootstrap
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/daemon_unlock_bootstrap_regression.py $<TARGET_FILE:qrx> $<TARGET_FILE:qrxd>)
+  set_tests_properties(p2p_daemon_post_unlock_signed_bootstrap PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE)
 
   # Phase 186: static proof that no unguarded die()/exit()/abort()/assert()
   # is reachable from an untrusted network ingress point.

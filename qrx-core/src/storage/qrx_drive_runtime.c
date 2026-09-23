@@ -3,7 +3,7 @@
 #include "storage/qrx_storage_network.h"
 #include "storage/qrx_transfer_journal.h"
 #include "storage/qrx_erasure.h"
-#include <pthread.h>
+#include "qrx_thread_compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

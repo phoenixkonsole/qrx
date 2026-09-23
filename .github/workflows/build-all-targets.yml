@@ -1,0 +1,72 @@
+name: Build all targets
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main, '0.0.9*', 'fix/**']
+    tags: ['v0.0.9*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            build_target: linux-x64
+            runner: ubuntu-22.04
+            node_only: ''
+          - target: linux-arm64
+            build_target: linux-arm64
+            runner: ubuntu-22.04-arm
+            node_only: ''
+          - target: linux-x64-node-only
+            build_target: linux-x64
+            runner: ubuntu-22.04
+            node_only: '--node-only'
+          - target: macos-x64
+            build_target: macos-x64
+            runner: macos-15-intel
+            node_only: ''
+          - target: macos-arm64
+            build_target: macos-arm64
+            runner: macos-15
+            node_only: ''
+          - target: windows-x64
+            build_target: windows-x64
+            runner: windows-2022
+            node_only: ''
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Linux ARM AI build dependencies
+        if: matrix.target == 'linux-arm64'
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev glslang-tools
+
+      - name: Build and package ${{ matrix.target }}
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash ./scripts/build-all-targets.sh --target "${{ matrix.build_target }}" ${{ matrix.node_only }}
+
+      - name: Build and package ${{ matrix.target }}
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-all-targets.ps1 -Target windows-x64 -InstallDependencies
+
+      - name: Upload ${{ matrix.target }} package
+        uses: actions/upload-artifact@v4
+        with:
+          name: qrx-0.0.9-genesis-${{ matrix.target }}
+          path: dist/qrx-0.0.9-genesis-${{ matrix.target }}.zip
+          if-no-files-found: error
+          retention-days: 14

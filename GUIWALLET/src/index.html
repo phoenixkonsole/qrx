@@ -1601,7 +1601,7 @@ function peerLinesFromResult(v){
   return [];
 }
 function peerEndpointKey(hp){return `${String(hp?.host||"").toLowerCase()}:${String(hp?.port||"—")}`;}
-function isPeerSectionMarker(line){return /^\s*\[(peers|known)\]\s*$/i.test(String(line||""));}
+function isPeerSectionMarker(line){return /^\s*\[(peers|known|listener)\]\s*$/i.test(String(line||""));}
 function isPeerEmptyMarker(line){return /^\s*(no peers|no peer state)\s*$/i.test(String(line||""));}
 function isWildcardListenerHost(host){const h=String(host||"").trim().toLowerCase();return h==="0.0.0.0"||h==="::"||h==="[::]"||h==="*";}
 function parsePeerOverview(v){
@@ -1610,10 +1610,10 @@ function parsePeerOverview(v){
   const seen={connected:new Set(),known:new Set(),listener:new Set()};
   for(const raw of lines){
     const line=String(raw||"").trim(); if(!line||isPeerEmptyMarker(line)) continue;
-    const marker=line.match(/^\[(peers|known)\]$/i); if(marker){section=marker[1].toLowerCase()==="known"?"known":"connected";continue;}
+    const marker=line.match(/^\[(peers|known|listener)\]$/i); if(marker){const kind=marker[1].toLowerCase();section=kind==="known"?"known":kind==="listener"?"listener":"connected";continue;}
     const hp=splitPeerHostPort(line); if(!hp.host||hp.host==="—"||isPeerSectionMarker(hp.host)) continue;
     const key=peerEndpointKey(hp), entry={...hp,raw:line};
-    if(isWildcardListenerHost(hp.host)){
+    if(section==="listener"||isWildcardListenerHost(hp.host)){
       if(!seen.listener.has(key)){seen.listener.add(key);listeners.push(entry);} continue;
     }
     if(section==="known"){
@@ -1635,13 +1635,13 @@ function appendPeerGroup(body,label,entries,kind){
 }
 function renderPeerViewer(v){
   const body=$("peerViewerRows"); if(!body) return; while(body.firstChild) body.removeChild(body.firstChild);
-  const groups=parsePeerOverview(v), connected=groups.connected.length, known=groups.known.length, listeners=groups.listeners.length;
+  const groups=parsePeerOverview(v), reported=Number(v?.connections), connected=Number.isFinite(reported)&&reported>=0?reported:0, known=groups.known.length, listeners=groups.listeners.length;
   setText("metricPeers",connected);
   setText("peerConnectedSummary",`${peerUiLabel("Connected","Verbunden")}: ${connected}`);
   setText("peerKnownSummary",`${peerUiLabel("Known / Seeds","Bekannt / Seeds")}: ${known}`);
   setText("peerListenerSummary",`${peerUiLabel("Local listener","Lokaler Listener")}: ${listeners}`);
   if(!connected&&!known&&!listeners){const tr=document.createElement("tr"),td=document.createElement("td");td.colSpan=4;td.className="muted";td.textContent=peerUiLabel("No peers reported by the local node.","Keine Peers von der lokalen Node gemeldet.");tr.appendChild(td);body.appendChild(tr);return;}
-  appendPeerGroup(body,peerUiLabel("Connected","Verbunden"),groups.connected,"connected");
+  appendPeerGroup(body,peerUiLabel("Configured peers / seeds","Konfigurierte Peers / Seeds"),groups.connected,"connected");
   appendPeerGroup(body,peerUiLabel("Known / Seeds","Bekannt / Seeds"),groups.known,"known");
   appendPeerGroup(body,peerUiLabel("Local listener","Lokaler Listener"),groups.listeners,"listener");
 }

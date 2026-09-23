@@ -12,6 +12,7 @@ $Core = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Repo = (Resolve-Path (Join-Path $Core "..")).Path
 if (-not $BuildDir) { $BuildDir = Join-Path $Repo "build\core\windows-x64" }
 if (-not $DepsPrefix) { $DepsPrefix = Join-Path $Repo "build\deps\windows-x64" }
+$DepsPrefixCMake=$DepsPrefix -replace '\\','/'
 if ($Jobs -le 0) { $Jobs = [Environment]::ProcessorCount }
 $SourceCache = Join-Path $Repo "build\deps\sources"
 $Work = Join-Path $Repo "build\deps\work\windows-x64"
@@ -23,10 +24,12 @@ $PngVersion = if ($env:QRX_LIBPNG_VERSION) { $env:QRX_LIBPNG_VERSION } else { "1
 $CurlVersion = if ($env:QRX_CURL_VERSION) { $env:QRX_CURL_VERSION } else { "8.22.0" }
 $ZlibSha = "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
 $PngSha = "28eb403f51f0f7405249132cecfe82ea5c0ef97f1b32c5a65828814ae0d34775"
-$CurlSha = "f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7"
+$CurlSha = "d54dd598bf05927a726deb38df31c6a255ba83ff1de57c5d1464dac3ed8f44a1"
 
 function Need([string]$Name) { if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) { throw "Missing build tool: $Name" } }
 foreach ($c in @("cmake","perl","tar","git")) { Need $c }
+$TarExe = Join-Path $env:SystemRoot "System32\tar.exe"
+if (-not (Test-Path $TarExe)) { throw "Windows tar.exe not found: $TarExe" }
 
 function Fetch([string]$Url,[string]$Out) {
   if (-not (Test-Path $Out) -or (Get-Item $Out).Length -eq 0) {
@@ -53,10 +56,16 @@ function FetchVerified([string]$Url,[string]$Out,[string]$Expected) {
   Verify $Out $Expected
 }
 function Extract([string]$Archive,[string]$Destination) {
+  Write-Host "Extracting $Archive -> $Destination"
   if (Test-Path $Destination) { Remove-Item -Recurse -Force $Destination }
   New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-  & tar -xf $Archive --strip-components=1 -C $Destination
+  # GitHub Actions invokes this script from Git Bash, whose /usr/bin/tar sees
+  # native paths such as D:\a\... as remote host syntax ("Cannot connect to
+  # D:").  Call the Windows tar executable explicitly so native paths remain
+  # native on every Windows entry point.
+  & $TarExe -xf $Archive --strip-components=1 -C $Destination
   if ($LASTEXITCODE -ne 0) { throw "Failed to extract $Archive" }
+  Write-Host "Extracted $Archive"
 }
 
 $OsslTar=Join-Path $SourceCache "openssl-$OpenSSLVersion.tar.gz"
@@ -66,7 +75,7 @@ Fetch "https://github.com/openssl/openssl/releases/download/openssl-$OpenSSLVers
 $OsslExpected=((Get-Content $OsslShaFile | Select-Object -First 1) -split '\s+')[0]
 if ($OsslExpected -notmatch '^[0-9a-fA-F]{64}$') { throw "Invalid OpenSSL checksum sidecar" }
 Verify $OsslTar $OsslExpected
-$ZlibTar=Join-Path $SourceCache "zlib-$ZlibVersion.tar.gz"; Fetch "https://zlib.net/fossils/zlib-$ZlibVersion.tar.gz" $ZlibTar; Verify $ZlibTar $ZlibSha
+$ZlibTar=Join-Path $SourceCache "zlib-$ZlibVersion.tar.gz"; Fetch "https://github.com/madler/zlib/releases/download/v$ZlibVersion/zlib-$ZlibVersion.tar.gz" $ZlibTar; Verify $ZlibTar $ZlibSha
 $PngTar=Join-Path $SourceCache "libpng-$PngVersion.tar.xz"
 $PngArchiveOk=$false
 try {
@@ -95,7 +104,11 @@ if (-not $PngArchiveOk) {
   & git -C $PngGitSource checkout --detach $PngCommit
   if ($LASTEXITCODE -ne 0) { throw "libpng pinned commit checkout failed" }
 }
-$CurlTar=Join-Path $SourceCache "curl-$CurlVersion.tar.xz"; Fetch "https://curl.se/download/curl-$CurlVersion.tar.xz" $CurlTar; Verify $CurlTar $CurlSha
+# Windows' bundled bsdtar extracted gzip sources above correctly, but hung
+# indefinitely while opening curl's XZ archive on the hosted VS 2022 runner.
+# curl publishes the same signed release as gzip, so use that Windows-native
+# compatible format and keep its exact official bytes SHA-256 pinned.
+$CurlTar=Join-Path $SourceCache "curl-$CurlVersion.tar.gz"; Fetch "https://curl.se/download/curl-$CurlVersion.tar.gz" $CurlTar; Verify $CurlTar $CurlSha
 
 # OpenSSL's Windows build requires the MSVC developer environment. Locate it
 # without depending on vcpkg/Chocolatey/Homebrew-like package managers.
@@ -107,14 +120,28 @@ $vcvars = Join-Path $vsroot "VC\Auxiliary\Build\vcvars64.bat"
 if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found: $vcvars" }
 
 $Crypto=Join-Path $DepsPrefix "lib\libcrypto.lib"
+$OpenSSLSource=Join-Path $Work "openssl-$OpenSSLVersion"
 if (-not (Test-Path $Crypto)) {
-  $src=Join-Path $Work "openssl-$OpenSSLVersion"; Extract $OsslTar $src
-  $cmd='"{0}" && cd /d "{1}" && perl Configure VC-WIN64A no-shared no-tests no-asm --prefix="{2}" --openssldir="{2}\ssl" && nmake && nmake install_sw' -f $vcvars,$src,$DepsPrefix
+  Extract $OsslTar $OpenSSLSource
+  $cmd='"{0}" && cd /d "{1}" && perl Configure VC-WIN64A no-shared no-tests no-asm --prefix="{2}" --openssldir="{2}\ssl" && nmake && nmake install_sw' -f $vcvars,$OpenSSLSource,$DepsPrefix
   & cmd.exe /d /s /c $cmd
   if ($LASTEXITCODE -ne 0) { throw "OpenSSL source build failed" }
 }
 if (-not (Test-Path $Crypto)) { $Crypto=Join-Path $DepsPrefix "lib\crypto.lib" }
 if (-not (Test-Path $Crypto)) { throw "Static OpenSSL crypto library missing" }
+
+# OpenSSL requires applink.c to be compiled into MSVC applications which use
+# its stdio APIs. install_sw does not install that source file, so adopt it
+# from the same verified source archive used to build libcrypto.
+$OpenSSLApplink=Join-Path $DepsPrefix "include\openssl\applink.c"
+if (-not (Test-Path $OpenSSLApplink)) {
+  $SourceApplink=Join-Path $OpenSSLSource "ms\applink.c"
+  if (-not (Test-Path $SourceApplink)) {
+    Extract $OsslTar $OpenSSLSource
+  }
+  if (-not (Test-Path $SourceApplink)) { throw "OpenSSL applink source missing from verified archive" }
+  Copy-Item -Force $SourceApplink $OpenSSLApplink
+}
 
 # Pin the multi-config Visual Studio generator.  Passing -A x64 to an
 # environment-selected Ninja generator is invalid (Ninja has no platform
@@ -122,9 +149,12 @@ if (-not (Test-Path $Crypto)) { throw "Static OpenSSL crypto library missing" }
 # The Windows preflight already requires the VS 2022 C++ toolchain, so use its
 # generator deterministically for dependency and Core builds.
 $CMakeGenerator="Visual Studio 17 2022"
-function CMakeInstall([string]$Source,[string]$Build,[string[]]$Args) {
+function CMakeInstall([string]$Source,[string]$Build,[string[]]$ConfigureArgs) {
   if (Test-Path $Build) { Remove-Item -Recurse -Force $Build }
-  & cmake -S $Source -B $Build -G $CMakeGenerator -A x64 @Args
+  # $args is PowerShell's automatic collection for undeclared arguments and
+  # is case-insensitive.  A parameter named $Args therefore swallowed these
+  # dependency options on clean runners.  Use a distinct splat name.
+  & cmake -S $Source -B $Build -G $CMakeGenerator -A x64 @ConfigureArgs
   if ($LASTEXITCODE -ne 0) { throw "CMake configure failed: $Source" }
   & cmake --build $Build --config Release --parallel $Jobs
   if ($LASTEXITCODE -ne 0) { throw "CMake build failed: $Source" }
@@ -145,9 +175,12 @@ function Resolve-ZlibStatic([string]$Build,[string]$Source,[string]$Prefix) {
 
   $preferred=@(
     (Join-Path $destLib "zlibstatic.lib"),
+    (Join-Path $destLib "zs.lib"),
     (Join-Path $destLib "z.lib"),
     (Join-Path $Build "Release\zlibstatic.lib"),
+    (Join-Path $Build "Release\zs.lib"),
     (Join-Path $Build "zlibstatic.lib"),
+    (Join-Path $Build "zs.lib"),
     (Join-Path $Build "Release\z.lib"),
     (Join-Path $Build "z.lib")
   )
@@ -158,20 +191,20 @@ function Resolve-ZlibStatic([string]$Build,[string]$Source,[string]$Prefix) {
     $manifest=Join-Path $Build "install_manifest.txt"
     if (Test-Path $manifest) {
       $candidate=Get-Content $manifest | Where-Object {
-        $_ -match '\.(lib)$' -and (Split-Path $_ -Leaf) -match '^(zlibstatic|zlib|z)\.lib$'
+        $_ -match '\.(lib)$' -and (Split-Path $_ -Leaf) -match '^(zlibstatic|zlib|zs|z)\.lib$'
       } | Where-Object { Test-Path $_ } | Select-Object -First 1
     }
   }
   if (-not $candidate) {
     $candidate=(Get-ChildItem $Build -Recurse -File -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -match '^(zlibstatic|zlib|z)\.lib$' } |
+      Where-Object { $_.Name -match '^(zlibstatic|zlib|zs|z)\.lib$' } |
       Sort-Object @{Expression={ if ($_.Name -eq 'zlibstatic.lib') {0} else {1} }},FullName |
       Select-Object -First 1).FullName
   }
   if (-not $candidate -or -not (Test-Path $candidate)) { return $null }
 
-  # Prefer an explicitly static archive.  A bare z.lib next to z.dll can be an
-  # import library, so if zlibstatic.lib exists anywhere in this build it wins.
+  # Prefer an explicitly static archive. zlib 1.3.2 calls its MSVC static
+  # artifact zs.lib; a bare z.lib next to z.dll can be an import library.
   if ((Split-Path $candidate -Leaf) -ne 'zlibstatic.lib') {
     $explicit=(Get-ChildItem $Build -Recurse -File -Filter 'zlibstatic.lib' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
     if ($explicit) { $candidate=$explicit }
@@ -207,17 +240,18 @@ $ZlibStatic=Resolve-ZlibStatic $ZlibBuild $ZlibSource $DepsPrefix
 if (-not $ZlibStatic) {
   Extract $ZlibTar $ZlibSource
   CMakeInstall $ZlibSource $ZlibBuild @(
-    "-DCMAKE_BUILD_TYPE=Release","-DCMAKE_INSTALL_PREFIX=$DepsPrefix",
+    "-DCMAKE_BUILD_TYPE=Release","-DCMAKE_INSTALL_PREFIX=$DepsPrefixCMake",
     "-DBUILD_SHARED_LIBS=OFF","-DZLIB_BUILD_SHARED=OFF","-DZLIB_BUILD_STATIC=ON","-DZLIB_BUILD_TESTING=OFF"
   )
   $ZlibStatic=Resolve-ZlibStatic $ZlibBuild $ZlibSource $DepsPrefix
 }
 if (-not $ZlibStatic -or -not (Test-Path $ZlibStatic)) { throw "Static zlib missing after build/artifact resolution" }
+$ZlibStaticCMake=$ZlibStatic -replace '\\','/'
 
 $PngStatic=(Get-ChildItem (Join-Path $DepsPrefix "lib") -Filter "*png*static*.lib" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
 if (-not $PngStatic) {
   if ($PngArchiveOk) { $src=Join-Path $Work "libpng-$PngVersion"; Extract $PngTar $src } else { $src=$PngGitSource }
-  CMakeInstall $src (Join-Path $Work "libpng-build") @("-DCMAKE_BUILD_TYPE=Release","-DCMAKE_INSTALL_PREFIX=$DepsPrefix","-DBUILD_SHARED_LIBS=OFF","-DPNG_SHARED=OFF","-DPNG_STATIC=ON","-DPNG_TESTS=OFF","-DPNG_TOOLS=OFF","-DZLIB_ROOT=$DepsPrefix","-DZLIB_LIBRARY=$ZlibStatic","-DZLIB_INCLUDE_DIR=$DepsPrefix\include")
+  CMakeInstall $src (Join-Path $Work "libpng-build") @("-DCMAKE_BUILD_TYPE=Release","-DCMAKE_INSTALL_PREFIX=$DepsPrefixCMake","-DBUILD_SHARED_LIBS=OFF","-DPNG_SHARED=OFF","-DPNG_STATIC=ON","-DPNG_TESTS=OFF","-DPNG_TOOLS=OFF","-DZLIB_ROOT=$DepsPrefixCMake","-DZLIB_LIBRARY=$ZlibStaticCMake","-DZLIB_INCLUDE_DIR=$DepsPrefixCMake/include")
   $PngStatic=(Get-ChildItem (Join-Path $DepsPrefix "lib") -Filter "*png*.lib" | Where-Object { $_.Name -notmatch 'dll' } | Select-Object -First 1).FullName
 }
 if (-not $PngStatic) { throw "Static libpng missing" }
@@ -226,18 +260,22 @@ $CurlStatic=Join-Path $DepsPrefix "lib\libcurl.lib"
 if (-not (Test-Path $CurlStatic)) {
   $src=Join-Path $Work "curl-$CurlVersion"; Extract $CurlTar $src
   CMakeInstall $src (Join-Path $Work "curl-build") @(
-    "-DCMAKE_BUILD_TYPE=Release","-DCMAKE_INSTALL_PREFIX=$DepsPrefix","-DBUILD_SHARED_LIBS=OFF","-DBUILD_CURL_EXE=OFF","-DBUILD_TESTING=OFF",
-    "-DCURL_USE_OPENSSL=ON","-DCURL_ZLIB=ON","-DOPENSSL_ROOT_DIR=$DepsPrefix","-DOPENSSL_USE_STATIC_LIBS=TRUE","-DZLIB_ROOT=$DepsPrefix","-DZLIB_LIBRARY=$ZlibStatic",
+    "-DCMAKE_BUILD_TYPE=Release","-DCMAKE_INSTALL_PREFIX=$DepsPrefixCMake","-DBUILD_SHARED_LIBS=OFF","-DBUILD_CURL_EXE=OFF","-DBUILD_TESTING=OFF",
+    "-DCURL_USE_OPENSSL=ON","-DCURL_ZLIB=ON","-DOPENSSL_ROOT_DIR=$DepsPrefixCMake","-DOPENSSL_USE_STATIC_LIBS=TRUE","-DZLIB_ROOT=$DepsPrefixCMake","-DZLIB_LIBRARY=$ZlibStaticCMake",
     "-DCURL_USE_LIBPSL=OFF","-DCURL_BROTLI=OFF","-DCURL_ZSTD=OFF","-DUSE_LIBIDN2=OFF","-DUSE_NGHTTP2=OFF","-DUSE_NGTCP2=OFF","-DUSE_QUICHE=OFF","-DCURL_USE_LIBSSH2=OFF","-DCURL_USE_GSSAPI=OFF",
     "-DCURL_DISABLE_LDAP=ON","-DCURL_DISABLE_LDAPS=ON","-DCURL_DISABLE_FTP=ON","-DCURL_DISABLE_FILE=ON","-DCURL_DISABLE_TELNET=ON","-DCURL_DISABLE_TFTP=ON","-DCURL_DISABLE_DICT=ON","-DCURL_DISABLE_GOPHER=ON","-DCURL_DISABLE_IMAP=ON","-DCURL_DISABLE_POP3=ON","-DCURL_DISABLE_RTSP=ON","-DCURL_DISABLE_SMB=ON","-DCURL_DISABLE_SMTP=ON","-DCURL_DISABLE_MQTT=ON","-DCURL_DISABLE_WEBSOCKETS=ON"
   )
 }
 if (-not (Test-Path $CurlStatic)) { throw "Static libcurl missing" }
 
+$CryptoCMake=$Crypto -replace '\\','/'
+$PngStaticCMake=$PngStatic -replace '\\','/'
+$CurlStaticCMake=$CurlStatic -replace '\\','/'
+
 @("openssl=$OpenSSLVersion sha256=$OsslExpected","zlib=$ZlibVersion sha256=$ZlibSha","libpng=$PngVersion archive-sha256=$PngSha git-fallback-commit=3061454d980de7d53608f594194cfac722721d2a","curl=$CurlVersion sha256=$CurlSha","os=windows","arch=x86_64") | Set-Content -Encoding ascii (Join-Path $DepsPrefix "qrx-deps.lock")
 
 if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
-$cmakeArgs=@("-S",$Core,"-B",$BuildDir,"-G",$CMakeGenerator,"-A","x64","-DCMAKE_BUILD_TYPE=Release","-DQRX_REQUIRE_PQC=ON","-DQRX_REQUIRE_BUNDLED_DEPS=ON","-DQRX_DEPS_PREFIX=$DepsPrefix","-DOPENSSL_ROOT_DIR=$DepsPrefix","-DOPENSSL_USE_STATIC_LIBS=TRUE","-DOPENSSL_CRYPTO_LIBRARY=$Crypto","-DZLIB_ROOT=$DepsPrefix","-DZLIB_LIBRARY=$ZlibStatic","-DZLIB_INCLUDE_DIR=$DepsPrefix\include","-DPNG_PNG_INCLUDE_DIR=$DepsPrefix\include","-DPNG_LIBRARY=$PngStatic","-DCURL_ROOT=$DepsPrefix","-DCURL_USE_STATIC_LIBS=TRUE","-DCURL_LIBRARY=$CurlStatic","-DCURL_INCLUDE_DIR=$DepsPrefix\include")
+$cmakeArgs=@("-S",$Core,"-B",$BuildDir,"-G",$CMakeGenerator,"-A","x64","-DCMAKE_BUILD_TYPE=Release","-DQRX_REQUIRE_PQC=ON","-DQRX_REQUIRE_BUNDLED_DEPS=ON","-DQRX_DEPS_PREFIX=$DepsPrefixCMake","-DOPENSSL_ROOT_DIR=$DepsPrefixCMake","-DOPENSSL_USE_STATIC_LIBS=TRUE","-DOPENSSL_CRYPTO_LIBRARY=$CryptoCMake","-DZLIB_ROOT=$DepsPrefixCMake","-DZLIB_LIBRARY=$ZlibStaticCMake","-DZLIB_INCLUDE_DIR=$DepsPrefixCMake/include","-DPNG_PNG_INCLUDE_DIR=$DepsPrefixCMake/include","-DPNG_LIBRARY=$PngStaticCMake","-DCURL_ROOT=$DepsPrefixCMake","-DCURL_USE_STATIC_LIBS=TRUE","-DCURL_LIBRARY=$CurlStaticCMake","-DCURL_INCLUDE_DIR=$DepsPrefixCMake/include")
 & cmake @cmakeArgs; if ($LASTEXITCODE -ne 0) { throw "QRX CMake configure failed" }
 & cmake --build $BuildDir --config Release --parallel $Jobs; if ($LASTEXITCODE -ne 0) { throw "QRX build failed" }
 $expected=@("qrx.exe","qrx-cli.exe","qrxd.exe","qrx-upscaler.exe","qrxdb_verify.exe","qrxdb_salvage.exe","qrxdb_compact.exe","qrxdb_snapshot.exe")

@@ -6,9 +6,11 @@
 #include <ctype.h>
 #ifdef _WIN32
 #include <process.h>
+#define QRX_S_ISREG(mode) (((mode) & _S_IFMT) == _S_IFREG)
 #else
 #include <unistd.h>
 #include <sys/wait.h>
+#define QRX_S_ISREG(mode) S_ISREG(mode)
 #endif
 
 /* Minimal SHA-256 used only for local model-integrity verification. */
@@ -21,7 +23,7 @@ static void sinit(S256*s){static const uint32_t H[8]={0x6a09e667,0xbb67ae85,0x3c
 static void supd(S256*s,const void*v,size_t n){const unsigned char*p=v;s->n+=(uint64_t)n*8;while(n){size_t k=64-s->z;if(k>n)k=n;memcpy(s->b+s->z,p,k);s->z+=k;p+=k;n-=k;if(s->z==64){sblk(s,s->b);s->z=0;}}}
 static void sfin(S256*s,unsigned char out[32]){s->b[s->z++]=0x80;if(s->z>56){while(s->z<64)s->b[s->z++]=0;sblk(s,s->b);s->z=0;}while(s->z<56)s->b[s->z++]=0;for(int i=7;i>=0;i--)s->b[s->z++]=(unsigned char)(s->n>>(i*8));sblk(s,s->b);for(int i=0;i<8;i++){out[i*4]=(unsigned char)(s->h[i]>>24);out[i*4+1]=(unsigned char)(s->h[i]>>16);out[i*4+2]=(unsigned char)(s->h[i]>>8);out[i*4+3]=(unsigned char)s->h[i];}}
 static int file_sha256(const char*p,char hex[65]){FILE*f=fopen(p,"rb");if(!f)return-1;S256 s;sinit(&s);unsigned char b[131072],h[32];for(;;){size_t n=fread(b,1,sizeof(b),f);if(n)supd(&s,b,n);if(n<sizeof(b)){if(ferror(f)){fclose(f);return-1;}break;}}fclose(f);sfin(&s,h);static const char*x="0123456789abcdef";for(int i=0;i<32;i++){hex[i*2]=x[h[i]>>4];hex[i*2+1]=x[h[i]&15];}hex[64]=0;return 0;}
-static int regular(const char*p){struct stat s;return p&&*p&&stat(p,&s)==0&&S_ISREG(s.st_mode);}
+static int regular(const char*p){struct stat s;return p&&*p&&stat(p,&s)==0&&QRX_S_ISREG(s.st_mode);}
 static int absolute_path(const char*p){if(!p||!*p)return 0;
 #ifdef _WIN32
 return (isalpha((unsigned char)p[0])&&p[1]==':')||p[0]=='\\';

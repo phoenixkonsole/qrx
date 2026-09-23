@@ -16,7 +16,7 @@ mkdir -p "$PREFIX" "$SRC_CACHE" "$WORK"
 # may no longer package that ABI. Build it privately; never install legacy
 # libraries into /usr.
 if command -v apt-get >/dev/null 2>&1; then
-  pkgs=(build-essential cmake ninja-build meson pkg-config curl xz-utils python3 perl ruby
+  pkgs=(build-essential cmake ninja-build meson pkg-config curl xz-utils python3 perl ruby unifdef
     libglib2.0-dev libgtk-3-dev libxml2-dev libxslt1-dev libsqlite3-dev
     libjpeg-dev libpng-dev libwebp-dev libicu-dev libharfbuzz-dev libfontconfig1-dev
     libfreetype6-dev libsecret-1-dev libenchant-2-dev libhyphen-dev libgcrypt20-dev

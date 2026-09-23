@@ -92,6 +92,7 @@
   }
 #else
   #include <arpa/inet.h>
+  #include <netdb.h>
   #include <netinet/in.h>
   #include <sys/socket.h>
   #include <dirent.h>
@@ -185,6 +186,43 @@ static char g_aura_model_cache_path[1024] = {0};
 static EVP_PKEY *g_hello_priv = NULL;
 static EVP_PKEY *g_hello_pub = NULL;
 static char g_hello_wallet_dir[1024] = {0};
+
+static int connect_with_timeout(int fd, const struct sockaddr *addr, socklen_t addr_len, int seconds) {
+#ifdef _WIN32
+    u_long nonblocking = 1;
+    if (ioctlsocket((SOCKET)fd, FIONBIO, &nonblocking) != 0) return -1;
+    int rc = connect((SOCKET)fd, addr, addr_len);
+    if (rc != 0 && WSAGetLastError() != WSAEWOULDBLOCK && WSAGetLastError() != WSAEINPROGRESS) {
+        nonblocking = 0; ioctlsocket((SOCKET)fd, FIONBIO, &nonblocking); return -1;
+    }
+#else
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) return -1;
+    int rc = connect(fd, addr, addr_len);
+    if (rc != 0 && errno != EINPROGRESS) { fcntl(fd, F_SETFL, flags); return -1; }
+#endif
+    if (rc != 0) {
+        fd_set write_fds; FD_ZERO(&write_fds); FD_SET(fd, &write_fds);
+        struct timeval timeout; timeout.tv_sec = seconds; timeout.tv_usec = 0;
+#ifdef _WIN32
+        rc = select(0, NULL, &write_fds, NULL, &timeout);
+#else
+        rc = select(fd + 1, NULL, &write_fds, NULL, &timeout);
+#endif
+        if (rc <= 0) rc = -1;
+        else {
+            int socket_error = 0; socklen_t error_len = sizeof(socket_error);
+            rc = getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&socket_error, &error_len) == 0 && socket_error == 0 ? 0 : -1;
+        }
+    }
+#ifdef _WIN32
+    nonblocking = 0;
+    if (ioctlsocket((SOCKET)fd, FIONBIO, &nonblocking) != 0) rc = -1;
+#else
+    if (fcntl(fd, F_SETFL, flags) != 0) rc = -1;
+#endif
+    return rc;
+}
 
 
 static int connect_to(const char *host, int port);
@@ -4513,7 +4551,7 @@ static int generals_stage_research_start(QrxDBBatch*b,const char*c,const char*fr
  char k[1024],v[256];generals_research_key(k,sizeof(k),sid,from,"status");if(generals_db_get(c,k,v,sizeof(v))==0&&!strcmp(v,"active"))goto fail;long long mat=generals_resource(c,sid,from,"materials"),sup=generals_resource(c,sid,from,"supply");if(mat<t->materials||sup<t->supply)goto fail;snprintf(k,sizeof(k),"generals:season:%lld:player:%s:industrial_capacity",sid,from);long long ic=generals_db_ll(c,k,0),icut=ic>25?25:ic;snprintf(k,sizeof(k),"generals:season:%lld:player:%s:research_capacity",sid,from);long long rcap=generals_db_ll(c,k,0),rcut=rcap>30?30:rcap;long long cut=icut+rcut;if(cut>45)cut=45;long long dur=t->blocks-(t->blocks*cut/100);if(dur<60)dur=60;long long end=h+dur;int rc=0;
  generals_research_key(k,sizeof(k),sid,from,"status");rc|=qrxdb_batch_put(b,k,"active");generals_research_key(k,sizeof(k),sid,from,"tech_id");rc|=qrxdb_batch_put(b,k,tid);generals_research_key(k,sizeof(k),sid,from,"research_id");char rid[40];snprintf(rid,sizeof(rid),"RSR-%.24s",txid);rc|=qrxdb_batch_put(b,k,rid);generals_research_key(k,sizeof(k),sid,from,"start_height");rc|=velocity_batch_put_ll(b,k,h);generals_research_key(k,sizeof(k),sid,from,"base_duration_blocks");rc|=velocity_batch_put_ll(b,k,dur);generals_research_key(k,sizeof(k),sid,from,"completion_height");rc|=velocity_batch_put_ll(b,k,end);generals_research_key(k,sizeof(k),sid,from,"accelerated_blocks");rc|=velocity_batch_put_ll(b,k,0);generals_research_key(k,sizeof(k),sid,from,"qub_spent_atoms");rc|=velocity_batch_put_ll(b,k,0);generals_research_key(k,sizeof(k),sid,from,"start_tx");rc|=qrxdb_batch_put(b,k,txid);rc|=generals_stage_resource(b,sid,from,"materials",mat-t->materials);rc|=generals_stage_resource(b,sid,from,"supply",sup-t->supply);free(tid);free(sid_s);return rc?-1:0;fail:free(tid);free(sid_s);return -1;}
 static int generals_stage_research_accelerate(QrxDBBatch*b,const char*c,const char*from,const char*p,const char*txid,long long h,long long qub_atoms){
- if(qub_atoms<=0)return -1;char*sid_s=payload_get_field(p,"season_id"),*rid=payload_get_field(p,"research_id");if(!sid_s||!rid)goto fail;long long sid=atoll(sid_s),csid=0,ss=0,se=0,tr=0,ts=0,te=0;if(generals_season_at(c,h,&csid,&ss,&se,&tr,&ts,&te)||sid!=csid||!generals_player_active_in_season(c,from,sid))goto fail;char k[1024],v[256];generals_research_key(k,sizeof(k),sid,from,"status");if(generals_db_get(c,k,v,sizeof(v))||strcmp(v,"active"))goto fail;generals_research_key(k,sizeof(k),sid,from,"research_id");if(generals_db_get(c,k,v,sizeof(v))||strcmp(v,rid))goto fail;generals_research_key(k,sizeof(k),sid,from,"completion_height");long long end=generals_db_ll(c,k,0);if(end<=h)goto fail;generals_research_key(k,sizeof(k),sid,from,"base_duration_blocks");long long base=generals_db_ll(c,k,0);generals_research_key(k,sizeof(k),sid,from,"accelerated_blocks");long long used=generals_db_ll(c,k,0),cap=base/2;if(used>=cap)goto fail;long long perqub=qrx_chain_get_ll_at_height_or_default(c,h,"generals_research_accel_blocks_per_qub",360);__int128 prod=(__int128)qub_atoms*perqub;long long requested=(long long)(prod/100000000LL);if(requested<1)goto fail;long long room=cap-used;if(requested>room||requested>end-h-1)goto fail;long long actual=requested;if(actual<1)goto fail;long long nend=end-actual;int rc=0;generals_research_key(k,sizeof(k),sid,from,"completion_height");rc|=velocity_batch_put_ll(b,k,nend);generals_research_key(k,sizeof(k),sid,from,"accelerated_blocks");rc|=velocity_batch_put_ll(b,k,used+actual);generals_research_key(k,sizeof(k),sid,from,"qub_spent_atoms");long long spent=generals_db_ll(c,k,0),nspent=0;checked_add_ll(spent,qub_atoms,"Generals research QUB spent",&nspent);rc|=velocity_batch_put_ll(b,k,nspent);generals_research_key(k,sizeof(k),sid,from,"last_accel_tx");rc|=qrxdb_batch_put(b,k,txid);rc|=generals_stage_treasury_credit(b,c,qub_atoms,h,txid,"GAME_RESEARCH_ACCELERATE");snprintf(k,sizeof(k),"generals:season:%lld:treasury_total_atoms",sid);long long st=generals_db_ll(c,k,0),nst=0;checked_add_ll(st,qub_atoms,"Season treasury",&nst);rc|=velocity_batch_put_ll(b,k,nst);snprintf(k,sizeof(k),"generals:season:%lld:research_atoms",sid);long long ra=generals_db_ll(c,k,0),nra=0;checked_add_ll(ra,qub_atoms,"Season research treasury",&nra);rc|=velocity_batch_put_ll(b,k,nra);free(sid_s);free(rid);return rc?-1:0;fail:free(sid_s);free(rid);return -1;}
+ if(qub_atoms<=0)return -1;char*sid_s=payload_get_field(p,"season_id"),*rid=payload_get_field(p,"research_id");if(!sid_s||!rid)goto fail;long long sid=atoll(sid_s),csid=0,ss=0,se=0,tr=0,ts=0,te=0;if(generals_season_at(c,h,&csid,&ss,&se,&tr,&ts,&te)||sid!=csid||!generals_player_active_in_season(c,from,sid))goto fail;char k[1024],v[256];generals_research_key(k,sizeof(k),sid,from,"status");if(generals_db_get(c,k,v,sizeof(v))||strcmp(v,"active"))goto fail;generals_research_key(k,sizeof(k),sid,from,"research_id");if(generals_db_get(c,k,v,sizeof(v))||strcmp(v,rid))goto fail;generals_research_key(k,sizeof(k),sid,from,"completion_height");long long end=generals_db_ll(c,k,0);if(end<=h)goto fail;generals_research_key(k,sizeof(k),sid,from,"base_duration_blocks");long long base=generals_db_ll(c,k,0);generals_research_key(k,sizeof(k),sid,from,"accelerated_blocks");long long used=generals_db_ll(c,k,0),cap=base/2;if(used>=cap)goto fail;long long perqub=qrx_chain_get_ll_at_height_or_default(c,h,"generals_research_accel_blocks_per_qub",360),requested=0;if(perqub<=0||mul_div_floor_nonneg(qub_atoms,perqub,100000000LL,&requested)||requested<1)goto fail;long long room=cap-used;if(requested>room||requested>end-h-1)goto fail;long long actual=requested;if(actual<1)goto fail;long long nend=end-actual;int rc=0;generals_research_key(k,sizeof(k),sid,from,"completion_height");rc|=velocity_batch_put_ll(b,k,nend);generals_research_key(k,sizeof(k),sid,from,"accelerated_blocks");rc|=velocity_batch_put_ll(b,k,used+actual);generals_research_key(k,sizeof(k),sid,from,"qub_spent_atoms");long long spent=generals_db_ll(c,k,0),nspent=0;checked_add_ll(spent,qub_atoms,"Generals research QUB spent",&nspent);rc|=velocity_batch_put_ll(b,k,nspent);generals_research_key(k,sizeof(k),sid,from,"last_accel_tx");rc|=qrxdb_batch_put(b,k,txid);rc|=generals_stage_treasury_credit(b,c,qub_atoms,h,txid,"GAME_RESEARCH_ACCELERATE");snprintf(k,sizeof(k),"generals:season:%lld:treasury_total_atoms",sid);long long st=generals_db_ll(c,k,0),nst=0;checked_add_ll(st,qub_atoms,"Season treasury",&nst);rc|=velocity_batch_put_ll(b,k,nst);snprintf(k,sizeof(k),"generals:season:%lld:research_atoms",sid);long long ra=generals_db_ll(c,k,0),nra=0;checked_add_ll(ra,qub_atoms,"Season research treasury",&nra);rc|=velocity_batch_put_ll(b,k,nra);free(sid_s);free(rid);return rc?-1:0;fail:free(sid_s);free(rid);return -1;}
 static int generals_apply_tech_unlock(QrxDBBatch*b,const char*c,long long sid,const char*from,const GeneralsTech*t){char k[1024];int rc=0;snprintf(k,sizeof(k),"generals:season:%lld:player:%s:tech:%s",sid,from,t->id);rc|=velocity_batch_put_ll(b,k,1);if(!strcmp(t->id,"INDUSTRIAL_AUTOMATION_I")){snprintf(k,sizeof(k),"generals:season:%lld:player:%s:research_material_bonus",sid,from);rc|=velocity_batch_put_ll(b,k,generals_db_ll(c,k,0)+30);}else if(!strcmp(t->id,"INDUSTRIAL_AUTOMATION_II")){snprintf(k,sizeof(k),"generals:season:%lld:player:%s:research_material_bonus",sid,from);rc|=velocity_batch_put_ll(b,k,generals_db_ll(c,k,0)+60);}else if(!strcmp(t->id,"LOGISTICS_NETWORK_I")){snprintf(k,sizeof(k),"generals:season:%lld:player:%s:research_supply_bonus",sid,from);rc|=velocity_batch_put_ll(b,k,generals_db_ll(c,k,0)+35);}else if(!strcmp(t->id,"LOGISTICS_NETWORK_II")){snprintf(k,sizeof(k),"generals:season:%lld:player:%s:research_supply_bonus",sid,from);rc|=velocity_batch_put_ll(b,k,generals_db_ll(c,k,0)+70);snprintf(k,sizeof(k),"generals:season:%lld:player:%s:research_fuel_bonus",sid,from);rc|=velocity_batch_put_ll(b,k,generals_db_ll(c,k,0)+25);}else{snprintf(k,sizeof(k),"generals:season:%lld:player:%s:tech_%s_modifier",sid,from,t->branch);rc|=velocity_batch_put_ll(b,k,generals_db_ll(c,k,0)+10);}return rc?-1:0;}
 static int generals_stage_research_complete(QrxDBBatch*b,const char*c,const char*from,const char*p,const char*txid,long long h){char*sid_s=payload_get_field(p,"season_id"),*rid=payload_get_field(p,"research_id");if(!sid_s||!rid)goto fail;long long sid=atoll(sid_s);char k[1024],v[256];generals_research_key(k,sizeof(k),sid,from,"status");if(generals_db_get(c,k,v,sizeof(v))||strcmp(v,"active"))goto fail;generals_research_key(k,sizeof(k),sid,from,"research_id");if(generals_db_get(c,k,v,sizeof(v))||strcmp(v,rid))goto fail;generals_research_key(k,sizeof(k),sid,from,"completion_height");if(h<generals_db_ll(c,k,LLONG_MAX))goto fail;generals_research_key(k,sizeof(k),sid,from,"tech_id");if(generals_db_get(c,k,v,sizeof(v)))goto fail;const GeneralsTech*t=generals_tech(v);if(!t||generals_tech_unlocked(c,sid,from,t->id))goto fail;int rc=generals_apply_tech_unlock(b,c,sid,from,t);generals_research_key(k,sizeof(k),sid,from,"status");rc|=qrxdb_batch_put(b,k,"completed");generals_research_key(k,sizeof(k),sid,from,"complete_height");rc|=velocity_batch_put_ll(b,k,h);generals_research_key(k,sizeof(k),sid,from,"complete_tx");rc|=qrxdb_batch_put(b,k,txid);snprintf(k,sizeof(k),"generals:season:%lld:player:%s:research_score",sid,from);rc|=velocity_batch_put_ll(b,k,generals_db_ll(c,k,0)+10);free(sid_s);free(rid);return rc?-1:0;fail:free(sid_s);free(rid);return -1;}
 
@@ -4980,12 +5018,22 @@ static int remember_known_peer(const char *node_dir, const char *host, const cha
     char p[1024]; snprintf(p, sizeof(p), "%s/known_peers.txt", node_dir);
     return unique_append_peerfile(p, host, port);
 }
+static int peer_endpoint_is_usable(const char *host, const char *port) {
+    if (!host || !*host || !port || !*port || strlen(host) > 253) return 0;
+    if (!strcmp(host, "0.0.0.0") || !strcmp(host, "::") || !strcmp(host, "[::]") || !strcmp(host, "*")) return 0;
+    for (const unsigned char *p=(const unsigned char*)host; *p; ++p)
+        if (!(isalnum(*p) || *p=='.' || *p=='-')) return 0;
+    char *end=NULL; long n=strtol(port,&end,10);
+    return end && *end==0 && n>0 && n<=65535;
+}
 static int add_peer_cmd(const char *node_dir, const char *host, const char *port) {
+    if (!peer_endpoint_is_usable(host, port)) return -1;
     char p[1024]; snprintf(p, sizeof(p), "%s/peers.txt", node_dir);
     if (unique_append_peerfile(p, host, port) != 0) return -1;
     return remember_known_peer(node_dir, host, port);
 }
 static int add_seed_cmd(const char *node_dir, const char *host, const char *port) {
+    if (!peer_endpoint_is_usable(host, port)) return -1;
     char p[1024]; snprintf(p, sizeof(p), "%s/seednodes.txt", node_dir);
     return unique_append_peerfile(p, host, port);
 }
@@ -5004,7 +5052,7 @@ static int discover_peers_cmd(const char *node_dir) {
             if (len > 0) {
                 char line[256]; if (len >= sizeof(line)) len = sizeof(line)-1; memcpy(line, cur, len); line[len]=0;
                 char *colon = strrchr(line, ':');
-                if (colon) { *colon = 0; if (unique_append_peerfile(peers, line, colon+1) == 0) merged++; }
+                if (colon) { *colon = 0; if (peer_endpoint_is_usable(line,colon+1) && unique_append_peerfile(peers, line, colon+1) == 0) merged++; }
             }
             cur = e ? e+1 : NULL;
         }
@@ -5070,6 +5118,8 @@ static long long peer_last_seen(const char *node_dir, const char *peer) {
     char db[1024], key[320]; snprintf(db, sizeof(db), "%s/peer_state.db", node_dir); key_from_ip(key, sizeof(key), peer, "last_seen"); return db_get_ll(db, key);
 }
 
+static int peer_endpoint_is_self(const char *node_dir, const char *host, int port);
+
 static int request_peers_from_peer(const char *node_dir, const char *host, int port, int *added) {
     int fd = connect_to(host, port); if (fd < 0) return -1;
     char *hello = NULL; if (build_hello_message(node_dir, &hello) != 0 || !hello) { free(hello); qrx_close_socket(fd); return -1; } if (send_framed(fd, hello) != 0) { free(hello); qrx_close_socket(fd); return -1; } free(hello);
@@ -5089,7 +5139,7 @@ static int request_peers_from_peer(const char *node_dir, const char *host, int p
                 const char *e = strchr(cur, '\n'); size_t len = e ? (size_t)(e-cur) : strlen(cur);
                 if (len > 0) {
                     char line[256]; if (len >= sizeof(line)) len = sizeof(line)-1; memcpy(line, cur, len); line[len]=0;
-                    char *colon = strrchr(line, ':'); if (colon) { *colon=0; if (remember_known_peer(node_dir, line, colon+1) == 0) { char pp[1024]; snprintf(pp, sizeof(pp), "%s/peers.txt", node_dir); unique_append_peerfile(pp, line, colon+1); if (added) (*added)++; } }
+                    char *colon = strrchr(line, ':'); if (colon) { *colon=0; int peer_port=atoi(colon+1); if (peer_endpoint_is_usable(line,colon+1) && !peer_endpoint_is_self(node_dir, line, peer_port) && remember_known_peer(node_dir, line, colon+1) == 0) { char pp[1024]; snprintf(pp, sizeof(pp), "%s/peers.txt", node_dir); unique_append_peerfile(pp, line, colon+1); if (added) (*added)++; } }
                 }
                 cur = e ? e+1 : NULL;
             }
@@ -5100,6 +5150,23 @@ static int request_peers_from_peer(const char *node_dir, const char *host, int p
     free(status); free(resp); qrx_close_socket(fd); return 0;
 }
 
+static int peer_endpoint_is_self(const char *node_dir, const char *host, int port) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/node.conf", node_dir);
+    char *cfg = read_file(path, NULL);
+    if (!cfg) return 0;
+    char *bind_host = cfg_get(cfg, "host");
+    char *bind_port = cfg_get(cfg, "port");
+    char *external_host = cfg_get(cfg, "external_host");
+    char *external_port = cfg_get(cfg, "external_port");
+    int is_self = (external_host && external_port && *external_host &&
+                   !strcmp(host, external_host) && port == atoi(external_port)) ||
+                  (bind_host && bind_port && strcmp(bind_host, "0.0.0.0") &&
+                   !strcmp(host, bind_host) && port == atoi(bind_port));
+    free(cfg); free(bind_host); free(bind_port); free(external_host); free(external_port);
+    return is_self;
+}
+
 static int bootstrap_cmd(const char *node_dir) {
     char seeds[1024], known[1024], peers[1024], cache[1024];
     snprintf(seeds, sizeof(seeds), "%s/seednodes.txt", node_dir);
@@ -5107,6 +5174,7 @@ static int bootstrap_cmd(const char *node_dir) {
     snprintf(peers, sizeof(peers), "%s/peers.txt", node_dir);
     snprintf(cache, sizeof(cache), "%s/bootstrap_cache.txt", node_dir);
     int contacted = 0, alive = 0, added = 0;
+    char attempted[MAX_PEERS * 3][320]; int attempted_count = 0;
     for (int pass=0; pass<3; ++pass) {
         const char *src = pass == 0 ? seeds : (pass == 1 ? known : peers);
         char *txt = read_file(src, NULL); if (!txt) continue;
@@ -5116,7 +5184,13 @@ static int bootstrap_cmd(const char *node_dir) {
             if (len > 0) {
                 char line[256]; if (len >= sizeof(line)) len = sizeof(line)-1; memcpy(line, cur, len); line[len]=0;
                 char *colon = strrchr(line, ':'); if (colon) {
-                    *colon = 0; int port = atoi(colon+1); contacted++;
+                    *colon = 0; int port = atoi(colon+1);
+                    char endpoint[320]; snprintf(endpoint, sizeof(endpoint), "%s:%d", line, port);
+                    int duplicate = 0;
+                    for (int i=0; i<attempted_count; ++i) if (!strcmp(attempted[i], endpoint)) { duplicate = 1; break; }
+                    if (duplicate || !peer_endpoint_is_usable(line,colon+1) || peer_endpoint_is_self(node_dir, line, port)) { cur = e ? e+1 : NULL; continue; }
+                    if (attempted_count < (int)(MAX_PEERS * 3)) snprintf(attempted[attempted_count++], sizeof(attempted[0]), "%s", endpoint);
+                    contacted++;
                     int local_added = 0;
                     if (request_peers_from_peer(node_dir, line, port, &local_added) == 0) {
                         alive++; added += local_added; remember_known_peer(node_dir, line, colon+1); peer_rep_add(node_dir, line, 1); peer_touch_seen(node_dir, line, (long long)time(NULL));
@@ -5465,7 +5539,10 @@ static void node_handle_client(int fd, const char *node_dir) {
         peer_add_score(node_dir, ip, 20); send_framed(fd, "status=ERR\nreason=bad_hello\n"); free(msg); free(node_cfg); return;
     }
     char *ann_host = cfg_get(msg, "host"), *ann_port = cfg_get(msg, "port");
-    if (ann_host && ann_port) { remember_known_peer(node_dir, ann_host, ann_port); peer_rep_add(node_dir, ann_host, 1); peer_touch_seen(node_dir, ann_host, (long long)time(NULL)); }
+    /* A verified peer behind NAT may honestly announce 0.0.0.0.  Track the
+     * source as live, but never gossip an unusable or self endpoint. */
+    peer_touch_seen(node_dir, ip, (long long)time(NULL));
+    if (ann_host && ann_port && peer_endpoint_is_usable(ann_host,ann_port) && !peer_endpoint_is_self(node_dir,ann_host,atoi(ann_port))) { remember_known_peer(node_dir, ann_host, ann_port); peer_rep_add(node_dir, ann_host, 1); }
     send_framed(fd, "status=OK\n"); free(msg);
 
     if (!peer_rate_allow(node_dir, ip)) { peer_add_score(node_dir, ip, 50); send_framed(fd, "status=ERR\nreason=rate_limited\n"); if (ann_host) free(ann_host); if (ann_port) free(ann_port); free(node_cfg); return; }
@@ -5571,11 +5648,21 @@ static void node_handle_client(int fd, const char *node_dir) {
 
 static int connect_to(const char *host, int port) {
     qrx_net_init_once();
-    int fd = socket(AF_INET, SOCK_STREAM, 0); if (fd < 0) return -1;
-    qrx_set_socket_timeout(fd, SOCKET_IO_TIMEOUT_SECS);
-    struct sockaddr_in addr; memset(&addr, 0, sizeof(addr)); addr.sin_family = AF_INET; addr.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) { qrx_close_socket(fd); return -1; }
-    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) { qrx_close_socket(fd); return -1; }
+    char port_s[16]; snprintf(port_s, sizeof(port_s), "%d", port);
+    struct addrinfo hints, *results = NULL, *it;
+    memset(&hints, 0, sizeof(hints)); hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, port_s, &hints, &results) != 0) return -1;
+    int fd = -1;
+    for (it = results; it; it = it->ai_next) {
+        fd = (int)socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+        if (fd < 0) continue;
+        if (connect_with_timeout(fd, it->ai_addr, (socklen_t)it->ai_addrlen, SOCKET_IO_TIMEOUT_SECS) == 0) {
+            qrx_set_socket_timeout(fd, SOCKET_IO_TIMEOUT_SECS);
+            break;
+        }
+        qrx_close_socket(fd); fd = -1;
+    }
+    freeaddrinfo(results);
     return fd;
 }
 
@@ -7108,12 +7195,16 @@ static int history_cmd(const char *chain_dir, const char *address, size_t limit,
 }
 
 static int list_peers_cmd(const char *node_dir) {
-    char p1[1024], p2[1024];
+    char p1[1024], p2[1024], conf[1024];
     snprintf(p1, sizeof(p1), "%s/peers.txt", node_dir);
     snprintf(p2, sizeof(p2), "%s/known_peers.txt", node_dir);
     char *a = read_file(p1, NULL), *b = read_file(p2, NULL);
     if (a) { printf("[peers]\n%s", a); if (strlen(a) && a[strlen(a)-1] != '\n') puts(""); }
     if (b) { printf("[known]\n%s", b); if (strlen(b) && b[strlen(b)-1] != '\n') puts(""); }
+    snprintf(conf, sizeof(conf), "%s/node.conf", node_dir);
+    char *cfg=read_file(conf,NULL), *host=cfg?cfg_get(cfg,"host"):NULL, *port=cfg?cfg_get(cfg,"port"):NULL;
+    if(host&&port)printf("[listener]\n%s:%s\n",host,port);
+    free(cfg);free(host);free(port);
     if (!a && !b) puts("no peers");
     free(a); free(b); return 0;
 }

@@ -15,6 +15,9 @@ checks={
  'policy is process-only': '-ExecutionPolicy Bypass' in cmd and 'Set-ExecutionPolicy' not in cmd,
  'policy consent prompt': 'choice /C YN' in cmd,
  'core Strawberry fallback': 'Strawberry' in core,
+ 'OpenSSL applink adopted from verified source': 'Copy-Item -Force $SourceApplink $OpenSSLApplink' in core,
+ 'OpenSSL applink required': 'OpenSSL applink source missing from verified archive' in core,
+ 'Cargo uses hermetic OpenSSL prefix': '$env:OPENSSL_DIR=$Deps' in ps and "$env:OPENSSL_STATIC='1'" in ps,
 }
 bad=[k for k,v in checks.items() if not v]
 if bad: raise SystemExit('FAIL: '+', '.join(bad))
