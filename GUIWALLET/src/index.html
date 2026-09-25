@@ -675,6 +675,15 @@ pre,.receive-box{max-width:100%;overflow:auto}
 .qrx-project-footer .qrx-icon-link{width:34px;height:34px;border-radius:11px}
 .aura-send-icon{width:42px!important;min-width:42px!important;height:38px!important;padding:0!important;display:grid!important;place-items:center!important;font-size:17px}
 
+
+/* Keep complete node hashes and supply values inside their dashboard cards. */
+#view-dashboard > *, #mainnetHealthCard > *,
+#view-dashboard .metric { min-width:0; }
+#view-dashboard .metric .value { overflow-wrap:anywhere; }
+#mainnetHealthCard .wide-grid {
+  grid-template-columns:repeat(auto-fit,minmax(min(190px,100%),1fr))!important;
+}
+#mhBlockHash, #mhStateRoot { white-space:normal; overflow-wrap:anywhere; }
 </style>
 </head>
 <body><div class="top-tools">
@@ -867,7 +876,7 @@ pre,.receive-box{max-width:100%;overflow:auto}
 <button class="qrx-icon-link" data-qrx-url="https://discord.gg/4G2Vyj9jYf" title="Discord">◉</button>
 <button class="qrx-icon-link" data-qrx-url="https://bitcointalk.org/index.php?topic=5580957.0" title="Bitcointalk">₿</button>
 </div></div></div></aside>
-<main class="main"><section class="hero glass"><div><h2 data-i18n="wallet.auto.7c3d0ff954c2">QUBITCOIN GUI Wallet</h2><p class="muted" data-i18n="wallet.auto.a7be7e80c72b">Your gateway to QUBITCOIN — secure payments, staking, BTC Light and Quantum Swaps.</p></div><div class="hero-actions"><button class="aura-chip" data-i18n-title="wallet.attr.190676e0c170" id="auraOpenBtn" title="Chat with AURA AI / integrated help"><svg aria-hidden="true" fill="none" viewbox="0 0 24 24"><path d="M4 5.8C4 4.25 5.25 3 6.8 3h10.4C18.75 3 20 4.25 20 5.8v7.4c0 1.55-1.25 2.8-2.8 2.8H9.2L5 20v-4.2A2.8 2.8 0 0 1 4 13.6V5.8Z" stroke="currentColor" stroke-width="1.7"></path><path d="M8 8h8M8 11.5h5.5" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"></path></svg><span data-i18n="wallet.auto.5d65bf0dc8f3">Chat with AURA AI</span></button><button class="btn primary" data-i18n="wallet.auto.f59b31a07995" id="startNodeBtn" title="Start the bundled QRX node">Start node</button><button class="btn" data-i18n="wallet.auto.56e3badc4e6c" id="refreshAllBtn" title="Refresh wallet and node status">Refresh</button><button class="btn danger" data-i18n="wallet.auto.56ebf2770cf0" id="stopNodeBtn" title="Stop the bundled QRX node">Stop node</button></div></section><section class="content"><div class="left"><section class="section glass"><div class="banner" id="banner"></div>
+<main class="main"><section class="hero glass"><div><h2 data-i18n="wallet.auto.7c3d0ff954c2">QUBITCOIN GUI Wallet</h2><p class="muted" data-i18n="wallet.auto.a7be7e80c72b">Your gateway to QUBITCOIN — secure payments, staking, BTC Light and Quantum Swaps.</p></div><div class="hero-actions"><button class="aura-chip" data-i18n-title="wallet.attr.190676e0c170" id="auraOpenBtn" title="Chat with AURA AI / integrated help"><svg aria-hidden="true" fill="none" viewbox="0 0 24 24"><path d="M4 5.8C4 4.25 5.25 3 6.8 3h10.4C18.75 3 20 4.25 20 5.8v7.4c0 1.55-1.25 2.8-2.8 2.8H9.2L5 20v-4.2A2.8 2.8 0 0 1 4 13.6V5.8Z" stroke="currentColor" stroke-width="1.7"></path><path d="M8 8h8M8 11.5h5.5" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"></path></svg><span data-i18n="wallet.auto.5d65bf0dc8f3">Chat with AURA AI</span></button><button class="btn primary" id="startNodeBtn" title="Start the bundled QRX node">Start node</button><button class="btn" data-i18n="wallet.auto.56e3badc4e6c" id="refreshAllBtn" title="Refresh wallet and node status">Refresh</button><button class="btn danger" data-i18n="wallet.auto.56ebf2770cf0" id="stopNodeBtn" title="Stop the bundled QRX node">Stop node</button></div></section><section class="content"><div class="left"><section class="section glass"><div class="banner" id="banner"></div>
 <div class="view" id="view-dashboard"><h3 data-i18n="wallet.auto.0efc2e6be4c2">Overview</h3><div class="metrics"><div class="metric"><div class="label" data-i18n="wallet.auto.90eef613042c">Balance</div><div class="value" id="metricBalance">0</div></div><div class="metric"><div class="label" data-i18n="wallet.auto.ca37c7aa9669">Staked</div><div class="value" id="metricStaked">0</div></div><div class="metric"><div class="label" data-i18n="wallet.auto.762f13c2259b">Validators</div><div class="value" id="metricValidators">0</div></div><div class="metric"><div class="label" data-i18n="wallet.auto.4a94579b037f">Peers</div><div class="value" id="metricPeers">0</div></div></div><div style="height:18px"></div><div class="feature-card" id="mainnetHealthCard"><div class="send-panel-head"><div><h4 data-i18n="wallet.auto.233987836f87" style="margin:0">Mainnet Health</h4><div class="small muted" data-i18n="wallet.auto.cc64d5fb69a0">Local consensus health from your QRX node. Full peer addresses stay local to this wallet.</div></div><div class="actions"><span class="pill" data-i18n="wallet.auto.25ba44ec3b39" id="mainnetHealthBadge">UNKNOWN</span><button class="btn" data-i18n="wallet.auto.56e3badc4e6c" onclick="refreshMainnetHealth(true)">Refresh</button><button class="btn" data-i18n="wallet.auto.6c2af772df4c" onclick="togglePeerViewer()">View peers</button></div></div><div class="metrics" style="margin-top:14px"><div class="metric"><div class="label" data-i18n="wallet.auto.3f608b4935ea">Height</div><div class="value" id="mhHeight">—</div></div><div class="metric"><div class="label" data-i18n="wallet.auto.8dd3ec3d963a">Behind</div><div class="value" id="mhBehind">—</div></div><div class="metric"><div class="label" data-i18n="wallet.auto.8f3509b64e0e">Connections</div><div class="value" id="mhConnections">—</div></div><div class="metric"><div class="label" data-i18n="wallet.auto.222db0fc1cad">Supply</div><div class="value" id="mhSupply">—</div></div></div><div class="wide-grid" style="margin-top:14px"><div><div class="small muted" data-i18n="wallet.auto.261c4b77a3c3">Best block hash</div><div class="mono small" id="mhBlockHash" style="word-break:break-all">—</div></div><div><div class="small muted" data-i18n="wallet.auto.29a1e86e114f">State root</div><div class="mono small" id="mhStateRoot" style="word-break:break-all">—</div></div><div><div class="small muted" data-i18n="wallet.auto.1ed77c3f7ffc">Protocol</div><div class="small" id="mhProtocol">—</div></div><div><div class="small muted" data-i18n="wallet.auto.53ebc572b4a4">Network</div><div class="small" id="mhNetwork">—</div></div></div><div class="small muted" data-i18n="wallet.auto.627192adad51" id="mainnetHealthMessage" style="margin-top:12px">Waiting for node health…</div></div><div class="feature-card hidden" id="peerViewerPanel" style="margin-top:18px"><div class="send-panel-head"><div><h4 data-i18n="wallet.auto.ffdced18ed86" style="margin:0">Peer Viewer</h4><div class="small muted" data-i18n="wallet.auto.9298c904a2e8">Connected/known peers reported by your local node. Domains and IP addresses are never uploaded by this view.</div></div><div class="actions"><button class="btn" data-i18n="wallet.auto.3ba1882386e1" onclick="refreshPeerViewer(true)">Refresh peers</button><button class="btn" data-i18n="wallet.auto.bbfa773e5a63" onclick="togglePeerViewer(false)">Close</button></div></div><div class="actions" id="peerViewerSummary" style="margin-top:12px;justify-content:flex-start"><span class="pill" id="peerConnectedSummary">Connected: —</span><span class="pill" id="peerKnownSummary">Known / Seeds: —</span><span class="pill" id="peerListenerSummary">Local listener: —</span></div><div style="overflow:auto;margin-top:12px"><table style="width:100%;border-collapse:collapse"><thead><tr><th data-i18n="wallet.auto.4c8335bf3d9a" style="text-align:left">Host / IP</th><th data-i18n="wallet.auto.fe035157cda2" style="text-align:left">Port</th><th data-i18n="wallet.auto.3deb74565196" style="text-align:left">Type</th><th data-i18n="wallet.auto.48fac4583852" style="text-align:left">Raw status</th></tr></thead><tbody id="peerViewerRows"><tr><td class="muted" colspan="4" data-i18n="wallet.auto.ca3cec8dab65">Peer data not loaded.</td></tr></tbody></table></div><pre class="hidden" id="peerViewerRaw">—</pre></div><div style="height:18px"></div><div class="feature-card"><div class="send-panel-head"><div><h4 data-i18n="wallet.auto.3e5c8378468a" style="margin:0">Reward notifications</h4><div class="small muted" data-i18n="wallet.auto.2f5ed917b7ae">Optional alerts. Validator rewards, delegation rewards and trading settlements can be toggled separately. Repeated events are grouped instead of generating a popup for every reward.</div></div><button class="btn" data-i18n="wallet.auto.652a390076df" onclick="requestRewardNotifications()">Allow desktop alerts</button></div><div class="wide-grid"><label class="checkline" data-i18n="wallet.auto.0f48e55686e4"><input id="notifyValidatorRewards" onchange="saveNotificationSettings()" type="checkbox"/>Validator rewards</label><label class="checkline" data-i18n="wallet.auto.384a98085658"><input id="notifyDelegationRewards" onchange="saveNotificationSettings()" type="checkbox"/>Delegation rewards</label><label class="checkline" data-i18n="wallet.auto.b536385aff76"><input id="notifyTradingSettlements" onchange="saveNotificationSettings()" type="checkbox"/>Trading / settlement</label><div class="field"><label data-i18n="wallet.auto.4108426b5299">Minimum QUB before desktop alert</label><input id="notifyMinQub" inputmode="decimal" onchange="saveNotificationSettings()" value="0"/></div></div><div class="small muted" data-i18n="wallet.auto.2dcc227966dc">In-app activity remains visible even when desktop alerts are off.</div><div class="activity-center" id="rewardActivityCenter"><div class="muted" data-i18n="wallet.auto.f836c51cc0c2">No new reward activity this session.</div></div></div><div style="height:18px"></div><div class="aura-dashboard-card">
 <h3 data-i18n="wallet.auto.b22cf66e76f9">AURA Wallet AI Assistant</h3>
 <p class="muted" data-i18n="wallet.auto.472882012cc1">Ask local wallet questions, staking explanations, safety hints and command guidance.</p>
@@ -1183,7 +1192,7 @@ async function switchNetwork(network){
   if((from==="mainnet"||network==="mainnet") && !window.confirm(`Network Guard\n\nSwitch from ${from.toUpperCase()} to ${network.toUpperCase()}?\n\nBalances, peers and chain state are network-specific. Test/Alpha QUB is not Mainnet QUB.`)){ if($("networkSelector")) $("networkSelector").value=from; return; }
   appState.sessionPassphrase=""; appState.walletUnlocked=false; appState.walletKeyState="unknown";
   appState.daemonMismatch=null; appState.globalQubBalance=null; appState.globalQubStaked=null; appState.globalQubBalanceStatus="loading"; appState.sendQubBalance=null;
-  appState.network=network; setText("networkLabel",network); if($("networkSelector")) $("networkSelector").value=network;
+  appState.network=network; setNodeRunning(false); setText("networkLabel",network); if($("networkSelector")) $("networkSelector").value=network;
   const previousWallet=appState.wallet;
   let wallets=[]; try{wallets=await invoke("list_wallets",{network});}catch{}
   const saved=savedWalletForNetwork(network);
@@ -1423,24 +1432,60 @@ async function saveValidatorMode(){
 }
 async function disableValidatorMode(){ if($("validatorModeToggle")) $("validatorModeToggle").checked=false; if($("validatorRiskConfirm")) $("validatorRiskConfirm").checked=false; await saveValidatorMode(); }
 
+function nodeUiText(key){
+  const de=document.documentElement.lang.toLowerCase().startsWith("de");
+  const text={start:["Start node","Node starten"],running:["Node running","Node läuft"],starting:["Starting…","Wird gestartet…"],stop:["Stop node","Node stoppen"],stopping:["Stopping…","Wird gestoppt…"]};
+  return text[key][de?1:0];
+}
+function renderNodeStartButton(){
+  const busy=!!(appState.nodeStarting || appState.nodeStopping);
+  const b=$("startNodeBtn"), stop=$("stopNodeBtn");
+  if(b){
+    b.disabled=busy || !!appState.nodeRunning;
+    b.textContent=nodeUiText(appState.nodeStarting?"starting":appState.nodeRunning?"running":"start");
+    b.title=b.textContent;
+    b.setAttribute("aria-busy",String(!!appState.nodeStarting));
+  }
+  if(stop){
+    stop.disabled=busy;
+    stop.textContent=nodeUiText(appState.nodeStopping?"stopping":"stop");
+    stop.setAttribute("aria-busy",String(!!appState.nodeStopping));
+  }
+}
+function setNodeRunning(running){
+  appState.nodeRunning=!!running;
+  renderNodeStartButton();
+}
 async function startDaemonWithMode(){
-  const b=$("startNodeBtn");if(b){b.disabled=true;b.textContent="Starting…";}
+  if(appState.nodeRunning || appState.nodeStarting || appState.nodeStopping) return;
+  appState.nodeStarting=true; renderNodeStartButton();
   try{
     const enabled = !!$("validatorModeToggle")?.checked || appState.validatorEnabled;
     if(enabled && !$("validatorRiskConfirm")?.checked && !$("stakeRiskConfirm")?.checked){
       if(!confirm("Validator Mode can be slashed for downtime or double-signing. Continue?")) return;
     }
     const ctx = await invoke("start_daemon",{network:appState.network,wallet:appState.wallet,passphrase:passphrase(),validatorEnabled:enabled});
+    setNodeRunning(true);
     setText("daemonText","Daemon online");
     $("daemonDot")?.classList.add("online");
     setText("dataDirLabel", ctx.data_dir || "—");
     showBanner(enabled ? "Daemon started in Validator Mode." : "Daemon started in Wallet Mode (--no-block-producer).");
     await refreshAll(false);
-  }catch(e){ showBanner("Node start failed: "+String(e), true); setText("daemonText","Daemon offline"); $("daemonDot")?.classList.remove("online"); }
-  finally{if(b){b.disabled=false;b.textContent="Start node";}}
+  }catch(e){ setNodeRunning(false); showBanner("Node start failed: "+String(e), true); setText("daemonText","Daemon offline"); $("daemonDot")?.classList.remove("online"); }
+  finally{appState.nodeStarting=false;renderNodeStartButton();}
 }
 async function startDaemon(){ return startDaemonWithMode(); }
-async function stopDaemon(){ const b=$("stopNodeBtn");if(b){b.disabled=true;b.textContent="Stopping…";}try{ await invokeWithTimeout("stop_daemon",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()},9000); setText("daemonText","Daemon offline"); $("daemonDot")?.classList.remove("online"); showBanner("QRX node stopped."); await refreshAll(false);}catch(e){ showBanner("Node stop failed: "+String(e), true); }finally{if(b){b.disabled=false;b.textContent="Stop node";}} }
+async function stopDaemon(){
+  if(appState.nodeStarting || appState.nodeStopping) return;
+  appState.nodeStopping=true; renderNodeStartButton();
+  try{
+    await invokeWithTimeout("stop_daemon",{network:appState.network,wallet:appState.wallet,passphrase:passphrase()},9000);
+    setText("daemonText","Daemon offline"); $("daemonDot")?.classList.remove("online");
+    setNodeRunning(false); showBanner(nodeUiText("stop")==="Node stoppen"?"QRX-Node gestoppt.":"QRX node stopped.");
+    await refreshAll(false);
+  }catch(e){showBanner((document.documentElement.lang.startsWith("de")?"Node konnte nicht gestoppt werden: ":"Node stop failed: ")+String(e),true);}
+  finally{appState.nodeStopping=false;renderNodeStartButton();}
+}
 
 let validatorFleet=[];
 function atomsToQub(v){ const n=Number(v||0); return Number.isFinite(n)?(n/100000000).toLocaleString(undefined,{maximumFractionDigits:8}):"0"; }
@@ -1669,6 +1714,7 @@ async function refreshAll(noisy=false){
   ];
   const settled=await Promise.all(requests.map(async ([key,cmd,a,ms])=>{try{return [key,true,await invokeWithTimeout(cmd,a,ms)]}catch(e){return [key,false,e]}}));
   const map=Object.fromEntries(settled.map(([k,ok,v])=>[k,{ok,v}]));
+  if(map.dh.ok && args.network===appState.network) setNodeRunning(map.dh.v.running);
   if(map.dh.ok){ const v=map.dh.v; appState.daemonMismatch=(v.running&&(v.wallet_mismatch||v.data_root_mismatch))?v:null; setText("daemonHealthBox",asJson(v)); setText("dataDirLabel",v.data_dir||"—"); setText("controlSocketLabel",v.control_socket||"—"); setText("walletDataDir",v.data_dir||"—"); setText("walletControlSocket",v.control_socket||"—"); if(appState.daemonMismatch){setText("daemonText",`Daemon mismatch · ${v.actual_wallet||"unknown"}`);$("daemonDot")?.classList.remove("online");showBanner(`WALLET/DAEMON MISMATCH: GUI selected '${appState.wallet}', but the running node uses '${v.actual_wallet||"unknown"}' at ${v.actual_wallet_dir||"unknown"}. Stop the old node, then select/import the matching wallet.`,true);}else if(v.running){setText("daemonText","Daemon online");$("daemonDot")?.classList.add("online");}else{setText("daemonText","Daemon offline");$("daemonDot")?.classList.remove("online");} } else { appState.daemonMismatch=null; setText("daemonHealthBox","Unavailable: "+String(map.dh.v)); }
   setText("tokenomicsBox", map.tok.ok?asJson(map.tok.v):"Unavailable: "+String(map.tok.v));
   if(map.proto.ok){
@@ -2953,6 +2999,7 @@ async function applyFullLanguage(){
  };
  document.querySelectorAll('[data-i18n]').forEach(e=>{const k=e.dataset.i18n;if(k)applyText(e,get(k));});
  for(const a of ['title','placeholder','aria-label'])document.querySelectorAll(`[data-i18n-${a}]`).forEach(e=>{const k=e.getAttribute(`data-i18n-${a}`);if(k)e.setAttribute(a,get(k));});
+ renderNodeStartButton();
  const lab=document.getElementById('languageLabel');if(lab)lab.textContent=l.toUpperCase();
  try{if(document.getElementById('qrxInstalledApps'))await qrxAppsRefresh();}catch(_){}
  try{if(document.getElementById('view-upscaler')&&!document.getElementById('view-upscaler').classList.contains('hidden'))await loadUpscalerCapabilities();}catch(_){}
@@ -2981,4 +3028,34 @@ window.addEventListener('DOMContentLoaded',()=>{
 .hero-actions{max-width:none!important;min-width:0!important;display:flex!important;flex-wrap:wrap!important;justify-content:flex-end!important;align-items:center!important}
 @media(max-width:1380px){.hero{grid-template-columns:1fr!important}.hero-actions{justify-content:flex-start!important}}
 @media(max-width:820px){.top-tools{left:12px!important;right:12px!important;justify-content:flex-start!important}.hero{padding-top:126px!important}.hero-actions .btn,.hero-actions .aura-chip{max-width:100%}}
+
+/* Shared wallet layout: contain long values without hiding financial data. */
+.view > *, .feature-card > *, .split > *, .field, .metric,
+.hero > *, .send-panel-head > *, .wallet-chip > * { min-width:0; }
+.view .mono, .metric .value, .sidebar-balance, .notice, .banner,
+.field label, .feature-card .small { overflow-wrap:anywhere; }
+.metric .value, .balance-value { font-variant-numeric:tabular-nums; }
+input:not([type=checkbox]):not([type=radio]), textarea, select { min-width:0; max-width:100%; }
+pre { min-width:0; max-width:100%; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+.btn, .menu button { white-space:normal; overflow-wrap:anywhere; line-height:1.4; }
+button:focus-visible, input:focus-visible, select:focus-visible,
+textarea:focus-visible, summary:focus-visible, a:focus-visible {
+  outline:2px solid var(--accent); outline-offset:3px;
+}
+button[aria-busy="true"] { cursor:progress; }
+#view-resource .split, #view-btc .split {
+  grid-template-columns:repeat(auto-fit,minmax(min(360px,100%),1fr));
+}
+@media(max-width:820px){
+  .shell { padding:10px; gap:12px; }
+  .section, .feature-card { padding:14px; }
+  .hero { grid-template-columns:minmax(0,1fr)!important; }
+  .actions { gap:8px; }
+  .actions > .btn { max-width:100%; }
+  .send-panel-head { flex-wrap:wrap; }
+}
+@media(prefers-reduced-motion:reduce){
+  *, *::before, *::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; }
+  canvas#bg { display:none; }
+}
 </style>
